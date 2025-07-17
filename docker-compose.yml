@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: auth1
+      POSTGRES_USER: auth1
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Migration service - runs migrations and exits
+  migrations:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: auth1
+      DATABASE_PASSWORD: password
+      DATABASE_NAME: auth1
+      DATABASE_SSL_MODE: disable
+      APP_ENVIRONMENT: development
+    volumes:
+      - ./config.yaml:/root/config.yaml:ro
+      - ./migrations:/app/migrations:ro
+    working_dir: /app
+    command: ["sh", "-c", "cd migrations && go run . init && go run . up"]
+    restart: "no"
+
+  auth-service:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: auth1
+      DATABASE_PASSWORD: password
+      DATABASE_NAME: auth1
+      DATABASE_SSL_MODE: disable
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      APP_ENVIRONMENT: development
+      APP_LOG_LEVEL: debug
+    volumes:
+      - ./config.yaml:/root/config.yaml:ro
+      - ./assets:/root/assets:ro
+
+volumes:
+  postgres_data: 

@@ -1,0 +1,38 @@
+# Example configuration for auth1 service
+# Copy this file to config.yaml and adjust values as needed
+
+server:
+  host: "0.0.0.0"
+  port: "8080"
+
+database:
+  host: "localhost"
+  port: "5432"
+  user: "auth1"
+  password: "password"
+  name: "auth1"
+  ssl_mode: "disable"
+
+redis:
+  host: "localhost"
+  port: "6379"
+  password: ""
+  db: 0
+
+jwt:
+  private_key_path: "./assets/private_key.pem"
+  public_key_path: "./assets/public_key.pem"
+  access_token_ttl: 900      # 15 minutes
+  refresh_token_ttl: 604800  # 7 days
+
+email:
+  service_url: "http://localhost:8081"
+  timeout: 30
+  retry_count: 3
+
+app:
+  name: "auth1"
+  environment: "development"  # development, staging, production
+  log_level: "info"          # debug, info, warn, error
+  otp_length: 6
+  otp_ttl: 300               # 5 minutes 
