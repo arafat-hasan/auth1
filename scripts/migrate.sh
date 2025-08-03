@@ -44,6 +44,8 @@ show_usage() {
     echo "  status               Show migration status"
     echo "  reset                Reset database (rollback all migrations)"
     echo "  create [name]        Create a new migration file"
+    echo "  seed                 Run environment-specific seed data"
+    echo "  deploy               Run init, up, and seed in sequence (production-ready)"
     echo ""
     echo "Options:"
     echo "  -e, --env [env]      Set environment (default: development)"
@@ -54,8 +56,11 @@ show_usage() {
     echo "  $0 up"
     echo "  $0 down"
     echo "  $0 status"
+    echo "  $0 seed"
+    echo "  $0 deploy"
     echo "  $0 create add_users_table"
-    echo "  $0 -e production up"
+    echo "  $0 -e production deploy"
+    echo "  $0 -e staging seed"
 }
 
 # Function to check if migration directory exists
@@ -76,6 +81,20 @@ check_config() {
     fi
 }
 
+# Function to validate environment
+validate_environment() {
+    case "$ENVIRONMENT" in
+        development|dev|staging|production|prod|test)
+            return 0
+            ;;
+        *)
+            print_warning "Unknown environment: $ENVIRONMENT"
+            print_info "Valid environments: development, staging, production, test"
+            return 1
+            ;;
+    esac
+}
+
 # Function to run migration command
 run_migration() {
     local command="$1"
@@ -83,9 +102,19 @@ run_migration() {
     
     check_migration_dir
     check_config
+    validate_environment
     
     print_info "Running migration command: $command"
     print_info "Environment: $ENVIRONMENT"
+    
+    # Add safety check for production environment
+    if [ "$ENVIRONMENT" = "production" ] || [ "$ENVIRONMENT" = "prod" ]; then
+        if [ "$command" = "reset" ] || [ "$command" = "down" ]; then
+            print_error "Dangerous operation '$command' is not allowed in production environment"
+            print_info "Please use a different environment or contact system administrator"
+            exit 1
+        fi
+    fi
     
     case "$command" in
         "init")
@@ -128,6 +157,37 @@ run_migration() {
             (cd "$MIGRATION_DIR" && go run . create "$migration_name")
             print_success "Migration file created"
             ;;
+        "seed")
+            print_info "Running environment-specific seed data..."
+            print_info "Environment: $ENVIRONMENT"
+            (cd "$MIGRATION_DIR" && go run . seed)
+            print_success "Seed data completed"
+            ;;
+        "deploy")
+            print_info "Running production deployment sequence..."
+            print_info "Environment: $ENVIRONMENT"
+            
+            # Step 1: Initialize
+            print_info "Step 1/3: Initializing migration tracking..."
+            (cd "$MIGRATION_DIR" && go run . init)
+            print_success "Migration tracking initialized"
+            
+            # Step 2: Run migrations
+            print_info "Step 2/3: Running pending migrations..."
+            (cd "$MIGRATION_DIR" && go run . up)
+            print_success "Migrations completed"
+            
+            # Step 3: Seed data (only for non-production environments)
+            if [ "$ENVIRONMENT" != "production" ] && [ "$ENVIRONMENT" != "prod" ]; then
+                print_info "Step 3/3: Running seed data for $ENVIRONMENT environment..."
+                (cd "$MIGRATION_DIR" && go run . seed)
+                print_success "Seed data completed"
+            else
+                print_info "Step 3/3: Skipping seed data for production environment"
+            fi
+            
+            print_success "Deployment sequence completed successfully"
+            ;;
         *)
             print_error "Unknown command: $command"
             show_usage
@@ -147,7 +207,7 @@ while [[ $# -gt 0 ]]; do
             show_usage
             exit 0
             ;;
-        init|up|down|status|reset|create)
+        init|up|down|status|reset|create|seed|deploy)
             COMMAND="$1"
             if [ "$1" = "create" ] && [ -n "$2" ] && [[ ! "$2" =~ ^- ]]; then
                 MIGRATION_NAME="$2"

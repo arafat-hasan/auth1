@@ -70,7 +70,7 @@ func (h *AuthHandler) RegisterRoutes(r chi.Router) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 409 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/signup [post]
+// @Router /auth/signup [post]
 func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 	var req api.SignupRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -114,7 +114,7 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/verify-signup [post]
+// @Router /auth/verify-signup [post]
 func (h *AuthHandler) VerifySignup(w http.ResponseWriter, r *http.Request) {
 	var req api.VerifySignupRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -166,7 +166,7 @@ func (h *AuthHandler) VerifySignup(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/login [post]
+// @Router /auth/login [post]
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req api.LoginRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -230,7 +230,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {object} api.ErrorResponse
 // @Failure 429 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/request-otp [post]
+// @Router /auth/request-otp [post]
 func (h *AuthHandler) RequestOTP(w http.ResponseWriter, r *http.Request) {
 	var req api.RequestOTPRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -278,7 +278,7 @@ func (h *AuthHandler) RequestOTP(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/verify-login [post]
+// @Router /auth/verify-login [post]
 func (h *AuthHandler) VerifyLogin(w http.ResponseWriter, r *http.Request) {
 	var req api.VerifyLoginRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -329,7 +329,7 @@ func (h *AuthHandler) VerifyLogin(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/refresh [post]
+// @Router /auth/refresh [post]
 func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	var req api.RefreshTokenRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -377,7 +377,7 @@ func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} api.SuccessResponse
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/logout [post]
+// @Router /auth/logout [post]
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	var req api.LogoutRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -408,7 +408,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 // @Tags auth
 // @Produce json
 // @Success 200 {object} api.PublicKeyResponse
-// @Router /api/v1/auth/public-key [get]
+// @Router /auth/public-key [get]
 func (h *AuthHandler) GetPublicKey(w http.ResponseWriter, r *http.Request) {
 	publicKey := h.authService.GetPublicKey()
 	response := &api.PublicKeyResponse{
@@ -430,7 +430,7 @@ func (h *AuthHandler) GetPublicKey(w http.ResponseWriter, r *http.Request) {
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 404 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/me [get]
+// @Router /auth/me [get]
 func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	userID := h.getUserID(r)
 	if userID == uuid.Nil {
@@ -475,7 +475,7 @@ func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} api.TwoFactorSetupResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/2fa/setup [post]
+// @Router /auth/2fa/setup [post]
 func (h *AuthHandler) Setup2FA(w http.ResponseWriter, r *http.Request) {
 	userID := h.getUserID(r)
 	if userID == uuid.Nil {
@@ -514,7 +514,7 @@ func (h *AuthHandler) Setup2FA(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/2fa/verify [post]
+// @Router /auth/2fa/verify [post]
 func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 	var req api.TwoFactorVerifyRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -564,7 +564,7 @@ func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /api/v1/auth/2fa/disable [post]
+// @Router /auth/2fa/disable [post]
 func (h *AuthHandler) Disable2FA(w http.ResponseWriter, r *http.Request) {
 	userID := h.getUserID(r)
 	if userID == uuid.Nil {

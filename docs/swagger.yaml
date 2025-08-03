@@ -20,7 +20,7 @@ definitions:
         example: user@example.com
         type: string
       password:
-        example: securePassword123
+        example: password123
         type: string
     required:
     - email
@@ -82,7 +82,7 @@ definitions:
         example: John Doe
         type: string
       password:
-        example: securePassword123
+        example: password123
         type: string
       phone:
         example: "+1234567890"
@@ -212,7 +212,7 @@ info:
   title: auth1 API
   version: "1.0"
 paths:
-  /api/v1/auth/2fa/disable:
+  /auth/2fa/disable:
     post:
       description: Disable two-factor authentication for user
       produces:
@@ -239,7 +239,7 @@ paths:
       summary: Disable 2FA
       tags:
       - auth
-  /api/v1/auth/2fa/setup:
+  /auth/2fa/setup:
     post:
       description: Setup two-factor authentication for user
       produces:
@@ -262,7 +262,7 @@ paths:
       summary: Setup 2FA
       tags:
       - auth
-  /api/v1/auth/2fa/verify:
+  /auth/2fa/verify:
     post:
       consumes:
       - application/json
@@ -296,7 +296,7 @@ paths:
       summary: Verify 2FA
       tags:
       - auth
-  /api/v1/auth/login:
+  /auth/login:
     post:
       consumes:
       - application/json
@@ -330,7 +330,7 @@ paths:
       summary: User login
       tags:
       - auth
-  /api/v1/auth/logout:
+  /auth/logout:
     post:
       consumes:
       - application/json
@@ -360,7 +360,7 @@ paths:
       summary: User logout
       tags:
       - auth
-  /api/v1/auth/me:
+  /auth/me:
     get:
       description: Get current user information
       produces:
@@ -387,7 +387,7 @@ paths:
       summary: Get user profile
       tags:
       - auth
-  /api/v1/auth/public-key:
+  /auth/public-key:
     get:
       description: Get JWT public key for token verification
       produces:
@@ -400,7 +400,7 @@ paths:
       summary: Get public key
       tags:
       - auth
-  /api/v1/auth/refresh:
+  /auth/refresh:
     post:
       consumes:
       - application/json
@@ -434,7 +434,7 @@ paths:
       summary: Refresh token
       tags:
       - auth
-  /api/v1/auth/request-otp:
+  /auth/request-otp:
     post:
       consumes:
       - application/json
@@ -472,7 +472,7 @@ paths:
       summary: Request OTP
       tags:
       - auth
-  /api/v1/auth/signup:
+  /auth/signup:
     post:
       consumes:
       - application/json
@@ -506,7 +506,7 @@ paths:
       summary: User signup
       tags:
       - auth
-  /api/v1/auth/verify-login:
+  /auth/verify-login:
     post:
       consumes:
       - application/json
@@ -540,7 +540,7 @@ paths:
       summary: Verify login OTP
       tags:
       - auth
-  /api/v1/auth/verify-signup:
+  /auth/verify-signup:
     post:
       consumes:
       - application/json

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -43,10 +41,15 @@ services:
       APP_ENVIRONMENT: development
     volumes:
       - ./config.yaml:/root/config.yaml:ro
-      - ./migrations:/app/migrations:ro
-    working_dir: /app
-    command: ["sh", "-c", "cd migrations && go run . init && go run . up"]
+    working_dir: /root
+    command: ["sh", "-c", "set -e && echo 'Starting migrations...' && ./migrate init && ./migrate up && echo 'Running seed data...' && ./migrate seed && echo 'Migration and seeding completed successfully'"]
     restart: "no"
+    healthcheck:
+      test: ["CMD", "echo", "Migration service health check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   auth-service:
     build: .

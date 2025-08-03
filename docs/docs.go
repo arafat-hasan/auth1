@@ -24,7 +24,7 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/api/v1/auth/2fa/disable": {
+        "/auth/2fa/disable": {
             "post": {
                 "security": [
                     {
@@ -67,7 +67,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/2fa/setup": {
+        "/auth/2fa/setup": {
             "post": {
                 "security": [
                     {
@@ -104,7 +104,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/2fa/verify": {
+        "/auth/2fa/verify": {
             "post": {
                 "description": "Verify two-factor authentication code",
                 "consumes": [
@@ -156,7 +156,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/login": {
+        "/auth/login": {
             "post": {
                 "description": "Authenticate user with email and password",
                 "consumes": [
@@ -208,7 +208,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/logout": {
+        "/auth/logout": {
             "post": {
                 "description": "Logout user and invalidate refresh token",
                 "consumes": [
@@ -254,7 +254,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/me": {
+        "/auth/me": {
             "get": {
                 "security": [
                     {
@@ -297,7 +297,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/public-key": {
+        "/auth/public-key": {
             "get": {
                 "description": "Get JWT public key for token verification",
                 "produces": [
@@ -317,7 +317,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/refresh": {
+        "/auth/refresh": {
             "post": {
                 "description": "Refresh access token using refresh token",
                 "consumes": [
@@ -369,7 +369,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/request-otp": {
+        "/auth/request-otp": {
             "post": {
                 "description": "Request OTP for login or signup verification",
                 "consumes": [
@@ -427,7 +427,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/signup": {
+        "/auth/signup": {
             "post": {
                 "description": "Register a new user account",
                 "consumes": [
@@ -479,7 +479,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/verify-login": {
+        "/auth/verify-login": {
             "post": {
                 "description": "Verify login with OTP",
                 "consumes": [
@@ -531,7 +531,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/auth/verify-signup": {
+        "/auth/verify-signup": {
             "post": {
                 "description": "Verify signup with OTP and complete user registration",
                 "consumes": [
@@ -617,7 +617,7 @@ const docTemplate = `{
                 },
                 "password": {
                     "type": "string",
-                    "example": "securePassword123"
+                    "example": "password123"
                 }
             }
         },
@@ -701,7 +701,7 @@ const docTemplate = `{
                 },
                 "password": {
                     "type": "string",
-                    "example": "securePassword123"
+                    "example": "password123"
                 },
                 "phone": {
                     "type": "string",

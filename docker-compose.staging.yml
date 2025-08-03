@@ -1,0 +1,47 @@
+# Staging override for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.staging.yml up
+
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-auth1_staging}
+      POSTGRES_USER: ${DATABASE_USER:-auth1_staging}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-staging_password}
+    volumes:
+      - postgres_data_staging:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    volumes:
+      - redis_data_staging:/data
+    restart: unless-stopped
+
+  migrations:
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${DATABASE_USER:-auth1_staging}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-staging_password}
+      DATABASE_NAME: ${DATABASE_NAME:-auth1_staging}
+      DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-disable}
+      APP_ENVIRONMENT: staging
+    # Staging includes seeding
+    command: ["sh", "-c", "set -e && echo 'Starting staging migrations...' && ./migrate init && ./migrate up && echo 'Running staging seed data...' && ./migrate seed && echo 'Staging migration and seeding completed successfully'"]
+
+  auth-service:
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${DATABASE_USER:-auth1_staging}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-staging_password}
+      DATABASE_NAME: ${DATABASE_NAME:-auth1_staging}
+      DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-disable}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      APP_ENVIRONMENT: staging
+      APP_LOG_LEVEL: ${LOG_LEVEL:-debug}
+    restart: unless-stopped
+
+volumes:
+  postgres_data_staging:
+  redis_data_staging:

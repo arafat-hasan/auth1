@@ -58,6 +58,7 @@ func main() {
 		createStatusCmd(),
 		createResetCmd(),
 		createCreateCmd(),
+		createSeedCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -245,4 +246,104 @@ func createCreateCmd() *cobra.Command {
 			logger.WithField("file", file.Path).Info("Created migration file")
 		},
 	}
+}
+
+func createSeedCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "seed",
+		Short: "Run environment-specific seed data",
+		Long:  "Run seed data for the current environment (development, staging, production)",
+		Run: func(cmd *cobra.Command, args []string) {
+			ctx := context.Background()
+			env := getEnvOrDefault("APP_ENVIRONMENT", "development")
+
+			logger.WithField("environment", env).Info("Running seed data")
+
+			switch env {
+			case "development", "dev":
+				if err := seedDevelopmentData(ctx, db); err != nil {
+					logger.Fatalf("Failed to seed development data: %v", err)
+				}
+				logger.Info("Development seed data completed")
+			case "staging":
+				if err := seedStagingData(ctx, db); err != nil {
+					logger.Fatalf("Failed to seed staging data: %v", err)
+				}
+				logger.Info("Staging seed data completed")
+			case "production", "prod":
+				logger.Info("No seed data for production environment")
+			default:
+				logger.Warnf("Unknown environment: %s, skipping seed data", env)
+			}
+		},
+	}
+}
+
+// seedDevelopmentData seeds data for development environment
+func seedDevelopmentData(ctx context.Context, db *bun.DB) error {
+	// Insert development admin user
+	_, err := db.NewInsert().
+		Model(&map[string]interface{}{
+			"email":         "admin@auth1.dev",
+			"name":          "Development Admin",
+			"password_hash": "$2a$10$L1TuDQTLOBPK0NsyRMSMS.sKiUO0tL7KiPZhmLORDpL1XdbDVCb9C", // password123
+			"is_verified":   true,
+		}).
+		Table("users").
+		On("CONFLICT (email) DO NOTHING").
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to seed development admin: %w", err)
+	}
+
+	// Insert test users
+	testUsers := []struct {
+		email string
+		name  string
+	}{
+		{"user1@auth1.dev", "Test User 1"},
+		{"user2@auth1.dev", "Test User 2"},
+		{"user3@auth1.dev", "Test User 3"},
+	}
+
+	for _, user := range testUsers {
+		_, err := db.NewInsert().
+			Model(&map[string]interface{}{
+				"email":         user.email,
+				"name":          user.name,
+				"password_hash": "$2a$10$L1TuDQTLOBPK0NsyRMSMS.sKiUO0tL7KiPZhmLORDpL1XdbDVCb9C", // password123
+				"is_verified":   false,
+			}).
+			Table("users").
+			On("CONFLICT (email) DO NOTHING").
+			Exec(ctx)
+
+		if err != nil {
+			return fmt.Errorf("failed to seed test user %s: %w", user.email, err)
+		}
+	}
+
+	return nil
+}
+
+// seedStagingData seeds data for staging environment
+func seedStagingData(ctx context.Context, db *bun.DB) error {
+	// Insert staging admin user
+	_, err := db.NewInsert().
+		Model(&map[string]interface{}{
+			"email":         "admin@staging.auth1.com",
+			"name":          "Staging Admin",
+			"password_hash": "$2a$10$L1TuDQTLOBPK0NsyRMSMS.sKiUO0tL7KiPZhmLORDpL1XdbDVCb9C", // password123
+			"is_verified":   true,
+		}).
+		Table("users").
+		On("CONFLICT (email) DO NOTHING").
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to seed staging admin: %w", err)
+	}
+
+	return nil
 }
