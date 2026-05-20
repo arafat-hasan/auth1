@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"auth1/internal/app/model/domain"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
 )
 
 // AuthService defines the interface for authentication business logic

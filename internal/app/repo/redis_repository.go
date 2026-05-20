@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
-	"auth1/internal/app/model/domain"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
 )
 
 type RedisRepository interface {

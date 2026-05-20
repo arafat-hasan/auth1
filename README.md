@@ -2,6 +2,8 @@
 
 A secure, extensible, and **platform-agnostic** authentication microservice written in Go. Use it for any platform: matrimony apps (Duitara), e-commerce, SaaS, social networks, and more!
 
+**Part of the Duitara Monorepo** - This service is integrated into the Duitara monorepo but remains platform-agnostic and can be deployed independently.
+
 ## ⚡ Quick Links
 
 - **[Quick Start Guide](./QUICK_START.md)** - Get running in 5 minutes
@@ -94,11 +96,17 @@ The service follows a clean, layered architecture:
 
 ### Setup
 
-1. **Clone the repository**:
+1. **Navigate to the auth service** (if using the monorepo):
 
    ```bash
+   cd services/auth-service
+   ```
+   
+   Or clone standalone:
+   
+   ```bash
    git clone <repository-url>
-   cd auth1
+   cd auth-service
    ```
 
 2. **Generate JWT keys**:
@@ -119,7 +127,7 @@ The service follows a clean, layered architecture:
 
    ```bash
    # Create PostgreSQL database
-   psql -U postgres -c "CREATE DATABASE auth1;"
+   psql -U postgres -c "CREATE DATABASE auth_service;"
    
    # Run migrations using the migration script
    ./scripts/migrate.sh init
@@ -292,7 +300,7 @@ For development environment, you can test with the pre-seeded admin user:
 curl -X POST http://localhost:8080/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "admin@auth1.dev",
+    "email": "admin@authservice.dev",
     "password": "admin123"
   }'
 ```
@@ -493,12 +501,12 @@ The system provides environment-specific seed data:
 
 **Development Environment:**
 
-- `admin@auth1.dev` (password: `admin123`) - Verified admin user
-- `user1@auth1.dev`, `user2@auth1.dev`, `user3@auth1.dev` - Test users
+- `admin@authservice.dev` (password: `admin123`) - Verified admin user
+- `user1@authservice.dev`, `user2@authservice.dev`, `user3@authservice.dev` - Test users
 
 **Staging Environment:**
 
-- `admin@staging.auth1.com` (password: `admin123`) - Staging admin
+- `admin@staging.authservice.com` (password: `admin123`) - Staging admin
 
 **Production Environment:**
 

@@ -22,20 +22,20 @@ import (
 	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/extra/bundebug"
 
-	_ "auth1/docs" // Import for swagger docs
-	v1 "auth1/internal/app/handler/v1"
-	chiMiddleware "auth1/internal/app/middleware"
-	"auth1/internal/app/model/api"
-	"auth1/internal/app/repo"
-	"auth1/internal/client/email"
-	"auth1/internal/config"
-	"auth1/internal/service"
-	"auth1/internal/utils"
+	_ "github.com/arafat-hasan/duitara/services/auth-service/docs" // Import for swagger docs
+	v1 "github.com/arafat-hasan/duitara/services/auth-service/internal/app/handler/v1"
+	chiMiddleware "github.com/arafat-hasan/duitara/services/auth-service/internal/app/middleware"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/api"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/repo"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/client/email"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/config"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/service"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
 )
 
-// @title auth1 API
-// @version 1.0
-// @description A secure authentication microservice with JWT, OTP, and 2FA support
+// @title Auth Service API
+// @version 2.0
+// @description A secure, platform-agnostic authentication microservice with JWT, OTP, and 2FA support
 // @termsOfService http://swagger.io/terms/
 
 // @contact.name API Support
@@ -69,7 +69,7 @@ func main() {
 	logger.SetLevel(level)
 	logger.SetFormatter(&logrus.JSONFormatter{})
 
-	logger.Info("Starting auth1 service")
+	logger.Info("Starting auth-service")
 
 	// Setup database
 	db, err := setupDatabase(cfg, logger)
@@ -232,8 +232,8 @@ func setupRouter(authService service.AuthService, jwtManager *utils.JWTManager, 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		render.JSON(w, r, &api.HealthResponse{
 			Status:  "healthy",
-			Service: "auth1",
-			Version: "1.0.0",
+			Service: "auth-service",
+			Version: "2.0.0",
 		})
 	})
 

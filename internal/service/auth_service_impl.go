@@ -8,10 +8,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
-	"auth1/internal/app/model/domain"
-	"auth1/internal/app/repo"
-	"auth1/internal/client/email"
-	"auth1/internal/utils"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/repo"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/client/email"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
 )
 
 // authServiceImpl implements the AuthService interface

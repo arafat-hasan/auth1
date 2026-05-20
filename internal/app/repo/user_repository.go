@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"auth1/internal/app/model/db"
-	"auth1/internal/app/model/domain"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/db"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
 )
 
 type UserRepository interface {

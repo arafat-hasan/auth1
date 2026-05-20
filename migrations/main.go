@@ -14,7 +14,7 @@ import (
 	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/migrate"
 
-	"auth1/internal/config"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/config"
 )
 
 var (
@@ -46,7 +46,7 @@ func main() {
 	// Setup CLI commands
 	rootCmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Database migration tool for auth1",
+		Short: "Database migration tool for auth-service",
 		Long:  "A robust database migration tool using Bun's migration system",
 	}
 
@@ -96,9 +96,9 @@ func loadMigrationConfig() (*config.Config, error) {
 	// Set database defaults
 	cfg.Database.Host = getEnvOrDefault("DATABASE_HOST", "localhost")
 	cfg.Database.Port = getEnvOrDefault("DATABASE_PORT", "5432")
-	cfg.Database.User = getEnvOrDefault("DATABASE_USER", "auth1")
+	cfg.Database.User = getEnvOrDefault("DATABASE_USER", "auth_service")
 	cfg.Database.Password = getEnvOrDefault("DATABASE_PASSWORD", "password")
-	cfg.Database.Name = getEnvOrDefault("DATABASE_NAME", "auth1")
+	cfg.Database.Name = getEnvOrDefault("DATABASE_NAME", "auth_service")
 	cfg.Database.SSLMode = getEnvOrDefault("DATABASE_SSL_MODE", "disable")
 
 	return cfg, nil
@@ -284,7 +284,7 @@ func seedDevelopmentData(ctx context.Context, db *bun.DB) error {
 	// Insert development admin user
 	_, err := db.NewInsert().
 		Model(&map[string]interface{}{
-			"email":         "admin@auth1.dev",
+			"email":         "admin@authservice.dev",
 			"name":          "Development Admin",
 			"password_hash": "$2a$10$L1TuDQTLOBPK0NsyRMSMS.sKiUO0tL7KiPZhmLORDpL1XdbDVCb9C", // password123
 			"is_verified":   true,
@@ -302,9 +302,9 @@ func seedDevelopmentData(ctx context.Context, db *bun.DB) error {
 		email string
 		name  string
 	}{
-		{"user1@auth1.dev", "Test User 1"},
-		{"user2@auth1.dev", "Test User 2"},
-		{"user3@auth1.dev", "Test User 3"},
+		{"user1@authservice.dev", "Test User 1"},
+		{"user2@authservice.dev", "Test User 2"},
+		{"user3@authservice.dev", "Test User 3"},
 	}
 
 	for _, user := range testUsers {
@@ -332,7 +332,7 @@ func seedStagingData(ctx context.Context, db *bun.DB) error {
 	// Insert staging admin user
 	_, err := db.NewInsert().
 		Model(&map[string]interface{}{
-			"email":         "admin@staging.auth1.com",
+			"email":         "admin@staging.authservice.com",
 			"name":          "Staging Admin",
 			"password_hash": "$2a$10$L1TuDQTLOBPK0NsyRMSMS.sKiUO0tL7KiPZhmLORDpL1XdbDVCb9C", // password123
 			"is_verified":   true,

@@ -1,4 +1,4 @@
-module auth1
+module github.com/arafat-hasan/duitara/services/auth-service
 
 go 1.23.0
 

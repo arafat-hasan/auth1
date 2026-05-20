@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
-	"auth1/internal/app/model/api"
-	"auth1/internal/utils"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/api"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
 )
 
 type AuthMiddleware struct {
