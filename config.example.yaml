@@ -1,5 +1,6 @@
-# Example configuration for auth1 service
+# Example configuration for auth-service
 # Copy this file to config.yaml and adjust values as needed
+# This service is platform-agnostic and can be used for any application
 
 server:
   host: "0.0.0.0"
@@ -8,9 +9,9 @@ server:
 database:
   host: "localhost"
   port: "5432"
-  user: "auth1"
+  user: "auth_service"
   password: "password"
-  name: "auth1"
+  name: "auth_service"
   ssl_mode: "disable"
 
 redis:
@@ -30,9 +31,35 @@ email:
   timeout: 30
   retry_count: 3
 
+sms:
+  service_url: ""            # Set to enable SMS-based authentication
+  timeout: 30
+  retry_count: 3
+  provider: ""               # twilio, nexmo, etc.
+
+security:
+  max_login_attempts: 5
+  lockout_duration_minutes: 30
+  password_min_length: 8
+  password_require_upper: true
+  password_require_lower: true
+  password_require_number: true
+  password_require_special: false
+  password_reset_ttl: 60     # 60 minutes
+
 app:
-  name: "auth1"
+  name: "auth-service"
   environment: "development"  # development, staging, production
   log_level: "info"          # debug, info, warn, error
   otp_length: 6
-  otp_ttl: 300               # 5 minutes 
+  otp_ttl: 300               # 5 minutes
+  
+  # Feature flags - enable/disable authentication methods
+  enable_email_auth: true
+  enable_phone_auth: false
+  enable_password_auth: true
+  enable_otp_auth: true
+  enable_2fa: true
+  enable_audit_log: true
+  require_email_verification: true
+  require_phone_verification: false 

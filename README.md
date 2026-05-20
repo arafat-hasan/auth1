@@ -1,20 +1,65 @@
-# auth1 - Authentication Microservice
+# Authentication Microservice - Platform-Agnostic
 
-A secure and extensible authentication microservice written in Go, providing JWT-based authentication with email/phone signup, OTP verification, and TOTP-based 2FA.
+A secure, extensible, and **platform-agnostic** authentication microservice written in Go. Use it for any platform: matrimony apps (Duitara), e-commerce, SaaS, social networks, and more!
 
-## Features
+## ⚡ Quick Links
 
-- **User Authentication**: Email/phone-based signup with password or OTP-based login
-- **JWT Tokens**: RS256 signed access and refresh tokens
-- **Two-Factor Authentication**: TOTP-based 2FA support
-- **OTP Verification**: Email-based OTP for signup and login verification
-- **Redis Integration**: For temporary authentication state (OTP, tokens, pending users)
-- **PostgreSQL**: For persistent user data storage
-- **External Email Service**: HTTP-based email service integration
-- **Clean Architecture**: Layered design with separation of concerns
-- **Comprehensive Logging**: Structured logging with Logrus
-- **Health Checks**: Built-in health check endpoints
-- **Docker Support**: Ready for containerized deployment
+- **[Quick Start Guide](./QUICK_START.md)** - Get running in 5 minutes
+- **[Platform-Agnostic Guide](./PLATFORM_AGNOSTIC_GUIDE.md)** - Complete documentation
+- **[Changes Summary](./CHANGES_SUMMARY.md)** - What's new in v2.0
+
+## 🎯 What's New in v2.0
+
+✅ **Platform-Agnostic Design** - Use for any application  
+✅ **Phone Authentication** - SMS OTP support  
+✅ **Role-Based Access Control** - Flexible RBAC system  
+✅ **User Metadata** - Store platform-specific data  
+✅ **Account Locking** - Automatic security lockout  
+✅ **Password Reset** - Email/SMS password recovery  
+✅ **Audit Logging** - Complete security trail  
+✅ **Soft Delete** - GDPR compliance  
+✅ **Enhanced Security** - Production-ready features
+
+## 🚀 Features
+
+### Authentication Methods
+- ✅ **Email + Password** - Traditional authentication
+- ✅ **Phone + Password** - Phone-based authentication
+- ✅ **Email OTP** - Passwordless email login
+- ✅ **SMS OTP** - Passwordless phone login
+- ✅ **2FA/TOTP** - Time-based 2-factor authentication
+- ✅ **Password Reset** - Email/SMS recovery
+
+### Security
+- ✅ **JWT RS256** - Asymmetric key signing
+- ✅ **Account Locking** - Automatic lockout after failed attempts
+- ✅ **Password Policy** - Customizable requirements
+- ✅ **Audit Logging** - Complete security trail
+- ✅ **Session Management** - Multi-device tracking
+- ✅ **IP & User Agent** - Tracking and fraud prevention
+- ✅ **Refresh Token Rotation** - Enhanced token security
+
+### User Management
+- ✅ **Role-Based Access Control (RBAC)** - Flexible permission system
+- ✅ **User Metadata** - Platform-specific data storage (JSONB)
+- ✅ **Soft Delete** - GDPR compliance
+- ✅ **Account Status** - Active/inactive/locked states
+- ✅ **Email/Phone Verification** - Separate verification tracking
+
+### Platform Features
+- ✅ **Platform-Agnostic** - Use for any application
+- ✅ **Feature Flags** - Enable/disable authentication methods
+- ✅ **Custom Roles** - Create platform-specific roles
+- ✅ **Extensible** - Easy to add new features
+- ✅ **Production Ready** - Battle-tested architecture
+
+### Technical
+- ✅ **PostgreSQL** - Persistent storage with advanced features
+- ✅ **Redis** - Fast temporary state management
+- ✅ **Clean Architecture** - Layered design with DI
+- ✅ **Comprehensive Logging** - Structured JSON logs
+- ✅ **Docker Support** - Production-ready containers
+- ✅ **Health Checks** - Built-in monitoring endpoints
 
 ## Architecture
 

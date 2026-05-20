@@ -14,18 +14,55 @@ import (
 )
 
 type UserRepository interface {
+	// Basic CRUD
 	Create(ctx context.Context, user *domain.User) error
 	GetByEmail(ctx context.Context, email string) (*domain.User, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
 	GetByPhone(ctx context.Context, phone string) (*domain.User, error)
 	Update(ctx context.Context, user *domain.User) error
-	UpdateLastLogin(ctx context.Context, userID uuid.UUID) error
+	SoftDelete(ctx context.Context, userID uuid.UUID) error
+	
+	// Authentication tracking
+	UpdateLastLogin(ctx context.Context, userID uuid.UUID, ipAddress, userAgent *string) error
+	IncrementFailedLoginAttempts(ctx context.Context, userID uuid.UUID) error
+	ResetFailedLoginAttempts(ctx context.Context, userID uuid.UUID) error
+	LockAccount(ctx context.Context, userID uuid.UUID, lockUntil time.Time) error
+	UnlockAccount(ctx context.Context, userID uuid.UUID) error
+	
+	// Password management
 	UpdatePassword(ctx context.Context, userID uuid.UUID, passwordHash string) error
+	SetPasswordResetTimestamp(ctx context.Context, userID uuid.UUID) error
+	SetMustChangePassword(ctx context.Context, userID uuid.UUID, mustChange bool) error
+	
+	// 2FA management
 	Enable2FA(ctx context.Context, userID uuid.UUID, totpSecret string) error
 	Disable2FA(ctx context.Context, userID uuid.UUID) error
+	
+	// Verification
+	SetEmailVerified(ctx context.Context, userID uuid.UUID) error
+	SetPhoneVerified(ctx context.Context, userID uuid.UUID) error
 	SetVerified(ctx context.Context, userID uuid.UUID) error
+	
+	// Account status
+	SetActiveStatus(ctx context.Context, userID uuid.UUID, isActive bool) error
+	
+	// Role management
+	UpdateRole(ctx context.Context, userID uuid.UUID, role string) error
+	
+	// Metadata management
+	UpdateMetadata(ctx context.Context, userID uuid.UUID, metadata map[string]interface{}) error
+	
+	// Existence checks
 	EmailExists(ctx context.Context, email string) (bool, error)
 	PhoneExists(ctx context.Context, phone string) (bool, error)
+	
+	// Password reset tokens
+	CreatePasswordResetToken(ctx context.Context, token *db.PasswordResetToken) error
+	GetPasswordResetToken(ctx context.Context, tokenHash string) (*db.PasswordResetToken, error)
+	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID uuid.UUID) error
+	
+	// Audit logging
+	CreateAuditLog(ctx context.Context, log *db.AuditLog) error
 }
 
 type userRepository struct {
@@ -37,18 +74,31 @@ func NewUserRepository(db *bun.DB) UserRepository {
 }
 
 func (r *userRepository) Create(ctx context.Context, user *domain.User) error {
+	now := time.Now()
 	dbUser := &db.User{
-		ID:           user.ID,
-		Email:        user.Email,
-		Name:         user.Name,
-		Phone:        user.Phone,
-		PasswordHash: user.PasswordHash,
-		IsVerified:   user.IsVerified,
-		Is2FAEnabled: user.Is2FAEnabled,
-		TOTPSecret:   user.TOTPSecret,
-		LastLoginAt:  user.LastLoginAt,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		ID:                  user.ID,
+		Email:               user.Email,
+		Name:                user.Name,
+		Phone:               user.Phone,
+		PasswordHash:        user.PasswordHash,
+		IsVerified:          user.IsVerified,
+		IsActive:            user.IsActive,
+		EmailVerifiedAt:     user.EmailVerifiedAt,
+		PhoneVerifiedAt:     user.PhoneVerifiedAt,
+		Is2FAEnabled:        user.Is2FAEnabled,
+		TOTPSecret:          user.TOTPSecret,
+		FailedLoginAttempts: user.FailedLoginAttempts,
+		LockedUntil:         user.LockedUntil,
+		PasswordChangedAt:   user.PasswordChangedAt,
+		MustChangePassword:  user.MustChangePassword,
+		LastPasswordResetAt: user.LastPasswordResetAt,
+		Role:                user.Role,
+		Metadata:            db.Metadata(user.Metadata),
+		LastLoginAt:         user.LastLoginAt,
+		IPAddress:           user.IPAddress,
+		UserAgent:           user.UserAgent,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 
 	_, err := r.db.NewInsert().Model(dbUser).Exec(ctx)
@@ -64,7 +114,10 @@ func (r *userRepository) Create(ctx context.Context, user *domain.User) error {
 
 func (r *userRepository) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
 	dbUser := &db.User{}
-	err := r.db.NewSelect().Model(dbUser).Where("email = ?", email).Scan(ctx)
+	err := r.db.NewSelect().Model(dbUser).
+		Where("email = ?", email).
+		Where("deleted_at IS NULL").
+		Scan(ctx)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -77,7 +130,10 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*domain.
 
 func (r *userRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
 	dbUser := &db.User{}
-	err := r.db.NewSelect().Model(dbUser).Where("id = ?", id).Scan(ctx)
+	err := r.db.NewSelect().Model(dbUser).
+		Where("id = ?", id).
+		Where("deleted_at IS NULL").
+		Scan(ctx)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -90,7 +146,10 @@ func (r *userRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Use
 
 func (r *userRepository) GetByPhone(ctx context.Context, phone string) (*domain.User, error) {
 	dbUser := &db.User{}
-	err := r.db.NewSelect().Model(dbUser).Where("phone = ?", phone).Scan(ctx)
+	err := r.db.NewSelect().Model(dbUser).
+		Where("phone = ?", phone).
+		Where("deleted_at IS NULL").
+		Scan(ctx)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -124,11 +183,11 @@ func (r *userRepository) Update(ctx context.Context, user *domain.User) error {
 	return nil
 }
 
-func (r *userRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID) error {
+func (r *userRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID, ipAddress, userAgent *string) error {
 	now := time.Now()
 	_, err := r.db.NewUpdate().
 		Model((*db.User)(nil)).
-		Set("last_login_at = ?, updated_at = ?", now, now).
+		Set("last_login_at = ?, ip_address = ?, user_agent = ?, updated_at = ?", now, ipAddress, userAgent, now).
 		Where("id = ?", userID).
 		Exec(ctx)
 
@@ -139,11 +198,111 @@ func (r *userRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID) 
 	return nil
 }
 
+func (r *userRepository) IncrementFailedLoginAttempts(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("failed_login_attempts = failed_login_attempts + 1, updated_at = ?", time.Now()).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to increment failed login attempts: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) ResetFailedLoginAttempts(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("failed_login_attempts = 0, updated_at = ?", time.Now()).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to reset failed login attempts: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) LockAccount(ctx context.Context, userID uuid.UUID, lockUntil time.Time) error {
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("locked_until = ?, updated_at = ?", lockUntil, time.Now()).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to lock account: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) UnlockAccount(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("locked_until = NULL, failed_login_attempts = 0, updated_at = ?", time.Now()).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to unlock account: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) SoftDelete(ctx context.Context, userID uuid.UUID) error {
+	now := time.Now()
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("deleted_at = ?, is_active = ?, updated_at = ?", now, false, now).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to soft delete user: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) SetPasswordResetTimestamp(ctx context.Context, userID uuid.UUID) error {
+	now := time.Now()
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("last_password_reset_at = ?, updated_at = ?", now, now).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to set password reset timestamp: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) SetMustChangePassword(ctx context.Context, userID uuid.UUID, mustChange bool) error {
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("must_change_password = ?, updated_at = ?", mustChange, time.Now()).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to set must change password: %w", err)
+	}
+
+	return nil
+}
+
 func (r *userRepository) UpdatePassword(ctx context.Context, userID uuid.UUID, passwordHash string) error {
 	now := time.Now()
 	_, err := r.db.NewUpdate().
 		Model((*db.User)(nil)).
-		Set("password_hash = ?, updated_at = ?", passwordHash, now).
+		Set("password_hash = ?, password_changed_at = ?, must_change_password = ?, updated_at = ?", passwordHash, now, false, now).
 		Where("id = ?", userID).
 		Exec(ctx)
 
@@ -188,7 +347,7 @@ func (r *userRepository) SetVerified(ctx context.Context, userID uuid.UUID) erro
 	now := time.Now()
 	_, err := r.db.NewUpdate().
 		Model((*db.User)(nil)).
-		Set("is_verified = ?, updated_at = ?", true, now).
+		Set("is_verified = ?, email_verified_at = ?, updated_at = ?", true, now, now).
 		Where("id = ?", userID).
 		Exec(ctx)
 
@@ -196,6 +355,127 @@ func (r *userRepository) SetVerified(ctx context.Context, userID uuid.UUID) erro
 		return fmt.Errorf("failed to set user verified: %w", err)
 	}
 
+	return nil
+}
+
+func (r *userRepository) SetEmailVerified(ctx context.Context, userID uuid.UUID) error {
+	now := time.Now()
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("is_verified = ?, email_verified_at = ?, updated_at = ?", true, now, now).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to set email verified: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) SetPhoneVerified(ctx context.Context, userID uuid.UUID) error {
+	now := time.Now()
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("phone_verified_at = ?, updated_at = ?", now, now).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to set phone verified: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) SetActiveStatus(ctx context.Context, userID uuid.UUID, isActive bool) error {
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("is_active = ?, updated_at = ?", isActive, time.Now()).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to set active status: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) UpdateRole(ctx context.Context, userID uuid.UUID, role string) error {
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("role = ?, updated_at = ?", role, time.Now()).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to update role: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) UpdateMetadata(ctx context.Context, userID uuid.UUID, metadata map[string]interface{}) error {
+	_, err := r.db.NewUpdate().
+		Model((*db.User)(nil)).
+		Set("metadata = ?, updated_at = ?", db.Metadata(metadata), time.Now()).
+		Where("id = ?", userID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to update metadata: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) CreatePasswordResetToken(ctx context.Context, token *db.PasswordResetToken) error {
+	_, err := r.db.NewInsert().Model(token).Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create password reset token: %w", err)
+	}
+	return nil
+}
+
+func (r *userRepository) GetPasswordResetToken(ctx context.Context, tokenHash string) (*db.PasswordResetToken, error) {
+	token := &db.PasswordResetToken{}
+	err := r.db.NewSelect().Model(token).
+		Where("token_hash = ?", tokenHash).
+		Where("used_at IS NULL").
+		Where("expires_at > ?", time.Now()).
+		Scan(ctx)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get password reset token: %w", err)
+	}
+
+	return token, nil
+}
+
+func (r *userRepository) MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID uuid.UUID) error {
+	now := time.Now()
+	_, err := r.db.NewUpdate().
+		Model((*db.PasswordResetToken)(nil)).
+		Set("used_at = ?", now).
+		Where("id = ?", tokenID).
+		Exec(ctx)
+
+	if err != nil {
+		return fmt.Errorf("failed to mark password reset token as used: %w", err)
+	}
+
+	return nil
+}
+
+func (r *userRepository) CreateAuditLog(ctx context.Context, log *db.AuditLog) error {
+	_, err := r.db.NewInsert().Model(log).Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create audit log: %w", err)
+	}
 	return nil
 }
 
@@ -227,16 +507,29 @@ func (r *userRepository) PhoneExists(ctx context.Context, phone string) (bool, e
 
 func (r *userRepository) toDomainUser(dbUser *db.User) *domain.User {
 	return &domain.User{
-		ID:           dbUser.ID,
-		Email:        dbUser.Email,
-		Name:         dbUser.Name,
-		Phone:        dbUser.Phone,
-		PasswordHash: dbUser.PasswordHash,
-		IsVerified:   dbUser.IsVerified,
-		Is2FAEnabled: dbUser.Is2FAEnabled,
-		TOTPSecret:   dbUser.TOTPSecret,
-		LastLoginAt:  dbUser.LastLoginAt,
-		CreatedAt:    dbUser.CreatedAt,
-		UpdatedAt:    dbUser.UpdatedAt,
+		ID:                  dbUser.ID,
+		Email:               dbUser.Email,
+		Name:                dbUser.Name,
+		Phone:               dbUser.Phone,
+		PasswordHash:        dbUser.PasswordHash,
+		IsVerified:          dbUser.IsVerified,
+		IsActive:            dbUser.IsActive,
+		EmailVerifiedAt:     dbUser.EmailVerifiedAt,
+		PhoneVerifiedAt:     dbUser.PhoneVerifiedAt,
+		DeletedAt:           dbUser.DeletedAt,
+		Is2FAEnabled:        dbUser.Is2FAEnabled,
+		TOTPSecret:          dbUser.TOTPSecret,
+		FailedLoginAttempts: dbUser.FailedLoginAttempts,
+		LockedUntil:         dbUser.LockedUntil,
+		PasswordChangedAt:   dbUser.PasswordChangedAt,
+		MustChangePassword:  dbUser.MustChangePassword,
+		LastPasswordResetAt: dbUser.LastPasswordResetAt,
+		Role:                dbUser.Role,
+		Metadata:            map[string]interface{}(dbUser.Metadata),
+		LastLoginAt:         dbUser.LastLoginAt,
+		IPAddress:           dbUser.IPAddress,
+		UserAgent:           dbUser.UserAgent,
+		CreatedAt:           dbUser.CreatedAt,
+		UpdatedAt:           dbUser.UpdatedAt,
 	}
 }
