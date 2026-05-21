@@ -1,8 +1,8 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "A secure authentication microservice with JWT, OTP, and 2FA support",
-        "title": "auth1 API",
+        "description": "Type \"Bearer\" followed by a space and JWT token.",
+        "title": "Auth Service API",
         "termsOfService": "http://swagger.io/terms/",
         "contact": {
             "name": "API Support",
@@ -13,7 +13,7 @@
             "name": "MIT",
             "url": "https://opensource.org/licenses/MIT"
         },
-        "version": "1.0"
+        "version": "2.0"
     },
     "host": "localhost:8080",
     "basePath": "/api/v1",
@@ -152,7 +152,7 @@
         },
         "/auth/login": {
             "post": {
-                "description": "Authenticate user with email and password",
+                "description": "Authenticate user with email and password. Returns TokenResponse on success, or TwoFactorChallengeResponse when the account has 2FA enabled.",
                 "consumes": [
                     "application/json"
                 ],
@@ -176,7 +176,13 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "Successful login (no 2FA)",
+                        "schema": {
+                            "$ref": "#/definitions/api.TokenResponse"
+                        }
+                    },
+                    "202": {
+                        "description": "2FA required — proceed to POST /auth/2fa/verify",
                         "schema": {
                             "$ref": "#/definitions/api.TwoFactorChallengeResponse"
                         }
@@ -576,6 +582,26 @@
                     }
                 }
             }
+        },
+        "/health": {
+            "get": {
+                "description": "Returns the health status of the auth service",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system"
+                ],
+                "summary": "Health check",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.HealthResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -597,6 +623,24 @@
                 }
             }
         },
+        "api.HealthResponse": {
+            "description": "Health check response",
+            "type": "object",
+            "properties": {
+                "service": {
+                    "type": "string",
+                    "example": "auth1"
+                },
+                "status": {
+                    "type": "string",
+                    "example": "healthy"
+                },
+                "version": {
+                    "type": "string",
+                    "example": "1.0.0"
+                }
+            }
+        },
         "api.LoginRequest": {
             "description": "User login request",
             "type": "object",
@@ -611,7 +655,7 @@
                 },
                 "password": {
                     "type": "string",
-                    "example": "password123"
+                    "example": "securePassword123"
                 }
             }
         },
@@ -695,7 +739,7 @@
                 },
                 "password": {
                     "type": "string",
-                    "example": "password123"
+                    "example": "securePassword123"
                 },
                 "phone": {
                     "type": "string",
@@ -854,7 +898,6 @@
     },
     "securityDefinitions": {
         "BearerAuth": {
-            "description": "Type \"Bearer\" followed by a space and JWT token.",
             "type": "apiKey",
             "name": "Authorization",
             "in": "header"

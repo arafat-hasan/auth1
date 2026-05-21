@@ -13,6 +13,19 @@ definitions:
         example: false
         type: boolean
     type: object
+  api.HealthResponse:
+    description: Health check response
+    properties:
+      service:
+        example: auth1
+        type: string
+      status:
+        example: healthy
+        type: string
+      version:
+        example: 1.0.0
+        type: string
+    type: object
   api.LoginRequest:
     description: User login request
     properties:
@@ -20,7 +33,7 @@ definitions:
         example: user@example.com
         type: string
       password:
-        example: password123
+        example: securePassword123
         type: string
     required:
     - email
@@ -82,7 +95,7 @@ definitions:
         example: John Doe
         type: string
       password:
-        example: password123
+        example: securePassword123
         type: string
       phone:
         example: "+1234567890"
@@ -204,13 +217,13 @@ info:
     email: support@swagger.io
     name: API Support
     url: http://www.swagger.io/support
-  description: A secure authentication microservice with JWT, OTP, and 2FA support
+  description: Type "Bearer" followed by a space and JWT token.
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
   termsOfService: http://swagger.io/terms/
-  title: auth1 API
-  version: "1.0"
+  title: Auth Service API
+  version: "2.0"
 paths:
   /auth/2fa/disable:
     post:
@@ -300,7 +313,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Authenticate user with email and password
+      description: Authenticate user with email and password. Returns TokenResponse
+        on success, or TwoFactorChallengeResponse when the account has 2FA enabled.
       parameters:
       - description: Login request
         in: body
@@ -312,7 +326,11 @@ paths:
       - application/json
       responses:
         "200":
-          description: OK
+          description: Successful login (no 2FA)
+          schema:
+            $ref: '#/definitions/api.TokenResponse'
+        "202":
+          description: 2FA required — proceed to POST /auth/2fa/verify
           schema:
             $ref: '#/definitions/api.TwoFactorChallengeResponse'
         "400":
@@ -574,9 +592,21 @@ paths:
       summary: Verify signup
       tags:
       - auth
+  /health:
+    get:
+      description: Returns the health status of the auth service
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.HealthResponse'
+      summary: Health check
+      tags:
+      - system
 securityDefinitions:
   BearerAuth:
-    description: Type "Bearer" followed by a space and JWT token.
     in: header
     name: Authorization
     type: apiKey

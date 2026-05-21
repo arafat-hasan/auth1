@@ -26,10 +26,12 @@ jwt:
   access_token_ttl: 900      # 15 minutes
   refresh_token_ttl: 604800  # 7 days
 
-email:
-  service_url: "http://localhost:8081"
-  timeout: 30
-  retry_count: 3
+amqp:
+  url: "amqp://duitara:password@localhost:5672/"
+  exchange: "duitara.events"
+  outbox_poll_secs: 5    # how often the relay polls for pending rows (seconds)
+  max_attempts: 5        # max publish attempts before marking a row as failed
+  batch_size: 10         # rows processed per poll cycle
 
 sms:
   service_url: ""            # Set to enable SMS-based authentication

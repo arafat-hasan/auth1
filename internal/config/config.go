@@ -16,7 +16,7 @@ type Config struct {
 	Database DatabaseConfig `mapstructure:"database"`
 	Redis    RedisConfig    `mapstructure:"redis"`
 	JWT      JWTConfig      `mapstructure:"jwt"`
-	Email    EmailConfig    `mapstructure:"email"`
+	AMQP     AMQPConfig     `mapstructure:"amqp"`
 	SMS      SMSConfig      `mapstructure:"sms"`
 	Security SecurityConfig `mapstructure:"security"`
 	App      AppConfig      `mapstructure:"app"`
@@ -53,10 +53,12 @@ type JWTConfig struct {
 	PublicKeyPEM    string
 }
 
-type EmailConfig struct {
-	ServiceURL string `mapstructure:"service_url"`
-	Timeout    int    `mapstructure:"timeout"`
-	RetryCount int    `mapstructure:"retry_count"`
+type AMQPConfig struct {
+	URL            string `mapstructure:"url"`
+	Exchange       string `mapstructure:"exchange"`
+	OutboxPollSecs int    `mapstructure:"outbox_poll_secs"`
+	MaxAttempts    int    `mapstructure:"max_attempts"`
+	BatchSize      int    `mapstructure:"batch_size"`
 }
 
 type SMSConfig struct {
@@ -150,9 +152,11 @@ func setDefaults() {
 	viper.SetDefault("jwt.access_token_ttl", 900)     // 15 minutes
 	viper.SetDefault("jwt.refresh_token_ttl", 604800) // 7 days
 
-	viper.SetDefault("email.service_url", "http://localhost:8081")
-	viper.SetDefault("email.timeout", 30)
-	viper.SetDefault("email.retry_count", 3)
+	viper.SetDefault("amqp.url", "amqp://duitara:password@localhost:5672/")
+	viper.SetDefault("amqp.exchange", "duitara.events")
+	viper.SetDefault("amqp.outbox_poll_secs", 5)
+	viper.SetDefault("amqp.max_attempts", 5)
+	viper.SetDefault("amqp.batch_size", 10)
 
 	viper.SetDefault("sms.service_url", "")
 	viper.SetDefault("sms.timeout", 30)

@@ -12,7 +12,7 @@ import (
 
 	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/db"
 	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/client/email"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/publisher"
 	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
 )
 
@@ -63,19 +63,22 @@ func (s *authServiceImpl) RequestPasswordReset(ctx context.Context, req *Passwor
 	}
 
 	if user.Email != "" {
-		if err = s.emailClient.SendEmail(ctx, &email.EmailRequest{
-			To:       user.Email,
-			Subject:  "Password Reset Request",
-			Template: "password_reset",
+		event := &publisher.EmailEvent{
+			RoutingKey: publisher.RoutingKeyEmailPasswordReset,
+			EventType:  "password_reset",
+			To:         user.Email,
+			Subject:    "Password Reset Request",
+			Template:   "password_reset",
 			Variables: map[string]string{
 				"name":  user.Name,
 				"token": rawToken,
 			},
-		}); err != nil {
+		}
+		if err = s.emailPublisher.Enqueue(ctx, event); err != nil {
 			s.logger.WithFields(logrus.Fields{
 				"user_id": user.ID,
 				"error":   err.Error(),
-			}).Error("Failed to send password reset email")
+			}).Error("Failed to enqueue password reset email")
 		}
 	}
 

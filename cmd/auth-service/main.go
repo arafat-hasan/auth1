@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,244 +11,177 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/render"
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
-	httpSwagger "github.com/swaggo/http-swagger"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/extra/bundebug"
 
-	_ "github.com/arafat-hasan/duitara/services/auth-service/docs" // Import for swagger docs
 	v1 "github.com/arafat-hasan/duitara/services/auth-service/internal/app/handler/v1"
-	chiMiddleware "github.com/arafat-hasan/duitara/services/auth-service/internal/app/middleware"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/api"
+	appMiddleware "github.com/arafat-hasan/duitara/services/auth-service/internal/app/middleware"
 	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/repo"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/client/email"
 	"github.com/arafat-hasan/duitara/services/auth-service/internal/config"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/publisher"
 	"github.com/arafat-hasan/duitara/services/auth-service/internal/service"
 	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
+	"github.com/arafat-hasan/duitara/services/auth-service/internal/worker"
 )
 
-// @title Auth Service API
-// @version 2.0
-// @description A secure, platform-agnostic authentication microservice with JWT, OTP, and 2FA support
-// @termsOfService http://swagger.io/terms/
-
-// @contact.name API Support
-// @contact.url http://www.swagger.io/support
-// @contact.email support@swagger.io
-
-// @license.name MIT
-// @license.url https://opensource.org/licenses/MIT
-
-// @host localhost:8080
-// @BasePath /api/v1
-
-// @securityDefinitions.apikey BearerAuth
-// @in header
-// @name Authorization
-// @description Type "Bearer" followed by a space and JWT token.
-
 func main() {
-	// Load configuration
+	logger := logrus.New()
+	logger.SetFormatter(&logrus.JSONFormatter{})
+
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.WithError(err).Fatal("failed to load config")
 	}
 
-	// Setup logger
-	logger := logrus.New()
 	level, err := logrus.ParseLevel(cfg.App.LogLevel)
 	if err != nil {
 		level = logrus.InfoLevel
 	}
 	logger.SetLevel(level)
-	logger.SetFormatter(&logrus.JSONFormatter{})
 
-	logger.Info("Starting auth-service")
-
-	// Setup database
-	db, err := setupDatabase(cfg, logger)
-	if err != nil {
-		logger.Fatalf("Failed to setup database: %v", err)
+	// ── Database ──────────────────────────────────────────────────────────────
+	dsn := fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		cfg.Database.User, cfg.Database.Password,
+		cfg.Database.Host, cfg.Database.Port,
+		cfg.Database.Name, cfg.Database.SSLMode,
+	)
+	sqlDB := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
+	db := bun.NewDB(sqlDB, pgdialect.New())
+	if cfg.App.LogLevel == "debug" {
+		db.AddQueryHook(bundebug.NewQueryHook(bundebug.WithVerbose(true)))
 	}
+
+	if err = db.PingContext(context.Background()); err != nil {
+		logger.WithError(err).Fatal("failed to connect to database")
+	}
+	logger.Info("Database connected successfully")
 	defer db.Close()
 
-	// Setup Redis
-	redisClient, err := setupRedis(cfg, logger)
-	if err != nil {
-		logger.Fatalf("Failed to setup Redis: %v", err)
+	// ── Redis ─────────────────────────────────────────────────────────────────
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     fmt.Sprintf("%s:%s", cfg.Redis.Host, cfg.Redis.Port),
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+	})
+	if err = redisClient.Ping(context.Background()).Err(); err != nil {
+		logger.WithError(err).Fatal("failed to connect to Redis")
 	}
+	logger.Info("Redis connected successfully")
 	defer redisClient.Close()
 
-	// Setup dependencies
+	// ── Repositories ──────────────────────────────────────────────────────────
 	userRepo := repo.NewUserRepository(db)
 	redisRepo := repo.NewRedisRepository(redisClient)
+	outboxRepo := repo.NewOutboxRepository(db)
 
-	emailClient := email.NewClient(
-		cfg.Email.ServiceURL,
-		time.Duration(cfg.Email.Timeout)*time.Second,
-		cfg.Email.RetryCount,
-		logger,
-	)
+	// ── Email publisher (outbox writer) ───────────────────────────────────────
+	var emailPub publisher.EmailPublisher = publisher.NewOutboxWriter(db)
 
+	// ── Utilities ─────────────────────────────────────────────────────────────
 	jwtManager := utils.NewJWTManager(
-		cfg.JWT.PrivateKey,
-		cfg.JWT.PublicKey,
-		cfg.JWT.AccessTokenTTL,
-		cfg.JWT.RefreshTokenTTL,
+		cfg.JWT.PrivateKey, cfg.JWT.PublicKey,
+		cfg.JWT.AccessTokenTTL, cfg.JWT.RefreshTokenTTL,
 	)
-
 	totpManager := utils.NewTOTPManager(cfg.App.Name)
 
-	// Create service
-	serviceConfig := &service.Config{
-		OTPLength:       cfg.App.OTPLength,
-		OTPTTL:          time.Duration(cfg.App.OTPTTL) * time.Second,
-		PendingUserTTL:  10 * time.Minute,
-		RefreshTokenTTL: time.Duration(cfg.JWT.RefreshTokenTTL) * time.Second,
-		TOTPSecretTTL:   5 * time.Minute,
-		PublicKeyPEM:    cfg.JWT.PublicKeyPEM,
+	// ── Service ───────────────────────────────────────────────────────────────
+	svcConfig := &service.Config{
+		OTPLength:                cfg.App.OTPLength,
+		OTPTTL:                   time.Duration(cfg.App.OTPTTL) * time.Second,
+		PendingUserTTL:           10 * time.Minute,
+		RefreshTokenTTL:          time.Duration(cfg.JWT.RefreshTokenTTL) * time.Second,
+		TOTPSecretTTL:            10 * time.Minute,
+		PasswordResetTTL:         time.Duration(cfg.Security.PasswordResetTTL) * time.Minute,
+		PublicKeyPEM:             cfg.JWT.PublicKeyPEM,
+		MaxLoginAttempts:         cfg.Security.MaxLoginAttempts,
+		LockoutDuration:          time.Duration(cfg.Security.LockoutDurationMinutes) * time.Minute,
+		EnableEmailAuth:          cfg.App.EnableEmailAuth,
+		EnablePhoneAuth:          cfg.App.EnablePhoneAuth,
+		EnablePasswordAuth:       cfg.App.EnablePasswordAuth,
+		EnableOTPAuth:            cfg.App.EnableOTPAuth,
+		Enable2FA:                cfg.App.Enable2FA,
+		EnableAuditLog:           cfg.App.EnableAuditLog,
+		RequireEmailVerification: cfg.App.RequireEmailVerification,
+		RequirePhoneVerification: cfg.App.RequirePhoneVerification,
 	}
 
 	authService := service.NewAuthService(
-		userRepo,
-		redisRepo,
-		emailClient,
-		jwtManager,
-		totpManager,
-		logger,
-		serviceConfig,
+		userRepo, redisRepo, emailPub,
+		jwtManager, totpManager,
+		logger, svcConfig,
 	)
 
-	// Setup router
-	router := setupRouter(authService, jwtManager, logger)
+	// ── HTTP router ───────────────────────────────────────────────────────────
+	r := chi.NewRouter()
 
-	// Setup HTTP server
-	server := &http.Server{
+	loggingMw := appMiddleware.NewChiLoggingMiddleware(logger)
+	r.Use(appMiddleware.RequestID())
+	r.Use(loggingMw.Logger())
+	r.Use(loggingMw.Recovery())
+	r.Use(appMiddleware.CORS())
+	r.Use(chiMiddleware.Timeout(30 * time.Second))
+
+	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"status":"healthy","service":"auth-service","version":"2.0.0"}`)
+	})
+
+	authHandler := v1.NewAuthHandler(authService, jwtManager, logger)
+	r.Route("/api/v1", func(r chi.Router) {
+		authHandler.RegisterRoutes(r)
+	})
+
+	// ── Outbox relay ──────────────────────────────────────────────────────────
+	relayCfg := worker.OutboxRelayConfig{
+		PollInterval: time.Duration(cfg.AMQP.OutboxPollSecs) * time.Second,
+		MaxAttempts:  cfg.AMQP.MaxAttempts,
+		BatchSize:    cfg.AMQP.BatchSize,
+	}
+	relay := worker.NewOutboxRelay(outboxRepo, cfg.AMQP.URL, relayCfg, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go relay.Run(ctx)
+	logger.Info("Outbox relay started")
+
+	// ── HTTP server with graceful shutdown ────────────────────────────────────
+	srv := &http.Server{
 		Addr:         fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port),
-		Handler:      router,
+		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server in goroutine
-	go func() {
-		logger.WithFields(logrus.Fields{
-			"host": cfg.Server.Host,
-			"port": cfg.Server.Port,
-		}).Info("Starting HTTP server")
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Fatalf("Server failed to start: %v", err)
+	go func() {
+		logger.WithFields(logrus.Fields{"host": cfg.Server.Host, "port": cfg.Server.Port}).
+			Info("Starting HTTP server")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.WithError(err).Fatal("HTTP server error")
 		}
 	}()
 
-	// Wait for interrupt signal
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-
 	logger.Info("Shutting down server...")
+	cancel()
 
-	// Graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
 
-	if err := server.Shutdown(ctx); err != nil {
-		logger.Errorf("Server forced to shutdown: %v", err)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.WithError(err).Error("Server forced to shutdown")
 	}
 
 	logger.Info("Server exited")
-}
-
-func setupDatabase(cfg *config.Config, logger *logrus.Logger) (*bun.DB, error) {
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.Host,
-		cfg.Database.Port,
-		cfg.Database.Name,
-		cfg.Database.SSLMode,
-	)
-
-	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
-	db := bun.NewDB(sqldb, pgdialect.New())
-
-	// Add query hook for debugging in development
-	if cfg.App.Environment == "development" {
-		db.AddQueryHook(bundebug.NewQueryHook(
-			bundebug.WithVerbose(true),
-			bundebug.FromEnv("BUNDEBUG"),
-		))
-	}
-
-	// Test connection
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
-	}
-
-	logger.Info("Database connected successfully")
-	return db, nil
-}
-
-func setupRedis(cfg *config.Config, logger *logrus.Logger) (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     fmt.Sprintf("%s:%s", cfg.Redis.Host, cfg.Redis.Port),
-		Password: cfg.Redis.Password,
-		DB:       cfg.Redis.DB,
-	})
-
-	// Test connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
-	}
-
-	logger.Info("Redis connected successfully")
-	return client, nil
-}
-
-func setupRouter(authService service.AuthService, jwtManager *utils.JWTManager, logger *logrus.Logger) chi.Router {
-	r := chi.NewRouter()
-
-	// Setup middleware
-	loggingMiddleware := chiMiddleware.NewChiLoggingMiddleware(logger)
-
-	r.Use(middleware.RequestID)
-	r.Use(loggingMiddleware.Logger())
-	r.Use(loggingMiddleware.Recovery())
-	r.Use(chiMiddleware.CORS())
-	r.Use(render.SetContentType(render.ContentTypeJSON))
-
-	// Health check endpoint
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		render.JSON(w, r, &api.HealthResponse{
-			Status:  "healthy",
-			Service: "auth-service",
-			Version: "2.0.0",
-		})
-	})
-
-	// Swagger documentation
-	r.Get("/swagger/*", httpSwagger.Handler(
-		httpSwagger.URL("/swagger/doc.json"),
-	))
-
-	// API versioning
-	r.Route("/api", func(r chi.Router) {
-		r.Route("/v1", func(r chi.Router) {
-			// Setup v1 handlers
-			authHandler := v1.NewAuthHandler(authService, jwtManager, logger)
-			authHandler.RegisterRoutes(r)
-		})
-	})
-
-	return r
 }

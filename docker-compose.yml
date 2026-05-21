@@ -51,6 +51,20 @@ services:
       retries: 3
       start_period: 10s
 
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: duitara
+      RABBITMQ_DEFAULT_PASS: password
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   auth-service:
     build: .
     ports:
@@ -62,6 +76,8 @@ services:
         condition: service_healthy
       migrations:
         condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
     environment:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
@@ -73,6 +89,7 @@ services:
       REDIS_PORT: 6379
       APP_ENVIRONMENT: development
       APP_LOG_LEVEL: debug
+      AMQP_URL: amqp://duitara:password@rabbitmq:5672/
     volumes:
       - ./config.yaml:/root/config.yaml:ro
       - ./assets:/root/assets:ro

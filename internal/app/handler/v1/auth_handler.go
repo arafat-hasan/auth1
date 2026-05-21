@@ -156,13 +156,13 @@ func (h *AuthHandler) VerifySignup(w http.ResponseWriter, r *http.Request) {
 
 // Login handles user login
 // @Summary User login
-// @Description Authenticate user with email and password
+// @Description Authenticate user with email and password. Returns TokenResponse on success, or TwoFactorChallengeResponse when the account has 2FA enabled.
 // @Tags auth
 // @Accept json
 // @Produce json
 // @Param request body api.LoginRequest true "Login request"
-// @Success 200 {object} api.TokenResponse
-// @Success 200 {object} api.TwoFactorChallengeResponse
+// @Success 200 {object} api.TokenResponse "Successful login (no 2FA)"
+// @Success 202 {object} api.TwoFactorChallengeResponse "2FA required — proceed to POST /auth/2fa/verify"
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
@@ -202,7 +202,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			Message:           "2FA verification required",
 			UserID:            &loginResp.User.ID,
 		}
-		render.Status(r, http.StatusOK)
+		render.Status(r, http.StatusAccepted)
 		render.JSON(w, r, response)
 		return
 	}

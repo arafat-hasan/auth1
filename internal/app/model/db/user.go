@@ -12,12 +12,18 @@ import (
 // Metadata is a generic JSONB field for storing platform-specific data
 type Metadata map[string]interface{}
 
-// Value implements the driver.Valuer interface for database storage
+// Value implements the driver.Valuer interface for database storage.
+// Returns string so PostgreSQL receives valid JSON text for jsonb columns
+// (returning []byte would be sent as bytea and rejected by jsonb).
 func (m Metadata) Value() (driver.Value, error) {
 	if m == nil {
 		return nil, nil
 	}
-	return json.Marshal(m)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
 }
 
 // Scan implements the sql.Scanner interface for database retrieval
@@ -117,6 +123,21 @@ type PasswordResetToken struct {
 	UsedAt    *time.Time `bun:"used_at" json:"used_at,omitempty"`
 	CreatedAt time.Time  `bun:"created_at,nullzero,notnull,default:current_timestamp" json:"created_at"`
 	IPAddress *string    `bun:"ip_address" json:"ip_address,omitempty"`
+}
+
+// EmailOutbox represents a row in the transactional outbox for email events.
+type EmailOutbox struct {
+	bun.BaseModel `bun:"table:email_outbox,alias:eo"`
+
+	ID             uuid.UUID  `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
+	IdempotencyKey *string    `bun:"idempotency_key,unique" json:"idempotency_key,omitempty"`
+	EventType      string     `bun:"event_type,notnull" json:"event_type"`
+	Payload        Metadata   `bun:"payload,type:jsonb,notnull" json:"payload"`
+	Status         string     `bun:"status,notnull,default:'pending'" json:"status"`
+	Attempts       int        `bun:"attempts,notnull,default:0" json:"attempts"`
+	LastError      *string    `bun:"last_error" json:"last_error,omitempty"`
+	CreatedAt      time.Time  `bun:"created_at,nullzero,notnull,default:current_timestamp" json:"created_at"`
+	PublishedAt    *time.Time `bun:"published_at" json:"published_at,omitempty"`
 }
 
 // AuditLog represents an audit log entry in the database
