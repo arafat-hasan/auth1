@@ -19,6 +19,9 @@ import (
 	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/extra/bundebug"
 
+	httpSwagger "github.com/swaggo/http-swagger"
+
+	_ "github.com/arafat-hasan/duitara/services/auth-service/docs"
 	v1 "github.com/arafat-hasan/duitara/services/auth-service/internal/app/handler/v1"
 	appMiddleware "github.com/arafat-hasan/duitara/services/auth-service/internal/app/middleware"
 	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/repo"
@@ -132,6 +135,10 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, `{"status":"healthy","service":"auth-service","version":"2.0.0"}`)
 	})
+
+	r.Get("/swagger/*", httpSwagger.Handler(
+		httpSwagger.URL("/swagger/doc.json"),
+	))
 
 	authHandler := v1.NewAuthHandler(authService, jwtManager, logger)
 	r.Route("/api/v1", func(r chi.Router) {
