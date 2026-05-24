@@ -53,11 +53,17 @@ type LogoutRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required" example:"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."`
 }
 
-// TwoFactorVerifyRequest represents the 2FA verification request payload
-// @Description Verify 2FA code request
-type TwoFactorVerifyRequest struct {
-	UserID    uuid.UUID `json:"user_id" binding:"required" example:"550e8400-e29b-41d4-a716-446655440000"`
-	TwoFACode string    `json:"2fa_code" binding:"required,len=6" example:"123456"`
+// TwoFactorLoginVerifyRequest is the body for POST /2fa/verify (login challenge completion).
+// @Description Complete 2FA login using the challenge_token from the 202 response.
+type TwoFactorLoginVerifyRequest struct {
+	ChallengeToken string `json:"challenge_token" validate:"required" example:"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo_"`
+	TwoFACode      string `json:"two_fa_code" validate:"required,len=6" example:"123456"`
+}
+
+// TwoFactorConfirmSetupRequest is the body for POST /2fa/confirm (authenticated).
+// @Description Confirm 2FA setup by verifying the TOTP code from the authenticator app.
+type TwoFactorConfirmSetupRequest struct {
+	TwoFACode string `json:"two_fa_code" validate:"required,len=6" example:"123456"`
 }
 
 // Response Types
@@ -111,11 +117,11 @@ type ErrorResponse struct {
 }
 
 // TwoFactorChallengeResponse represents the 2FA challenge response
-// @Description 2FA challenge response
+// @Description 2FA challenge response — use challenge_token in POST /2fa/verify
 type TwoFactorChallengeResponse struct {
-	RequiresTwoFactor bool       `json:"requires_two_factor" example:"true"`
-	Message           string     `json:"message" example:"2FA verification required"`
-	UserID            *uuid.UUID `json:"user_id,omitempty" example:"550e8400-e29b-41d4-a716-446655440000"`
+	RequiresTwoFactor bool   `json:"requires_two_factor" example:"true"`
+	Message           string `json:"message" example:"2FA verification required"`
+	ChallengeToken    string `json:"challenge_token" example:"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo_"`
 }
 
 // HealthResponse represents the health check response
@@ -124,4 +130,24 @@ type HealthResponse struct {
 	Status  string `json:"status" example:"healthy"`
 	Service string `json:"service" example:"auth1"`
 	Version string `json:"version" example:"1.0.0"`
+}
+
+// ForgotPasswordRequest represents the forgot password request payload
+// @Description Request a password reset email
+type ForgotPasswordRequest struct {
+	Email string `json:"email" binding:"required,email" example:"user@example.com"`
+}
+
+// ResetPasswordRequest represents the reset password request payload
+// @Description Reset password using a token received by email
+type ResetPasswordRequest struct {
+	Token       string `json:"token" binding:"required" example:"abc123randomtoken"`
+	NewPassword string `json:"new_password" binding:"required,min=8" example:"newSecurePassword123"`
+}
+
+// ChangePasswordRequest represents the change password request payload
+// @Description Change password for the authenticated user
+type ChangePasswordRequest struct {
+	OldPassword string `json:"old_password" binding:"required" example:"currentPassword123"`
+	NewPassword string `json:"new_password" binding:"required,min=8" example:"newSecurePassword123"`
 }

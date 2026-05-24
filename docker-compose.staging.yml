@@ -12,9 +12,17 @@ services:
     restart: unless-stopped
 
   redis:
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-staging_redis_password}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-staging_redis_password}
     volumes:
       - redis_data_staging:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-staging_redis_password}", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   migrations:
     environment:
@@ -38,6 +46,7 @@ services:
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-disable}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-staging_redis_password}
       APP_ENVIRONMENT: staging
       APP_LOG_LEVEL: ${LOG_LEVEL:-debug}
     restart: unless-stopped

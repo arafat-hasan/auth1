@@ -1,8 +1,29 @@
+// @title           Auth Service API
+// @version         2.0.0
+// @description     JWT-based authentication service with OTP, 2FA, and RBAC.
+// @termsOfService  http://swagger.io/terms/
+
+// @contact.name   API Support
+// @contact.url    http://www.swagger.io/support
+// @contact.email  support@swagger.io
+
+// @license.name  MIT
+// @license.url   https://opensource.org/licenses/MIT
+
+// @host      localhost:8080
+// @BasePath  /
+
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description Type "Bearer " followed by your access token
+
 package main
 
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"os"
@@ -21,15 +42,16 @@ import (
 
 	httpSwagger "github.com/swaggo/http-swagger"
 
-	_ "github.com/arafat-hasan/duitara/services/auth-service/docs"
-	v1 "github.com/arafat-hasan/duitara/services/auth-service/internal/app/handler/v1"
-	appMiddleware "github.com/arafat-hasan/duitara/services/auth-service/internal/app/middleware"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/repo"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/config"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/publisher"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/service"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/worker"
+	_ "github.com/arafat-hasan/auth1/docs"
+	v1 "github.com/arafat-hasan/auth1/internal/app/handler/v1"
+	appMiddleware "github.com/arafat-hasan/auth1/internal/app/middleware"
+	"github.com/arafat-hasan/auth1/internal/app/repo"
+	"github.com/arafat-hasan/auth1/internal/config"
+	"github.com/arafat-hasan/auth1/internal/publisher"
+	"github.com/arafat-hasan/auth1/internal/ratelimit"
+	"github.com/arafat-hasan/auth1/internal/service"
+	"github.com/arafat-hasan/auth1/internal/utils"
+	"github.com/arafat-hasan/auth1/internal/worker"
 )
 
 func main() {
@@ -83,6 +105,10 @@ func main() {
 	redisRepo := repo.NewRedisRepository(redisClient)
 	outboxRepo := repo.NewOutboxRepository(db)
 
+	// ── Rate Limiter ──────────────────────────────────────────────────────────
+	rateLimiter := ratelimit.NewRateLimiter(redisClient)
+	logger.Info("Rate limiter initialized")
+
 	// ── Email publisher (outbox writer) ───────────────────────────────────────
 	var emailPub publisher.EmailPublisher = publisher.NewOutboxWriter(db)
 
@@ -94,16 +120,23 @@ func main() {
 	totpManager := utils.NewTOTPManager(cfg.App.Name)
 
 	// ── Service ───────────────────────────────────────────────────────────────
+	totpEncKey, err := base64.StdEncoding.DecodeString(cfg.App.TOTPEncryptionKey)
+	if err != nil {
+		logger.WithError(err).Fatal("failed to decode TOTP encryption key")
+	}
+
 	svcConfig := &service.Config{
 		OTPLength:                cfg.App.OTPLength,
 		OTPTTL:                   time.Duration(cfg.App.OTPTTL) * time.Second,
 		PendingUserTTL:           10 * time.Minute,
 		RefreshTokenTTL:          time.Duration(cfg.JWT.RefreshTokenTTL) * time.Second,
 		TOTPSecretTTL:            10 * time.Minute,
+		TOTPChallengeTTL:         time.Duration(cfg.App.TOTPChallengeTTLSec) * time.Second,
 		PasswordResetTTL:         time.Duration(cfg.Security.PasswordResetTTL) * time.Minute,
 		PublicKeyPEM:             cfg.JWT.PublicKeyPEM,
 		MaxLoginAttempts:         cfg.Security.MaxLoginAttempts,
 		LockoutDuration:          time.Duration(cfg.Security.LockoutDurationMinutes) * time.Minute,
+		TOTPEncryptionKey:        totpEncKey,
 		EnableEmailAuth:          cfg.App.EnableEmailAuth,
 		EnablePhoneAuth:          cfg.App.EnablePhoneAuth,
 		EnablePasswordAuth:       cfg.App.EnablePasswordAuth,
@@ -124,11 +157,29 @@ func main() {
 	r := chi.NewRouter()
 
 	loggingMw := appMiddleware.NewChiLoggingMiddleware(logger)
+	// ── Rate limiting configuration ───────────────────────────────────────────
+	rlCfg := cfg.RateLimit
+
 	r.Use(appMiddleware.RequestID())
 	r.Use(loggingMw.Logger())
 	r.Use(loggingMw.Recovery())
 	r.Use(appMiddleware.CORS())
 	r.Use(chiMiddleware.Timeout(30 * time.Second))
+
+	// Global rate limit must be registered before any routes on this mux.
+	if rlCfg.Enabled {
+		r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+			Limit:   rlCfg.GlobalLimit,
+			Window:  time.Duration(rlCfg.GlobalWindow) * time.Second,
+			KeyFunc: appMiddleware.IPBasedKey("global"),
+			Enabled: true,
+			Logger:  logger,
+		}))
+		logger.WithFields(logrus.Fields{
+			"limit":  rlCfg.GlobalLimit,
+			"window": fmt.Sprintf("%ds", rlCfg.GlobalWindow),
+		}).Info("Global rate limiting enabled")
+	}
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -141,8 +192,225 @@ func main() {
 	))
 
 	authHandler := v1.NewAuthHandler(authService, jwtManager, logger)
-	r.Route("/api/v1", func(r chi.Router) {
-		authHandler.RegisterRoutes(r)
+	userHandler := v1.NewUserHandler(authService, logger)
+
+	r.Route("/api/v1/auth", func(r chi.Router) {
+		// ── Public endpoints with specific rate limits ─────────────────────
+
+		// Login endpoint - dual rate limiting (IP + Email)
+		r.Group(func(r chi.Router) {
+			if rlCfg.Enabled {
+				// Rate limit by IP
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.LoginIPLimit,
+					Window:  time.Duration(rlCfg.LoginIPWindow) * time.Second,
+					KeyFunc: appMiddleware.IPBasedKey("login"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+
+				// Rate limit by email
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.LoginEmailLimit,
+					Window:  time.Duration(rlCfg.LoginEmailWindow) * time.Second,
+					KeyFunc: appMiddleware.EmailBasedKey("login"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+
+			r.Post("/login", authHandler.Login)
+		})
+
+		// Signup endpoint - IP-based rate limiting
+		r.Group(func(r chi.Router) {
+			if rlCfg.Enabled {
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.SignupIPLimit,
+					Window:  time.Duration(rlCfg.SignupIPWindow) * time.Second,
+					KeyFunc: appMiddleware.IPBasedKey("signup"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+
+			r.Post("/signup", authHandler.Signup)
+		})
+
+		// Verify signup - Email-based rate limiting
+		r.Group(func(r chi.Router) {
+			if rlCfg.Enabled {
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.OTPVerifyEmailLimit,
+					Window:  time.Duration(rlCfg.OTPVerifyEmailWindow) * time.Second,
+					KeyFunc: appMiddleware.EmailBasedKey("verify-signup"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+
+			r.Post("/verify-signup", authHandler.VerifySignup)
+		})
+
+		// Request OTP - Email-based rate limiting
+		r.Group(func(r chi.Router) {
+			if rlCfg.Enabled {
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.OTPEmailLimit,
+					Window:  time.Duration(rlCfg.OTPEmailWindow) * time.Second,
+					KeyFunc: appMiddleware.EmailBasedKey("request-otp"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+
+			r.Post("/request-otp", authHandler.RequestOTP)
+		})
+
+		// Verify login OTP - Email-based rate limiting
+		r.Group(func(r chi.Router) {
+			if rlCfg.Enabled {
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.OTPVerifyEmailLimit,
+					Window:  time.Duration(rlCfg.OTPVerifyEmailWindow) * time.Second,
+					KeyFunc: appMiddleware.EmailBasedKey("verify-login"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+
+			r.Post("/verify-login", authHandler.VerifyLogin)
+		})
+
+		// Refresh token - Token-based rate limiting
+		r.Group(func(r chi.Router) {
+			if rlCfg.Enabled {
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.RefreshLimit,
+					Window:  time.Duration(rlCfg.RefreshWindow) * time.Second,
+					KeyFunc: appMiddleware.TokenBasedKey("refresh"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+
+			r.Post("/refresh", authHandler.RefreshToken)
+		})
+
+		// Logout - no specific rate limit (covered by global)
+		r.Post("/logout", authHandler.Logout)
+
+		// Public key - no rate limit needed
+		r.Get("/public-key", authHandler.GetPublicKey)
+
+		// Forgot password - IP-based rate limiting
+		r.Group(func(r chi.Router) {
+			if rlCfg.Enabled {
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.SignupIPLimit,
+					Window:  time.Duration(rlCfg.SignupIPWindow) * time.Second,
+					KeyFunc: appMiddleware.IPBasedKey("forgot-password"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+			r.Post("/forgot-password", authHandler.ForgotPassword)
+		})
+
+		// Reset password - IP-based rate limiting
+		r.Group(func(r chi.Router) {
+			if rlCfg.Enabled {
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.SignupIPLimit,
+					Window:  time.Duration(rlCfg.SignupIPWindow) * time.Second,
+					KeyFunc: appMiddleware.IPBasedKey("reset-password"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+			r.Post("/reset-password", authHandler.ResetPassword)
+		})
+
+		// 2FA verify during login - Email-based rate limiting
+		r.Group(func(r chi.Router) {
+			if rlCfg.Enabled {
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.TwoFAVerifyLimit,
+					Window:  time.Duration(rlCfg.TwoFAVerifyWindow) * time.Second,
+					KeyFunc: appMiddleware.EmailBasedKey("2fa-verify"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+
+			r.Post("/2fa/verify", authHandler.Verify2FA)
+		})
+
+		// ── Authenticated endpoints (require JWT) ──────────────────────────
+		r.Group(func(r chi.Router) {
+			// Apply authentication middleware first (with JWT blacklist checking)
+			r.Use(appMiddleware.Authenticate(jwtManager, redisRepo, logger))
+
+			// Then apply user-based rate limiting
+			if rlCfg.Enabled {
+				r.Use(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+					Limit:   rlCfg.AuthenticatedLimit,
+					Window:  time.Duration(rlCfg.AuthenticatedWindow) * time.Second,
+					KeyFunc: appMiddleware.UserBasedKey("authenticated"),
+					Enabled: true,
+					Logger:  logger,
+				}))
+			}
+
+			// User info endpoint
+			r.Get("/me", authHandler.GetMe)
+
+			// Change password (authenticated)
+			r.Post("/change-password", authHandler.ChangePassword)
+
+			// 2FA setup endpoint (stricter limit)
+			r.With(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+				Limit:   rlCfg.TwoFASetupLimit,
+				Window:  time.Duration(rlCfg.TwoFASetupWindow) * time.Second,
+				KeyFunc: appMiddleware.UserBasedKey("2fa-setup"),
+				Enabled: rlCfg.Enabled,
+				Logger:  logger,
+			})).Post("/2fa/setup", authHandler.Setup2FA)
+
+			// 2FA confirm setup endpoint (same rate limit as setup)
+			r.With(appMiddleware.RateLimit(rateLimiter, appMiddleware.RateLimitConfig{
+				Limit:   rlCfg.TwoFAVerifyLimit,
+				Window:  time.Duration(rlCfg.TwoFAVerifyWindow) * time.Second,
+				KeyFunc: appMiddleware.UserBasedKey("2fa-confirm"),
+				Enabled: rlCfg.Enabled,
+				Logger:  logger,
+			})).Post("/2fa/confirm", authHandler.Confirm2FASetup)
+
+			// 2FA disable endpoint
+			r.Post("/2fa/disable", authHandler.Disable2FA)
+		})
+	})
+
+	// ── User management routes (admin + self-service sessions) ───────────────
+	r.Route("/api/v1/users", func(r chi.Router) {
+		r.Use(appMiddleware.Authenticate(jwtManager, redisRepo, logger))
+
+		// Admin-only endpoints
+		r.Group(func(r chi.Router) {
+			r.Use(appMiddleware.RequireAdmin(logger))
+
+			r.Get("/", userHandler.ListUsers)
+			r.Get("/{id}", userHandler.GetUser)
+			r.Put("/{id}", userHandler.UpdateUser)
+			r.Delete("/{id}", userHandler.DeleteUser)
+			r.Post("/{id}/deactivate", userHandler.DeactivateUser)
+			r.Post("/{id}/reactivate", userHandler.ReactivateUser)
+			r.Post("/{id}/unlock", userHandler.UnlockUser)
+		})
+
+		// User-or-admin session endpoints (self-service check inside handler)
+		r.Get("/{id}/sessions", userHandler.ListUserSessions)
+		r.Delete("/{id}/sessions/{session_id}", userHandler.RevokeUserSession)
 	})
 
 	// ── Outbox relay ──────────────────────────────────────────────────────────

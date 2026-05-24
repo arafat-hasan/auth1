@@ -9,7 +9,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/sirupsen/logrus"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/repo"
+	"github.com/arafat-hasan/auth1/internal/app/repo"
 )
 
 const (

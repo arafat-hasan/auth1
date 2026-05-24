@@ -3,7 +3,7 @@ package service
 import (
 	"github.com/google/uuid"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
+	"github.com/arafat-hasan/auth1/internal/app/model/domain"
 )
 
 // --- Registration ---
@@ -57,6 +57,7 @@ type LoginResponse struct {
 	Tokens            *domain.TokenPair `json:"tokens,omitempty"`
 	User              *domain.User      `json:"user,omitempty"`
 	RequiresTwoFactor bool              `json:"requires_two_factor"`
+	ChallengeToken    string            `json:"challenge_token,omitempty"`
 }
 
 // --- OTP ---
@@ -104,9 +105,17 @@ type LogoutRequest struct {
 
 // --- Two-factor authentication ---
 
-type Verify2FARequest struct {
-	UserID    uuid.UUID `json:"user_id"   validate:"required"`
-	TwoFACode string    `json:"2fa_code"  validate:"required,len=6"`
+// Verify2FALoginRequest is used to complete login after a 2FA challenge is issued.
+// The ChallengeToken was returned in the 202 response from Login.
+type Verify2FALoginRequest struct {
+	ChallengeToken string `json:"challenge_token" validate:"required"`
+	TwoFACode      string `json:"two_fa_code"     validate:"required,len=6"`
+}
+
+// Confirm2FASetupRequest confirms TOTP setup. UserID is set from the JWT, not request body.
+type Confirm2FASetupRequest struct {
+	UserID    uuid.UUID `json:"-"`
+	TwoFACode string    `json:"two_fa_code" validate:"required,len=6"`
 }
 
 // --- User management ---
@@ -115,4 +124,20 @@ type UpdateUserRequest struct {
 	Name  *string `json:"name,omitempty"`
 	Email *string `json:"email,omitempty"`
 	Phone *string `json:"phone,omitempty"`
+}
+
+type ListUsersRequest struct {
+	Page     int
+	PageSize int
+	Search   string
+	Role     string
+	IsActive *bool
+}
+
+type ListUsersResponse struct {
+	Users      []*domain.User
+	Total      int
+	Page       int
+	PageSize   int
+	TotalPages int
 }

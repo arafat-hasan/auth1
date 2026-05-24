@@ -55,7 +55,7 @@ app:
   log_level: "info"          # debug, info, warn, error
   otp_length: 6
   otp_ttl: 300               # 5 minutes
-  
+
   # Feature flags - enable/disable authentication methods
   enable_email_auth: true
   enable_phone_auth: false
@@ -64,4 +64,50 @@ app:
   enable_2fa: true
   enable_audit_log: true
   require_email_verification: true
-  require_phone_verification: false 
+  require_phone_verification: false
+
+  # TOTP secret encryption (AES-256-GCM). REQUIRED when enable_2fa is true.
+  # Generate with: openssl rand -base64 32
+  totp_encryption_key: ""
+  totp_challenge_ttl_sec: 300    # 5 minutes — how long a login 2FA challenge stays valid
+
+rate_limit:
+  enabled: true  # Set to false to disable rate limiting (not recommended for production)
+
+  # Global rate limit (applies to all endpoints per IP)
+  global_limit: 1000         # Max requests per window
+  global_window: 60          # Window in seconds (1 minute)
+
+  # Login endpoint rate limits
+  login_ip_limit: 10         # Max login attempts per IP
+  login_ip_window: 300       # Window in seconds (5 minutes)
+  login_email_limit: 5       # Max login attempts per email
+  login_email_window: 900    # Window in seconds (15 minutes)
+
+  # Signup endpoint rate limits
+  signup_ip_limit: 3         # Max signups per IP
+  signup_ip_window: 3600     # Window in seconds (1 hour)
+
+  # OTP request endpoint rate limits
+  otp_email_limit: 3         # Max OTP requests per email
+  otp_email_window: 300      # Window in seconds (5 minutes)
+
+  # OTP verify endpoint rate limits
+  otp_verify_email_limit: 10     # Max OTP verifications per email
+  otp_verify_email_window: 600   # Window in seconds (10 minutes)
+
+  # Refresh token endpoint rate limits
+  refresh_limit: 10          # Max refresh requests
+  refresh_window: 60         # Window in seconds (1 minute)
+
+  # 2FA setup endpoint rate limits
+  twofa_setup_limit: 3       # Max 2FA setup attempts per user
+  twofa_setup_window: 3600   # Window in seconds (1 hour)
+
+  # 2FA verify endpoint rate limits
+  twofa_verify_limit: 5      # Max 2FA verification attempts
+  twofa_verify_window: 300   # Window in seconds (5 minutes)
+
+  # Authenticated endpoints rate limits (per user)
+  authenticated_limit: 100   # Max requests per user
+  authenticated_window: 60   # Window in seconds (1 minute) 

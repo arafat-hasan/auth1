@@ -7,7 +7,7 @@ import (
 
 	"github.com/uptrace/bun"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/db"
+	"github.com/arafat-hasan/auth1/internal/app/model/db"
 )
 
 // outboxPayload is the JSON structure stored in email_outbox.payload.

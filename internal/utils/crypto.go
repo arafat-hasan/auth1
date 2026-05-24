@@ -1,16 +1,65 @@
 package utils
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math/big"
 	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// EncryptAESGCM encrypts plaintext with AES-256-GCM.
+// Output is base64url-encoded (nonce || ciphertext).
+func EncryptAESGCM(plaintext string, key []byte) (string, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("failed to create cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("failed to create GCM: %w", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", fmt.Errorf("failed to generate nonce: %w", err)
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return base64.URLEncoding.EncodeToString(ciphertext), nil
+}
+
+// DecryptAESGCM decrypts a base64url-encoded AES-256-GCM ciphertext produced by EncryptAESGCM.
+func DecryptAESGCM(encoded string, key []byte) (string, error) {
+	data, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("failed to base64-decode: %w", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("failed to create cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("failed to create GCM: %w", err)
+	}
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return "", fmt.Errorf("ciphertext too short")
+	}
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt: %w", err)
+	}
+	return string(plaintext), nil
+}
 
 // Password hashing functions
 func HashPassword(password string) (string, error) {

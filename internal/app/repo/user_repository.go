@@ -9,9 +9,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/db"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
+	"github.com/arafat-hasan/auth1/internal/app/model/db"
+	"github.com/arafat-hasan/auth1/internal/app/model/domain"
 )
+
+// ListUsersFilter holds optional filter parameters for listing users.
+type ListUsersFilter struct {
+	Page     int
+	PageSize int
+	Search   string // email or name ILIKE
+	Role     string
+	IsActive *bool
+}
 
 type UserRepository interface {
 	// Basic CRUD
@@ -21,6 +30,7 @@ type UserRepository interface {
 	GetByPhone(ctx context.Context, phone string) (*domain.User, error)
 	Update(ctx context.Context, user *domain.User) error
 	SoftDelete(ctx context.Context, userID uuid.UUID) error
+	List(ctx context.Context, filter ListUsersFilter) ([]*domain.User, int, error)
 	
 	// Authentication tracking
 	UpdateLastLogin(ctx context.Context, userID uuid.UUID, ipAddress, userAgent *string) error
@@ -62,7 +72,7 @@ type UserRepository interface {
 	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID uuid.UUID) error
 	
 	// Audit logging
-	CreateAuditLog(ctx context.Context, log *db.AuditLog) error
+	LogAuditEvent(ctx context.Context, actorID *uuid.UUID, eventType string, data map[string]interface{}, ip *string) error
 }
 
 type userRepository struct {
@@ -471,10 +481,57 @@ func (r *userRepository) MarkPasswordResetTokenAsUsed(ctx context.Context, token
 	return nil
 }
 
-func (r *userRepository) CreateAuditLog(ctx context.Context, log *db.AuditLog) error {
-	_, err := r.db.NewInsert().Model(log).Exec(ctx)
+func (r *userRepository) List(ctx context.Context, filter ListUsersFilter) ([]*domain.User, int, error) {
+	if filter.Page < 1 {
+		filter.Page = 1
+	}
+	if filter.PageSize < 1 || filter.PageSize > 100 {
+		filter.PageSize = 20
+	}
+	offset := (filter.Page - 1) * filter.PageSize
+
+	var dbUsers []db.User
+	q := r.db.NewSelect().Model(&dbUsers).Where("u.deleted_at IS NULL")
+
+	if filter.Search != "" {
+		q = q.Where("(u.email ILIKE ? OR u.name ILIKE ?)", "%"+filter.Search+"%", "%"+filter.Search+"%")
+	}
+	if filter.Role != "" {
+		q = q.Where("u.role = ?", filter.Role)
+	}
+	if filter.IsActive != nil {
+		q = q.Where("u.is_active = ?", *filter.IsActive)
+	}
+
+	total, err := q.Count(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create audit log: %w", err)
+		return nil, 0, fmt.Errorf("failed to count users: %w", err)
+	}
+
+	err = q.OrderExpr("u.created_at DESC").Limit(filter.PageSize).Offset(offset).Scan(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list users: %w", err)
+	}
+
+	users := make([]*domain.User, len(dbUsers))
+	for i := range dbUsers {
+		users[i] = r.toDomainUser(&dbUsers[i])
+	}
+	return users, total, nil
+}
+
+func (r *userRepository) LogAuditEvent(ctx context.Context, actorID *uuid.UUID, eventType string, data map[string]interface{}, ip *string) error {
+	entry := &db.AuditLog{
+		ID:        uuid.New(),
+		UserID:    actorID,
+		EventType: eventType,
+		EventData: db.Metadata(data),
+		IPAddress: ip,
+		CreatedAt: time.Now(),
+	}
+	_, err := r.db.NewInsert().Model(entry).Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to write audit log: %w", err)
 	}
 	return nil
 }

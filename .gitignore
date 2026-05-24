@@ -21,6 +21,10 @@ go.work
 config.yaml
 config.yml
 .env
+.env.staging
+.env.prod
+.env.local
+.env.*.local
 
 # IDE and editor files
 # .vscode/
@@ -48,6 +52,15 @@ assets/public_key.pem
 
 # Docker volumes
 postgres_data/
+redis_data/
+redis_insight_data/
+
+# Backups
+backups/
+*.sql
+*.sql.gz
+*.aof
+*.rdb
 
 # Temporary files
 tmp/

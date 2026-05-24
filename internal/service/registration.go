@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
+	"github.com/arafat-hasan/auth1/internal/app/model/domain"
+	"github.com/arafat-hasan/auth1/internal/utils"
 )
 
 func (s *authServiceImpl) Signup(ctx context.Context, req *SignupRequest) error {
@@ -92,7 +92,9 @@ func (s *authServiceImpl) VerifySignup(ctx context.Context, req *VerifySignupReq
 		Phone:        pendingUser.Phone,
 		PasswordHash: pendingUser.Password,
 		IsVerified:   true,
+		IsActive:     true,
 		Is2FAEnabled: false,
+		Role:         domain.RoleUser,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
@@ -101,7 +103,7 @@ func (s *authServiceImpl) VerifySignup(ctx context.Context, req *VerifySignupReq
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
-	tokens, err := s.generateTokens(ctx, user.ID, user.Email)
+	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}
@@ -193,7 +195,9 @@ func (s *authServiceImpl) VerifyPhoneSignup(ctx context.Context, req *VerifyPhon
 		Name:         pendingUser.Name,
 		PasswordHash: pendingUser.Password,
 		IsVerified:   true,
+		IsActive:     true,
 		Is2FAEnabled: false,
+		Role:         domain.RoleUser,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
@@ -202,7 +206,7 @@ func (s *authServiceImpl) VerifyPhoneSignup(ctx context.Context, req *VerifyPhon
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
-	tokens, err := s.generateTokens(ctx, user.ID, user.Email)
+	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}

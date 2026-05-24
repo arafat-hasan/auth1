@@ -14,7 +14,7 @@ import (
 	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/migrate"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/config"
+	"github.com/arafat-hasan/auth1/internal/config"
 )
 
 var (

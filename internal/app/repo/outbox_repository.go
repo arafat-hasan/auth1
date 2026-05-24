@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/db"
+	"github.com/arafat-hasan/auth1/internal/app/model/db"
 )
 
 type OutboxRepository interface {

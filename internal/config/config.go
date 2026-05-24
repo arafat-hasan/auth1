@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -12,14 +13,15 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
-	AMQP     AMQPConfig     `mapstructure:"amqp"`
-	SMS      SMSConfig      `mapstructure:"sms"`
-	Security SecurityConfig `mapstructure:"security"`
-	App      AppConfig      `mapstructure:"app"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	Redis      RedisConfig      `mapstructure:"redis"`
+	JWT        JWTConfig        `mapstructure:"jwt"`
+	AMQP       AMQPConfig       `mapstructure:"amqp"`
+	SMS        SMSConfig        `mapstructure:"sms"`
+	Security   SecurityConfig   `mapstructure:"security"`
+	App        AppConfig        `mapstructure:"app"`
+	RateLimit  RateLimitConfig  `mapstructure:"rate_limit"`
 }
 
 type ServerConfig struct {
@@ -85,16 +87,60 @@ type AppConfig struct {
 	LogLevel    string `mapstructure:"log_level"`
 	OTPLength   int    `mapstructure:"otp_length"`
 	OTPTTL      int    `mapstructure:"otp_ttl"`
-	
+
 	// Feature flags for platform-agnostic use
-	EnableEmailAuth     bool `mapstructure:"enable_email_auth"`
-	EnablePhoneAuth     bool `mapstructure:"enable_phone_auth"`
-	EnablePasswordAuth  bool `mapstructure:"enable_password_auth"`
-	EnableOTPAuth       bool `mapstructure:"enable_otp_auth"`
-	Enable2FA           bool `mapstructure:"enable_2fa"`
-	EnableAuditLog      bool `mapstructure:"enable_audit_log"`
+	EnableEmailAuth          bool `mapstructure:"enable_email_auth"`
+	EnablePhoneAuth          bool `mapstructure:"enable_phone_auth"`
+	EnablePasswordAuth       bool `mapstructure:"enable_password_auth"`
+	EnableOTPAuth            bool `mapstructure:"enable_otp_auth"`
+	Enable2FA                bool `mapstructure:"enable_2fa"`
+	EnableAuditLog           bool `mapstructure:"enable_audit_log"`
 	RequireEmailVerification bool `mapstructure:"require_email_verification"`
 	RequirePhoneVerification bool `mapstructure:"require_phone_verification"`
+
+	// TOTP encryption: base64-encoded 32-byte AES-256 key (generate: openssl rand -base64 32)
+	TOTPEncryptionKey   string `mapstructure:"totp_encryption_key"`
+	TOTPChallengeTTLSec int    `mapstructure:"totp_challenge_ttl_sec"`
+}
+
+type RateLimitConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+
+	// Global rate limit (per IP, all endpoints)
+	GlobalLimit  int `mapstructure:"global_limit"`   // requests per window
+	GlobalWindow int `mapstructure:"global_window"`  // in seconds
+
+	// Login endpoint
+	LoginIPLimit      int `mapstructure:"login_ip_limit"`
+	LoginIPWindow     int `mapstructure:"login_ip_window"`      // in seconds
+	LoginEmailLimit   int `mapstructure:"login_email_limit"`
+	LoginEmailWindow  int `mapstructure:"login_email_window"`   // in seconds
+
+	// Signup endpoint
+	SignupIPLimit  int `mapstructure:"signup_ip_limit"`
+	SignupIPWindow int `mapstructure:"signup_ip_window"` // in seconds
+
+	// OTP request endpoint
+	OTPEmailLimit  int `mapstructure:"otp_email_limit"`
+	OTPEmailWindow int `mapstructure:"otp_email_window"` // in seconds
+
+	// OTP verify endpoint
+	OTPVerifyEmailLimit  int `mapstructure:"otp_verify_email_limit"`
+	OTPVerifyEmailWindow int `mapstructure:"otp_verify_email_window"` // in seconds
+
+	// Refresh token endpoint
+	RefreshLimit  int `mapstructure:"refresh_limit"`
+	RefreshWindow int `mapstructure:"refresh_window"` // in seconds
+
+	// 2FA endpoints
+	TwoFASetupLimit  int `mapstructure:"twofa_setup_limit"`
+	TwoFASetupWindow int `mapstructure:"twofa_setup_window"` // in seconds
+	TwoFAVerifyLimit  int `mapstructure:"twofa_verify_limit"`
+	TwoFAVerifyWindow int `mapstructure:"twofa_verify_window"` // in seconds
+
+	// Authenticated endpoints (per user)
+	AuthenticatedLimit  int `mapstructure:"authenticated_limit"`
+	AuthenticatedWindow int `mapstructure:"authenticated_window"` // in seconds
 }
 
 func Load() (*Config, error) {
@@ -126,6 +172,15 @@ func Load() (*Config, error) {
 	// Load JWT keys
 	if err := loadJWTKeys(&config); err != nil {
 		return nil, fmt.Errorf("error loading JWT keys: %w", err)
+	}
+
+	// Validate TOTP encryption key
+	if config.App.TOTPEncryptionKey == "" {
+		return nil, fmt.Errorf("app.totp_encryption_key must be set (generate: openssl rand -base64 32)")
+	}
+	keyBytes, err := base64.StdEncoding.DecodeString(config.App.TOTPEncryptionKey)
+	if err != nil || len(keyBytes) != 32 {
+		return nil, fmt.Errorf("app.totp_encryption_key must be a base64-encoded 32-byte value")
 	}
 
 	return &config, nil
@@ -187,6 +242,43 @@ func setDefaults() {
 	viper.SetDefault("app.enable_audit_log", true)
 	viper.SetDefault("app.require_email_verification", true)
 	viper.SetDefault("app.require_phone_verification", false)
+	viper.SetDefault("app.totp_encryption_key", "")
+	viper.SetDefault("app.totp_challenge_ttl_sec", 300) // 5 minutes
+
+	// Rate limiting defaults
+	viper.SetDefault("rate_limit.enabled", true)
+	viper.SetDefault("rate_limit.global_limit", 1000)
+	viper.SetDefault("rate_limit.global_window", 60) // 1 minute
+
+	// Login rate limits
+	viper.SetDefault("rate_limit.login_ip_limit", 10)
+	viper.SetDefault("rate_limit.login_ip_window", 300)      // 5 minutes
+	viper.SetDefault("rate_limit.login_email_limit", 5)
+	viper.SetDefault("rate_limit.login_email_window", 900)   // 15 minutes
+
+	// Signup rate limits
+	viper.SetDefault("rate_limit.signup_ip_limit", 3)
+	viper.SetDefault("rate_limit.signup_ip_window", 3600)    // 1 hour
+
+	// OTP rate limits
+	viper.SetDefault("rate_limit.otp_email_limit", 3)
+	viper.SetDefault("rate_limit.otp_email_window", 300)     // 5 minutes
+	viper.SetDefault("rate_limit.otp_verify_email_limit", 10)
+	viper.SetDefault("rate_limit.otp_verify_email_window", 600) // 10 minutes
+
+	// Refresh token rate limits
+	viper.SetDefault("rate_limit.refresh_limit", 10)
+	viper.SetDefault("rate_limit.refresh_window", 60)        // 1 minute
+
+	// 2FA rate limits
+	viper.SetDefault("rate_limit.twofa_setup_limit", 3)
+	viper.SetDefault("rate_limit.twofa_setup_window", 3600)  // 1 hour
+	viper.SetDefault("rate_limit.twofa_verify_limit", 5)
+	viper.SetDefault("rate_limit.twofa_verify_window", 300)  // 5 minutes
+
+	// Authenticated endpoints
+	viper.SetDefault("rate_limit.authenticated_limit", 100)
+	viper.SetDefault("rate_limit.authenticated_window", 60)  // 1 minute
 }
 
 func loadJWTKeys(config *Config) error {

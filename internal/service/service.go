@@ -7,10 +7,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/repo"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/publisher"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
+	"github.com/arafat-hasan/auth1/internal/app/model/domain"
+	"github.com/arafat-hasan/auth1/internal/app/repo"
+	"github.com/arafat-hasan/auth1/internal/publisher"
+	"github.com/arafat-hasan/auth1/internal/utils"
 )
 
 // authServiceImpl is the concrete implementation of AuthService.
@@ -46,8 +46,11 @@ func NewAuthService(
 }
 
 // generateTokens creates a new access/refresh token pair and stores the refresh token in Redis.
-func (s *authServiceImpl) generateTokens(ctx context.Context, userID uuid.UUID, userEmail string) (*domain.TokenPair, error) {
-	accessToken, err := s.jwtManager.GenerateAccessToken(userID, userEmail, []string{"user"})
+func (s *authServiceImpl) generateTokens(ctx context.Context, userID uuid.UUID, userEmail, role string) (*domain.TokenPair, error) {
+	if role == "" {
+		role = domain.RoleUser
+	}
+	accessToken, err := s.jwtManager.GenerateAccessToken(userID, userEmail, []string{role})
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
@@ -140,4 +143,14 @@ func (s *authServiceImpl) verifyOTP(ctx context.Context, identifier, purpose, ot
 	}
 
 	return utils.ValidateOTP(otp, storedHash)
+}
+
+// auditLog writes an audit log entry when EnableAuditLog is set. Failures are logged but not fatal.
+func (s *authServiceImpl) auditLog(ctx context.Context, actorID *uuid.UUID, eventType string, data map[string]interface{}, ip *string) {
+	if !s.config.EnableAuditLog {
+		return
+	}
+	if err := s.userRepo.LogAuditEvent(ctx, actorID, eventType, data, ip); err != nil {
+		s.logger.WithError(err).Error("audit log write failed")
+	}
 }

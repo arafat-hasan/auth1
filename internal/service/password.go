@@ -10,10 +10,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/db"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/domain"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/publisher"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
+	"github.com/arafat-hasan/auth1/internal/app/model/db"
+	"github.com/arafat-hasan/auth1/internal/app/model/domain"
+	"github.com/arafat-hasan/auth1/internal/publisher"
+	"github.com/arafat-hasan/auth1/internal/utils"
 )
 
 func (s *authServiceImpl) RequestPasswordReset(ctx context.Context, req *PasswordResetRequest) error {
@@ -138,12 +138,20 @@ func (s *authServiceImpl) ResetPassword(ctx context.Context, req *ResetPasswordR
 		}).Error("Failed to mark reset token as used")
 	}
 
-	// Revoke all active sessions after a password reset.
+	// 🔒 Revoke all active sessions after a password reset.
+	// Blacklist all user's JWTs (force re-login)
+	maxTokenLifetime := s.jwtManager.GetAccessTokenTTL()
+	if err := s.redisRepo.BlacklistAllUserJWTs(ctx, resetToken.UserID, maxTokenLifetime); err != nil {
+		s.logger.WithError(err).Error("Failed to blacklist user tokens after password reset")
+		// Continue - security measure, not critical for reset success
+	}
+
+	// Delete all refresh tokens
 	s.redisRepo.DeleteAllRefreshTokens(ctx, resetToken.UserID)
 
 	s.logger.WithFields(logrus.Fields{
 		"user_id": resetToken.UserID,
-	}).Info("Password reset successfully")
+	}).Info("Password reset successfully, all tokens revoked")
 
 	return nil
 }
@@ -174,9 +182,23 @@ func (s *authServiceImpl) ChangePassword(ctx context.Context, req *ChangePasswor
 		return fmt.Errorf("failed to update password: %w", err)
 	}
 
+	// 🔒 Revoke all active sessions after password change (force re-login on all devices)
+	// Blacklist all user's JWTs
+	maxTokenLifetime := s.jwtManager.GetAccessTokenTTL()
+	if err := s.redisRepo.BlacklistAllUserJWTs(ctx, req.UserID, maxTokenLifetime); err != nil {
+		s.logger.WithError(err).Error("Failed to blacklist user tokens after password change")
+		// Continue - security measure, not critical for password change success
+	}
+
+	// Delete all refresh tokens
+	if err := s.redisRepo.DeleteAllRefreshTokens(ctx, req.UserID); err != nil {
+		s.logger.WithError(err).Error("Failed to delete refresh tokens after password change")
+		// Continue
+	}
+
 	s.logger.WithFields(logrus.Fields{
 		"user_id": req.UserID,
-	}).Info("Password changed successfully")
+	}).Info("Password changed successfully, all tokens revoked")
 
 	return nil
 }

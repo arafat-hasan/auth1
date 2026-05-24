@@ -12,9 +12,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/app/model/api"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/service"
-	"github.com/arafat-hasan/duitara/services/auth-service/internal/utils"
+	"github.com/arafat-hasan/auth1/internal/app/middleware"
+	"github.com/arafat-hasan/auth1/internal/app/model/api"
+	"github.com/arafat-hasan/auth1/internal/service"
+	"github.com/arafat-hasan/auth1/internal/utils"
 )
 
 // AuthHandler handles authentication HTTP requests
@@ -54,6 +55,7 @@ func (h *AuthHandler) RegisterRoutes(r chi.Router) {
 			r.Use(h.requireAuth)
 			r.Get("/me", h.GetMe)
 			r.Post("/2fa/setup", h.Setup2FA)
+			r.Post("/2fa/confirm", h.Confirm2FASetup)
 			r.Post("/2fa/disable", h.Disable2FA)
 		})
 	})
@@ -70,7 +72,7 @@ func (h *AuthHandler) RegisterRoutes(r chi.Router) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 409 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/signup [post]
+// @Router /api/v1/auth/signup [post]
 func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 	var req api.SignupRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -114,7 +116,7 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/verify-signup [post]
+// @Router /api/v1/auth/verify-signup [post]
 func (h *AuthHandler) VerifySignup(w http.ResponseWriter, r *http.Request) {
 	var req api.VerifySignupRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -166,7 +168,7 @@ func (h *AuthHandler) VerifySignup(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/login [post]
+// @Router /api/v1/auth/login [post]
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req api.LoginRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -174,17 +176,35 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract IP address and user agent
+	ipAddr := middleware.GetClientIP(r)
+	userAgent := r.UserAgent()
+
 	serviceReq := &service.LoginRequest{
-		Email:    req.Email,
-		Password: req.Password,
+		Email:     req.Email,
+		Password:  req.Password,
+		IPAddress: &ipAddr,
+		UserAgent: &userAgent,
 	}
 
 	loginResp, err := h.authService.Login(r.Context(), serviceReq)
 	if err != nil {
 		h.logger.WithFields(logrus.Fields{
 			"email": req.Email,
+			"ip":    ipAddr,
 			"error": err.Error(),
 		}).Error("Login failed")
+
+		// Check for account lockout
+		if strings.Contains(err.Error(), "account locked") || strings.Contains(err.Error(), "too many failed attempts") {
+			h.renderError(w, r, http.StatusTooManyRequests, "account_locked", err.Error())
+			return
+		}
+
+		if strings.Contains(err.Error(), "deactivated") {
+			h.renderError(w, r, http.StatusForbidden, "account_deactivated", "Account is deactivated")
+			return
+		}
 
 		if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "not found") {
 			h.renderError(w, r, http.StatusUnauthorized, "invalid_credentials", "Invalid email or password")
@@ -200,7 +220,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		response := &api.TwoFactorChallengeResponse{
 			RequiresTwoFactor: true,
 			Message:           "2FA verification required",
-			UserID:            &loginResp.User.ID,
+			ChallengeToken:    loginResp.ChallengeToken,
 		}
 		render.Status(r, http.StatusAccepted)
 		render.JSON(w, r, response)
@@ -230,7 +250,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {object} api.ErrorResponse
 // @Failure 429 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/request-otp [post]
+// @Router /api/v1/auth/request-otp [post]
 func (h *AuthHandler) RequestOTP(w http.ResponseWriter, r *http.Request) {
 	var req api.RequestOTPRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -278,7 +298,7 @@ func (h *AuthHandler) RequestOTP(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/verify-login [post]
+// @Router /api/v1/auth/verify-login [post]
 func (h *AuthHandler) VerifyLogin(w http.ResponseWriter, r *http.Request) {
 	var req api.VerifyLoginRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -329,7 +349,7 @@ func (h *AuthHandler) VerifyLogin(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/refresh [post]
+// @Router /api/v1/auth/refresh [post]
 func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	var req api.RefreshTokenRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -377,7 +397,7 @@ func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} api.SuccessResponse
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/logout [post]
+// @Router /api/v1/auth/logout [post]
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	var req api.LogoutRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
@@ -408,7 +428,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 // @Tags auth
 // @Produce json
 // @Success 200 {object} api.PublicKeyResponse
-// @Router /auth/public-key [get]
+// @Router /api/v1/auth/public-key [get]
 func (h *AuthHandler) GetPublicKey(w http.ResponseWriter, r *http.Request) {
 	publicKey := h.authService.GetPublicKey()
 	response := &api.PublicKeyResponse{
@@ -430,7 +450,7 @@ func (h *AuthHandler) GetPublicKey(w http.ResponseWriter, r *http.Request) {
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 404 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/me [get]
+// @Router /api/v1/auth/me [get]
 func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	userID := h.getUserID(r)
 	if userID == uuid.Nil {
@@ -475,7 +495,7 @@ func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} api.TwoFactorSetupResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/2fa/setup [post]
+// @Router /api/v1/auth/2fa/setup [post]
 func (h *AuthHandler) Setup2FA(w http.ResponseWriter, r *http.Request) {
 	userID := h.getUserID(r)
 	if userID == uuid.Nil {
@@ -503,39 +523,38 @@ func (h *AuthHandler) Setup2FA(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, r, response)
 }
 
-// Verify2FA handles 2FA verification
-// @Summary Verify 2FA
-// @Description Verify two-factor authentication code
+// Verify2FA completes a 2FA login challenge.
+// @Summary Verify 2FA login challenge
+// @Description Submit the challenge_token (from Login 202) and TOTP code to complete login.
 // @Tags auth
 // @Accept json
 // @Produce json
-// @Param request body api.TwoFactorVerifyRequest true "2FA verify request"
+// @Param request body api.TwoFactorLoginVerifyRequest true "2FA login verify request"
 // @Success 200 {object} api.TokenResponse
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/2fa/verify [post]
+// @Router /api/v1/auth/2fa/verify [post]
 func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
-	var req api.TwoFactorVerifyRequest
+	var req api.TwoFactorLoginVerifyRequest
 	if err := h.decodeAndValidate(r, &req); err != nil {
 		h.renderError(w, r, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
 
-	serviceReq := &service.Verify2FARequest{
-		UserID:    req.UserID,
-		TwoFACode: req.TwoFACode,
+	serviceReq := &service.Verify2FALoginRequest{
+		ChallengeToken: req.ChallengeToken,
+		TwoFACode:      req.TwoFACode,
 	}
 
-	tokens, err := h.authService.Verify2FA(r.Context(), serviceReq)
+	tokens, err := h.authService.Verify2FALogin(r.Context(), serviceReq)
 	if err != nil {
 		h.logger.WithFields(logrus.Fields{
-			"user_id": req.UserID,
-			"error":   err.Error(),
-		}).Error("2FA verification failed")
+			"error": err.Error(),
+		}).Error("2FA login verification failed")
 
-		if strings.Contains(err.Error(), "invalid") {
-			h.renderError(w, r, http.StatusUnauthorized, "invalid_2fa_code", "Invalid 2FA code")
+		if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "expired") {
+			h.renderError(w, r, http.StatusUnauthorized, "invalid_2fa_challenge", "Invalid or expired 2FA challenge")
 			return
 		}
 
@@ -543,15 +562,62 @@ func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := &api.TokenResponse{
+	render.Status(r, http.StatusOK)
+	render.JSON(w, r, &api.TokenResponse{
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
 		ExpiresIn:    tokens.ExpiresIn,
 		TokenType:    "Bearer",
+	})
+}
+
+// Confirm2FASetup confirms a 2FA setup by validating the TOTP code.
+// @Summary Confirm 2FA setup
+// @Description Validate the TOTP code from the authenticator app to enable 2FA. Requires authentication.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body api.TwoFactorConfirmSetupRequest true "2FA confirm setup request"
+// @Success 200 {object} api.SuccessResponse
+// @Failure 400 {object} api.ErrorResponse
+// @Failure 401 {object} api.ErrorResponse
+// @Failure 500 {object} api.ErrorResponse
+// @Router /api/v1/auth/2fa/confirm [post]
+func (h *AuthHandler) Confirm2FASetup(w http.ResponseWriter, r *http.Request) {
+	userID := h.getUserID(r)
+	if userID == uuid.Nil {
+		h.renderError(w, r, http.StatusUnauthorized, "unauthorized", "User not authenticated")
+		return
 	}
 
-	render.Status(r, http.StatusOK)
-	render.JSON(w, r, response)
+	var req api.TwoFactorConfirmSetupRequest
+	if err := h.decodeAndValidate(r, &req); err != nil {
+		h.renderError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+
+	serviceReq := &service.Confirm2FASetupRequest{
+		UserID:    userID,
+		TwoFACode: req.TwoFACode,
+	}
+
+	if err := h.authService.Confirm2FASetup(r.Context(), serviceReq); err != nil {
+		h.logger.WithFields(logrus.Fields{
+			"user_id": userID,
+			"error":   err.Error(),
+		}).Error("2FA confirm setup failed")
+
+		if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "expired") {
+			h.renderError(w, r, http.StatusUnauthorized, "invalid_2fa_code", err.Error())
+			return
+		}
+
+		h.renderError(w, r, http.StatusInternalServerError, "internal_error", "Failed to confirm 2FA setup")
+		return
+	}
+
+	h.renderSuccess(w, r, http.StatusOK, "2FA enabled successfully")
 }
 
 // Disable2FA handles 2FA disabling
@@ -564,7 +630,7 @@ func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 // @Failure 400 {object} api.ErrorResponse
 // @Failure 401 {object} api.ErrorResponse
 // @Failure 500 {object} api.ErrorResponse
-// @Router /auth/2fa/disable [post]
+// @Router /api/v1/auth/2fa/disable [post]
 func (h *AuthHandler) Disable2FA(w http.ResponseWriter, r *http.Request) {
 	userID := h.getUserID(r)
 	if userID == uuid.Nil {
@@ -588,6 +654,131 @@ func (h *AuthHandler) Disable2FA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderSuccess(w, r, http.StatusOK, "2FA disabled successfully")
+}
+
+// ForgotPassword handles password reset requests
+// @Summary Request password reset
+// @Description Send a password reset link to the user's email. Always returns success to prevent user enumeration.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body api.ForgotPasswordRequest true "Forgot password request"
+// @Success 200 {object} api.SuccessResponse
+// @Failure 400 {object} api.ErrorResponse
+// @Router /api/v1/auth/forgot-password [post]
+func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req api.ForgotPasswordRequest
+	if err := h.decodeAndValidate(r, &req); err != nil {
+		h.renderError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+
+	ipAddr := middleware.GetClientIP(r)
+	serviceReq := &service.PasswordResetRequest{
+		Email:     req.Email,
+		IPAddress: &ipAddr,
+	}
+
+	if err := h.authService.RequestPasswordReset(r.Context(), serviceReq); err != nil {
+		h.logger.WithFields(logrus.Fields{
+			"email": req.Email,
+			"error": err.Error(),
+		}).Error("Password reset request failed")
+	}
+
+	// Always return 200 to prevent user enumeration
+	h.renderSuccess(w, r, http.StatusOK, "If that email exists, a reset link has been sent")
+}
+
+// ResetPassword handles password reset confirmation
+// @Summary Reset password
+// @Description Reset password using the token received by email
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body api.ResetPasswordRequest true "Reset password request"
+// @Success 200 {object} api.SuccessResponse
+// @Failure 400 {object} api.ErrorResponse
+// @Failure 401 {object} api.ErrorResponse
+// @Failure 500 {object} api.ErrorResponse
+// @Router /api/v1/auth/reset-password [post]
+func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req api.ResetPasswordRequest
+	if err := h.decodeAndValidate(r, &req); err != nil {
+		h.renderError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+
+	serviceReq := &service.ResetPasswordRequest{
+		Token:       req.Token,
+		NewPassword: req.NewPassword,
+	}
+
+	if err := h.authService.ResetPassword(r.Context(), serviceReq); err != nil {
+		h.logger.WithFields(logrus.Fields{
+			"error": err.Error(),
+		}).Error("Password reset failed")
+
+		if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "expired") {
+			h.renderError(w, r, http.StatusUnauthorized, "invalid_token", "Invalid or expired reset token")
+			return
+		}
+
+		h.renderError(w, r, http.StatusInternalServerError, "internal_error", "Failed to reset password")
+		return
+	}
+
+	h.renderSuccess(w, r, http.StatusOK, "Password reset successfully. Please log in with your new password.")
+}
+
+// ChangePassword handles authenticated password change
+// @Summary Change password
+// @Description Change password for the currently authenticated user. Revokes all active sessions.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body api.ChangePasswordRequest true "Change password request"
+// @Success 200 {object} api.SuccessResponse
+// @Failure 400 {object} api.ErrorResponse
+// @Failure 401 {object} api.ErrorResponse
+// @Failure 500 {object} api.ErrorResponse
+// @Router /api/v1/auth/change-password [post]
+func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	userID := h.getUserID(r)
+	if userID == uuid.Nil {
+		h.renderError(w, r, http.StatusUnauthorized, "unauthorized", "User not authenticated")
+		return
+	}
+
+	var req api.ChangePasswordRequest
+	if err := h.decodeAndValidate(r, &req); err != nil {
+		h.renderError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+
+	serviceReq := &service.ChangePasswordRequest{
+		UserID:      userID,
+		OldPassword: req.OldPassword,
+		NewPassword: req.NewPassword,
+	}
+
+	if err := h.authService.ChangePassword(r.Context(), serviceReq); err != nil {
+		h.logger.WithFields(logrus.Fields{
+			"user_id": userID,
+			"error":   err.Error(),
+		}).Error("Password change failed")
+
+		if strings.Contains(err.Error(), "invalid current password") {
+			h.renderError(w, r, http.StatusUnauthorized, "invalid_password", "Current password is incorrect")
+			return
+		}
+
+		h.renderError(w, r, http.StatusInternalServerError, "internal_error", "Failed to change password")
+		return
+	}
+
+	h.renderSuccess(w, r, http.StatusOK, "Password changed successfully. Please log in again.")
 }
 
 // Helper methods

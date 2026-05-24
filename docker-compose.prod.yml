@@ -35,15 +35,26 @@ services:
     image: redis:7.2-alpine
     ports:
       - "${REDIS_PORT:-6379}:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
     restart: unless-stopped
-    # Redis persistence for production
-    command: redis-server --appendonly yes --appendfsync everysec
+    # Redis persistence + security for production
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 200mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --save 60 10000
     volumes:
       - redis_data_prod:/data
     deploy:
@@ -80,6 +91,7 @@ services:
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-require}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       APP_ENVIRONMENT: production
       APP_LOG_LEVEL: ${LOG_LEVEL:-info}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}

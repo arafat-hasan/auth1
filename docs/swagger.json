@@ -1,7 +1,7 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "Type \"Bearer\" followed by a space and JWT token.",
+        "description": "JWT-based authentication service with OTP, 2FA, and RBAC.",
         "title": "Auth Service API",
         "termsOfService": "http://swagger.io/terms/",
         "contact": {
@@ -13,12 +13,69 @@
             "name": "MIT",
             "url": "https://opensource.org/licenses/MIT"
         },
-        "version": "2.0"
+        "version": "2.0.0"
     },
     "host": "localhost:8080",
-    "basePath": "/api/v1",
+    "basePath": "/",
     "paths": {
-        "/auth/2fa/disable": {
+        "/api/v1/auth/2fa/confirm": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Validate the TOTP code from the authenticator app to enable 2FA. Requires authentication.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Confirm 2FA setup",
+                "parameters": [
+                    {
+                        "description": "2FA confirm setup request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.TwoFactorConfirmSetupRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/2fa/disable": {
             "post": {
                 "security": [
                     {
@@ -61,7 +118,7 @@
                 }
             }
         },
-        "/auth/2fa/setup": {
+        "/api/v1/auth/2fa/setup": {
             "post": {
                 "security": [
                     {
@@ -98,9 +155,9 @@
                 }
             }
         },
-        "/auth/2fa/verify": {
+        "/api/v1/auth/2fa/verify": {
             "post": {
-                "description": "Verify two-factor authentication code",
+                "description": "Submit the challenge_token (from Login 202) and TOTP code to complete login.",
                 "consumes": [
                     "application/json"
                 ],
@@ -110,15 +167,15 @@
                 "tags": [
                     "auth"
                 ],
-                "summary": "Verify 2FA",
+                "summary": "Verify 2FA login challenge",
                 "parameters": [
                     {
-                        "description": "2FA verify request",
+                        "description": "2FA login verify request",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/api.TwoFactorVerifyRequest"
+                            "$ref": "#/definitions/api.TwoFactorLoginVerifyRequest"
                         }
                     }
                 ],
@@ -150,7 +207,104 @@
                 }
             }
         },
-        "/auth/login": {
+        "/api/v1/auth/change-password": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Change password for the currently authenticated user. Revokes all active sessions.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Change password",
+                "parameters": [
+                    {
+                        "description": "Change password request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.ChangePasswordRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/forgot-password": {
+            "post": {
+                "description": "Send a password reset link to the user's email. Always returns success to prevent user enumeration.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Request password reset",
+                "parameters": [
+                    {
+                        "description": "Forgot password request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.ForgotPasswordRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/login": {
             "post": {
                 "description": "Authenticate user with email and password. Returns TokenResponse on success, or TwoFactorChallengeResponse when the account has 2FA enabled.",
                 "consumes": [
@@ -208,7 +362,7 @@
                 }
             }
         },
-        "/auth/logout": {
+        "/api/v1/auth/logout": {
             "post": {
                 "description": "Logout user and invalidate refresh token",
                 "consumes": [
@@ -254,7 +408,7 @@
                 }
             }
         },
-        "/auth/me": {
+        "/api/v1/auth/me": {
             "get": {
                 "security": [
                     {
@@ -297,7 +451,7 @@
                 }
             }
         },
-        "/auth/public-key": {
+        "/api/v1/auth/public-key": {
             "get": {
                 "description": "Get JWT public key for token verification",
                 "produces": [
@@ -317,7 +471,7 @@
                 }
             }
         },
-        "/auth/refresh": {
+        "/api/v1/auth/refresh": {
             "post": {
                 "description": "Refresh access token using refresh token",
                 "consumes": [
@@ -369,7 +523,7 @@
                 }
             }
         },
-        "/auth/request-otp": {
+        "/api/v1/auth/request-otp": {
             "post": {
                 "description": "Request OTP for login or signup verification",
                 "consumes": [
@@ -427,7 +581,59 @@
                 }
             }
         },
-        "/auth/signup": {
+        "/api/v1/auth/reset-password": {
+            "post": {
+                "description": "Reset password using the token received by email",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Reset password",
+                "parameters": [
+                    {
+                        "description": "Reset password request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.ResetPasswordRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/signup": {
             "post": {
                 "description": "Register a new user account",
                 "consumes": [
@@ -479,7 +685,7 @@
                 }
             }
         },
-        "/auth/verify-login": {
+        "/api/v1/auth/verify-login": {
             "post": {
                 "description": "Verify login with OTP",
                 "consumes": [
@@ -531,7 +737,7 @@
                 }
             }
         },
-        "/auth/verify-signup": {
+        "/api/v1/auth/verify-signup": {
             "post": {
                 "description": "Verify signup with OTP and complete user registration",
                 "consumes": [
@@ -583,21 +789,467 @@
                 }
             }
         },
-        "/health": {
+        "/api/v1/users": {
             "get": {
-                "description": "Returns the health status of the auth service",
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "List all users with optional search, role, and active-status filters. Supports pagination.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "system"
+                    "admin"
                 ],
-                "summary": "Health check",
+                "summary": "List users (admin)",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "Page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Page size max 100",
+                        "name": "page_size",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search email or name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by role",
+                        "name": "role",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Filter by active status",
+                        "name": "is_active",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/api.HealthResponse"
+                            "$ref": "#/definitions/api.ListUsersResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/users/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Get full admin detail for a single user by UUID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Get user by ID (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.UserAdminResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Update profile fields, role, and/or metadata in a single request (all fields optional)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Update user (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateUserAdminRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Soft-delete a user and immediately revoke all active sessions",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Delete user (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/users/{id}/deactivate": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Deactivate user account and immediately revoke all active sessions",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Deactivate user (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/users/{id}/reactivate": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Restore a deactivated user account",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Reactivate user (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/users/{id}/sessions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns JTIs of all active refresh tokens. Admin can view any user; regular user can only view their own.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "List user sessions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.ListSessionsResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/users/{id}/sessions/{session_id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Revoke a specific session by its JTI. Admin can revoke any session; regular user can only revoke their own.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Revoke a user session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session ID (JTI)",
+                        "name": "session_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/users/{id}/unlock": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Manually clear failed login attempts and remove account lockout",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Unlock user account (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
                         }
                     }
                 }
@@ -605,6 +1257,25 @@
         }
     },
     "definitions": {
+        "api.ChangePasswordRequest": {
+            "description": "Change password for the authenticated user",
+            "type": "object",
+            "required": [
+                "new_password",
+                "old_password"
+            ],
+            "properties": {
+                "new_password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "example": "newSecurePassword123"
+                },
+                "old_password": {
+                    "type": "string",
+                    "example": "currentPassword123"
+                }
+            }
+        },
         "api.ErrorResponse": {
             "description": "Error response",
             "type": "object",
@@ -623,21 +1294,55 @@
                 }
             }
         },
-        "api.HealthResponse": {
-            "description": "Health check response",
+        "api.ForgotPasswordRequest": {
+            "description": "Request a password reset email",
+            "type": "object",
+            "required": [
+                "email"
+            ],
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "example": "user@example.com"
+                }
+            }
+        },
+        "api.ListSessionsResponse": {
+            "description": "List of active sessions",
             "type": "object",
             "properties": {
-                "service": {
-                    "type": "string",
-                    "example": "auth1"
+                "sessions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.SessionItem"
+                    }
                 },
-                "status": {
-                    "type": "string",
-                    "example": "healthy"
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.ListUsersResponse": {
+            "description": "Paginated list of users",
+            "type": "object",
+            "properties": {
+                "page": {
+                    "type": "integer"
                 },
-                "version": {
-                    "type": "string",
-                    "example": "1.0.0"
+                "page_size": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "total_pages": {
+                    "type": "integer"
+                },
+                "users": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.UserAdminResponse"
+                    }
                 }
             }
         },
@@ -721,6 +1426,34 @@
                 }
             }
         },
+        "api.ResetPasswordRequest": {
+            "description": "Reset password using a token received by email",
+            "type": "object",
+            "required": [
+                "new_password",
+                "token"
+            ],
+            "properties": {
+                "new_password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "example": "newSecurePassword123"
+                },
+                "token": {
+                    "type": "string",
+                    "example": "abc123randomtoken"
+                }
+            }
+        },
+        "api.SessionItem": {
+            "description": "Active session info",
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string"
+                }
+            }
+        },
         "api.SignupRequest": {
             "description": "User signup request",
             "type": "object",
@@ -784,9 +1517,13 @@
             }
         },
         "api.TwoFactorChallengeResponse": {
-            "description": "2FA challenge response",
+            "description": "2FA challenge response — use challenge_token in POST /2fa/verify",
             "type": "object",
             "properties": {
+                "challenge_token": {
+                    "type": "string",
+                    "example": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo_"
+                },
                 "message": {
                     "type": "string",
                     "example": "2FA verification required"
@@ -794,10 +1531,37 @@
                 "requires_two_factor": {
                     "type": "boolean",
                     "example": true
-                },
-                "user_id": {
+                }
+            }
+        },
+        "api.TwoFactorConfirmSetupRequest": {
+            "description": "Confirm 2FA setup by verifying the TOTP code from the authenticator app.",
+            "type": "object",
+            "required": [
+                "two_fa_code"
+            ],
+            "properties": {
+                "two_fa_code": {
                     "type": "string",
-                    "example": "550e8400-e29b-41d4-a716-446655440000"
+                    "example": "123456"
+                }
+            }
+        },
+        "api.TwoFactorLoginVerifyRequest": {
+            "description": "Complete 2FA login using the challenge_token from the 202 response.",
+            "type": "object",
+            "required": [
+                "challenge_token",
+                "two_fa_code"
+            ],
+            "properties": {
+                "challenge_token": {
+                    "type": "string",
+                    "example": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo_"
+                },
+                "two_fa_code": {
+                    "type": "string",
+                    "example": "123456"
                 }
             }
         },
@@ -815,21 +1579,80 @@
                 }
             }
         },
-        "api.TwoFactorVerifyRequest": {
-            "description": "Verify 2FA code request",
+        "api.UpdateUserAdminRequest": {
+            "description": "Admin update user request",
             "type": "object",
-            "required": [
-                "2fa_code",
-                "user_id"
-            ],
             "properties": {
-                "2fa_code": {
-                    "type": "string",
-                    "example": "123456"
+                "email": {
+                    "type": "string"
                 },
-                "user_id": {
+                "metadata": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "name": {
+                    "type": "string"
+                },
+                "phone": {
+                    "type": "string"
+                },
+                "role": {
                     "type": "string",
-                    "example": "550e8400-e29b-41d4-a716-446655440000"
+                    "enum": [
+                        "user",
+                        "admin",
+                        "moderator",
+                        "reviewer"
+                    ]
+                }
+            }
+        },
+        "api.UserAdminResponse": {
+            "description": "Full user detail for admin endpoints",
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "failed_login_attempts": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_2fa_enabled": {
+                    "type": "boolean"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "is_verified": {
+                    "type": "boolean"
+                },
+                "last_login_at": {
+                    "type": "string"
+                },
+                "locked_until": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "name": {
+                    "type": "string"
+                },
+                "phone": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
                 }
             }
         },
@@ -898,6 +1721,7 @@
     },
     "securityDefinitions": {
         "BearerAuth": {
+            "description": "Type \"Bearer \" followed by your access token",
             "type": "apiKey",
             "name": "Authorization",
             "in": "header"

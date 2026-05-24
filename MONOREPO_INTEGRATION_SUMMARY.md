@@ -11,7 +11,7 @@ The auth-service has been successfully integrated into the Duitara monorepo whil
 
 ### 1. Module Name Update ✅
 - **Old:** `auth1`
-- **New:** `github.com/arafat-hasan/duitara/services/auth-service`
+- **New:** `github.com/arafat-hasan/auth1`
 - Updated in `go.mod`
 
 ### 2. Import Path Updates ✅
