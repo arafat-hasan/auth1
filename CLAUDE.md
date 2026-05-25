@@ -41,7 +41,7 @@ Single binary HTTP service. Entry point: `cmd/auth-service/main.go`. Separate mi
 
 ### Dependency wiring (main.go top-to-bottom)
 
-1. Config (`internal/config`) — viper + YAML `config.yaml`, env vars override via `SECTION_KEY` convention
+1. Config (`internal/config`) — viper + YAML `config.yaml`, env vars override via `SECTION_SUBSECTION_KEY` convention
 2. PostgreSQL via `uptrace/bun` + pgdriver
 3. Redis via `go-redis/v9`
 4. Repositories (`internal/app/repo`) — UserRepo (postgres), RedisRepo (redis), OutboxRepo (postgres)
@@ -49,50 +49,125 @@ Single binary HTTP service. Entry point: `cmd/auth-service/main.go`. Separate mi
 6. EmailPublisher (`internal/publisher`) — `OutboxWriter` writes to `email_outbox` table
 7. JWT + TOTP managers (`internal/utils`)
 8. `AuthService` (`internal/service`) — assembled from all deps above
-9. Chi router + middleware + `AuthHandler` (`internal/app/handler/v1`)
+9. Chi router + middleware + `AuthHandler` + `UserHandler` (`internal/app/handler/v1`)
 10. `OutboxRelay` worker (`internal/worker`) — goroutine that polls `email_outbox` and publishes to RabbitMQ
-
-### Transactional outbox pattern
-
-Email delivery is decoupled: service writes to `email_outbox` table (via `OutboxWriter.Enqueue`), `OutboxRelay` polls that table and publishes confirmed messages to RabbitMQ topic exchange `duitara.events`. Idempotency key prevents duplicate inserts. Max retry controlled by `amqp.max_attempts`.
-
-### Rate limiting
-
-`internal/ratelimit.RateLimiter` uses Redis sorted sets (sliding window). Applied per-endpoint in `main.go` using `appMiddleware.RateLimit`. Login has dual limits: by IP and by email. Authenticated endpoints rate-limit by user ID.
-
-### Model layers
-
-- `internal/app/model/domain` — business entities (`User`, `TokenPair`, `TOTPSetupData`)
-- `internal/app/model/db` — bun ORM structs (same user shape + `EmailOutbox`)
-- `internal/app/model/api` — HTTP request/response types with `validate:` tags
 
 ### Auth flows
 
-- **Signup**: POST `/api/v1/auth/signup` → OTP emailed → POST `/api/v1/auth/verify-signup` → tokens
-- **Password login**: POST `/api/v1/auth/login` → tokens (or 202 + 2FA challenge if 2FA enabled)
-- **OTP login**: POST `/api/v1/auth/request-otp` → POST `/api/v1/auth/verify-login` → tokens
-- **2FA**: `POST /api/v1/auth/2fa/verify` completes login after 202 challenge
-- **Token refresh**: POST `/api/v1/auth/refresh` (refresh token in body, not cookie)
-- **Logout**: invalidates refresh token JTI in Redis; access tokens expire naturally
+- **Signup**: `POST /api/v1/auth/signup` → OTP emailed → `POST /api/v1/auth/verify-signup` → tokens
+- **Password login**: `POST /api/v1/auth/login` → tokens (or 202 + challenge token if 2FA enabled)
+- **OTP login**: `POST /api/v1/auth/request-otp` → `POST /api/v1/auth/verify-login` → tokens
+- **2FA login**: Login returns 202 with `challenge_token` → `POST /api/v1/auth/2fa/verify` (challenge_token + TOTP code) → tokens
+- **2FA setup**: `POST /api/v1/auth/2fa/setup` (auth required) → scan QR → `POST /api/v1/auth/2fa/confirm` (TOTP code)
+- **Password reset**: `POST /api/v1/auth/forgot-password` → email link → `POST /api/v1/auth/reset-password`
+- **Password change**: `POST /api/v1/auth/change-password` (auth required) — revokes all sessions
+- **Token refresh**: `POST /api/v1/auth/refresh` (refresh token in body)
+- **Logout**: `POST /api/v1/auth/logout` — deletes refresh token JTI from Redis; access token blacklisted
 
-### JWT
+### JWT and token management
 
-RSA-2048. Access token TTL default 15 min, refresh 7 days. JTI stored in Redis for refresh token rotation and blacklisting. Public key exposed at `GET /api/v1/auth/public-key` for other services to verify tokens without shared secret.
+RSA-2048 (RS256). Access token TTL default 15 min, refresh 7 days. Per-token JTI stored in Redis for refresh token tracking and individual revocation. Public key at `GET /api/v1/auth/public-key` for downstream services. On logout, the access token JTI is blacklisted in Redis with its remaining TTL; the refresh token key is deleted. On password change, `BlacklistAllUserJWTs` sets a user-level blacklist marker that the auth middleware checks.
+
+### Rate limiting
+
+`internal/ratelimit.RateLimiter` uses Redis sorted sets (sliding window). Applied per-endpoint in `main.go` using `appMiddleware.RateLimit`. All limits configurable via `config.yaml` under `rate_limit.*`. Key strategies:
+- Global: per IP across all endpoints
+- Login: dual limit — by IP and by email (prevents both brute force and credential stuffing)
+- OTP endpoints: by email
+- Authenticated endpoints: by user ID
+- 2FA setup: stricter per-user limit
+
+### Transactional outbox
+
+Email delivery decoupled: service writes to `email_outbox` table in same DB transaction as business data. `OutboxRelay` goroutine polls that table and publishes to RabbitMQ topic exchange. Idempotency key prevents duplicate inserts. `amqp.max_attempts` controls retry cap. Fail-safe: RabbitMQ downtime doesn't affect user-facing operations.
+
+### TOTP / 2FA
+
+TOTP secrets encrypted with AES-256-GCM before DB storage (`app.totp_encryption_key` = base64-encoded 32-byte key). During setup, plaintext secret stored in Redis with short TTL; moved to encrypted DB on `Confirm2FASetup`. Login with 2FA enabled: password auth succeeds → short-lived challenge token stored in Redis → returned as 202 → client submits challenge token + TOTP code to `/2fa/verify` → tokens issued.
+
+### User management (admin API)
+
+`UserHandler` at `/api/v1/users/` — all routes require JWT auth. Admin-only routes additionally require `RequireAdmin` RBAC middleware.
+
+- `GET /api/v1/users/` — list with pagination + search/role/active filters
+- `GET /api/v1/users/{id}` — full admin detail
+- `PUT /api/v1/users/{id}` — update profile, role, metadata (all optional fields)
+- `DELETE /api/v1/users/{id}` — soft delete + revoke all sessions
+- `POST /api/v1/users/{id}/deactivate` — deactivate + revoke sessions
+- `POST /api/v1/users/{id}/reactivate`
+- `POST /api/v1/users/{id}/unlock` — clear lockout
+- `GET /api/v1/users/{id}/sessions` — list active refresh token JTIs (admin or self)
+- `DELETE /api/v1/users/{id}/sessions/{session_id}` — revoke specific session (admin or self)
+
+### Model layers
+
+- `internal/app/model/domain` — business entities (`User`, `TokenPair`, `TOTPSetupData`, `PendingUser`)
+- `internal/app/model/db` — bun ORM structs (`User` + `EmailOutbox`)
+- `internal/app/model/api` — HTTP request/response types with `validate:` tags
 
 ### Configuration
 
-`config.yaml` (see `config.example.yaml`). Environment variables override via `DATABASE_HOST`, `REDIS_HOST`, etc. Feature flags in `app.*`: `enable_email_auth`, `enable_phone_auth`, `enable_password_auth`, `enable_otp_auth`, `enable_2fa`, `require_email_verification`.
+`config.yaml` (see `config.example.yaml`). Env vars override via `DATABASE_HOST`, `REDIS_HOST`, `AMQP_URL`, etc. Key sections:
+
+| Section | Purpose |
+|---------|---------|
+| `server.*` | Host, port |
+| `database.*` | PostgreSQL connection |
+| `redis.*` | Redis connection |
+| `jwt.*` | Key paths, token TTLs |
+| `amqp.*` | RabbitMQ URL, exchange, outbox poll interval |
+| `sms.*` | SMS provider (phone auth, currently unused) |
+| `security.*` | Login lockout, password policy, reset TTL |
+| `app.*` | Feature flags, OTP config, TOTP encryption key |
+| `rate_limit.*` | Per-endpoint limits and windows |
+
+Feature flags under `app.*`: `enable_email_auth`, `enable_phone_auth`, `enable_password_auth`, `enable_otp_auth`, `enable_2fa`, `enable_audit_log`, `require_email_verification`, `require_phone_verification`.
 
 ### Key files
 
 | Path | Purpose |
 |------|---------|
-| `internal/service/auth_service.go` | `AuthService` interface |
-| `internal/service/service.go` | `authServiceImpl` + shared helpers (`generateTokens`, `generateAndSendOTP`, `verifyOTP`) |
-| `internal/service/login.go` | Login + lockout logic |
+| `cmd/auth-service/main.go` | Entry point: wiring, routing, graceful shutdown |
+| `internal/config/config.go` | Config structs + viper loading + JWT key loading |
+| `internal/service/auth_service.go` | `AuthService` interface (all methods) |
+| `internal/service/service.go` | `authServiceImpl` + shared helpers (`generateTokens`, `generateAndSendOTP`, `verifyOTP`, `auditLog`) |
+| `internal/service/login.go` | Login, lockout tracking, 2FA challenge issuance |
 | `internal/service/registration.go` | Signup + verify flows |
-| `internal/service/token.go` | Refresh + logout |
-| `internal/service/twofa.go` | TOTP setup/verify/disable |
-| `internal/app/middleware/auth_chi.go` | JWT auth middleware (blacklist check via Redis) |
-| `internal/app/middleware/rate_limit.go` | Rate limit middleware wiring |
+| `internal/service/token.go` | Refresh + logout + logout-all |
+| `internal/service/twofa.go` | TOTP setup/confirm/verify-login/disable |
+| `internal/service/password.go` | Password reset + change (with session revocation) |
+| `internal/service/user.go` | User CRUD, role/metadata updates, session management |
+| `internal/service/config.go` | `service.Config` struct (TTLs, feature flags, encryption key) |
+| `internal/service/dto.go` | Service-layer request/response types |
+| `internal/app/handler/v1/auth_handler.go` | Auth HTTP handlers |
+| `internal/app/handler/v1/user_handler.go` | Admin user management HTTP handlers |
+| `internal/app/middleware/auth_chi.go` | JWT auth middleware (blacklist + user-level revocation check) |
+| `internal/app/middleware/rate_limit.go` | Rate limit middleware + key functions (IP, email, token, user) |
+| `internal/app/middleware/rbac.go` | `RequireRole` / `RequireAdmin` RBAC middleware |
+| `internal/app/repo/redis_repository.go` | All Redis ops: OTP, refresh tokens, 2FA, blacklist, login attempts |
+| `internal/app/repo/user_repository.go` | PostgreSQL user CRUD + audit log |
+| `internal/app/repo/outbox_repository.go` | Email outbox read/write |
+| `internal/ratelimit/rate_limiter.go` | Sliding window rate limiter using Redis sorted sets |
+| `internal/publisher/outbox_writer.go` | `OutboxWriter` — writes email events to DB outbox |
+| `internal/worker/outbox_relay.go` | Polls outbox, publishes to RabbitMQ |
+| `internal/utils/jwt.go` | JWT generation + validation (RS256) |
+| `internal/utils/totp.go` | TOTP secret gen + AES-256-GCM encryption/decryption |
+| `internal/utils/crypto.go` | OTP generation + SHA-256 hashing |
+| `internal/utils/password.go` | bcrypt hash + verify |
+| `internal/utils/rbac.go` | Role helpers |
 | `assets/private_key.pem` | RSA private key — never commit real keys |
+| `migrations/` | Bun migration files + separate `migrate` binary |
+
+### Redis key schema
+
+| Pattern | Type | Purpose |
+|---------|------|---------|
+| `otp:{email}:{purpose}` | String | Hashed OTP (TTL = otp_ttl) |
+| `pending_user:{email}` | String (JSON) | Pre-verification user data |
+| `refresh_token:{userID}:{jti}` | String | Active refresh token marker |
+| `2fa_secret:{userID}` | String | Temp TOTP secret during setup |
+| `2fa_challenge:{token}` | String | Challenge token → userID (short TTL) |
+| `blacklist:jwt:{jti}` | String | Blacklisted access token (TTL = remaining lifetime) |
+| `blacklist:user:{userID}` | String | Timestamp: all tokens before this are invalid |
+| `login_attempts:{type}:{identifier}` | Hash | Failed attempt tracking (count, timestamps, locked_until) |
+| `rl:{prefix}:{key}` | Sorted Set | Rate limit sliding window (score = timestamp) |
