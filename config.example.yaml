@@ -9,9 +9,9 @@ server:
 database:
   host: "localhost"
   port: "5432"
-  user: "auth_service"
+  user: "auth1"
   password: "password"
-  name: "auth_service"
+  name: "auth1"
   ssl_mode: "disable"
 
 redis:
@@ -27,8 +27,8 @@ jwt:
   refresh_token_ttl: 604800  # 7 days
 
 amqp:
-  url: "amqp://duitara:password@localhost:5672/"
-  exchange: "duitara.events"
+  url: "amqp://auth1:password@localhost:5672/"
+  exchange: "auth1.events"
   outbox_poll_secs: 5    # how often the relay polls for pending rows (seconds)
   max_attempts: 5        # max publish attempts before marking a row as failed
   batch_size: 10         # rows processed per poll cycle
@@ -110,4 +110,13 @@ rate_limit:
 
   # Authenticated endpoints rate limits (per user)
   authenticated_limit: 100   # Max requests per user
-  authenticated_window: 60   # Window in seconds (1 minute) 
+  authenticated_window: 60   # Window in seconds (1 minute)
+
+# Service-to-service authentication
+# API keys used by downstream services (e.g. order-service) to call /api/v1/auth/introspect.
+# Each consuming service should have its own key so it can be rotated independently.
+# Generate with: openssl rand -hex 32
+services:
+  allowed_api_keys: []
+  # - "your-order-service-api-key-here"
+  # - "your-inventory-service-api-key-here"

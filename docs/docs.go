@@ -310,6 +310,85 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/auth/introspect": {
+            "post": {
+                "description": "Validate a token and check revocation state. For internal service-to-service use only.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Introspect token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "ApiKey \u003cservice-api-key\u003e",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Token to introspect",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.IntrospectRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.IntrospectResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/jwks": {
+            "get": {
+                "description": "Get JSON Web Key Set for JWT verification by downstream services",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Get JWKS",
+                "responses": {
+                    "200": {
+                        "description": "JWKS document",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/auth/login": {
             "post": {
                 "description": "Authenticate user with email and password. Returns TokenResponse on success, or TwoFactorChallengeResponse when the account has 2FA enabled.",
@@ -507,26 +586,6 @@ const docTemplate = `{
                         "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/api.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/auth/public-key": {
-            "get": {
-                "description": "Get JWT public key for token verification",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "auth"
-                ],
-                "summary": "Get public key",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/api.PublicKeyResponse"
                         }
                     }
                 }
@@ -1446,6 +1505,62 @@ const docTemplate = `{
                 }
             }
         },
+        "api.IntrospectRequest": {
+            "description": "Token introspection request (service-to-service only)",
+            "type": "object",
+            "required": [
+                "token"
+            ],
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "example": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+                }
+            }
+        },
+        "api.IntrospectResponse": {
+            "description": "RFC 7662 token introspection response",
+            "type": "object",
+            "properties": {
+                "active": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "email": {
+                    "type": "string",
+                    "example": "user@example.com"
+                },
+                "exp": {
+                    "type": "integer",
+                    "example": 1716681600
+                },
+                "iat": {
+                    "type": "integer",
+                    "example": 1716680700
+                },
+                "iss": {
+                    "type": "string",
+                    "example": "auth1"
+                },
+                "jti": {
+                    "type": "string",
+                    "example": "550e8400-e29b-41d4-a716-446655440001"
+                },
+                "roles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "[\"user\"]"
+                    ]
+                },
+                "sub": {
+                    "type": "string",
+                    "example": "550e8400-e29b-41d4-a716-446655440000"
+                }
+            }
+        },
         "api.ListSessionsResponse": {
             "description": "List of active sessions",
             "type": "object",
@@ -1513,20 +1628,6 @@ const docTemplate = `{
                 "refresh_token": {
                     "type": "string",
                     "example": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
-                }
-            }
-        },
-        "api.PublicKeyResponse": {
-            "description": "JWT public key response",
-            "type": "object",
-            "properties": {
-                "key_type": {
-                    "type": "string",
-                    "example": "RSA"
-                },
-                "public_key": {
-                    "type": "string",
-                    "example": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEF..."
                 }
             }
         },

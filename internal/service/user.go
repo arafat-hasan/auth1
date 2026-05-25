@@ -16,10 +16,6 @@ func (s *authServiceImpl) GetUserByID(ctx context.Context, userID uuid.UUID) (*d
 	return s.userRepo.GetByID(ctx, userID)
 }
 
-func (s *authServiceImpl) GetPublicKey() string {
-	return s.config.PublicKeyPEM
-}
-
 func (s *authServiceImpl) UpdateUser(ctx context.Context, userID uuid.UUID, req *UpdateUserRequest) error {
 	s.logger.WithFields(logrus.Fields{
 		"user_id": userID,

@@ -22,6 +22,7 @@ type Config struct {
 	Security   SecurityConfig   `mapstructure:"security"`
 	App        AppConfig        `mapstructure:"app"`
 	RateLimit  RateLimitConfig  `mapstructure:"rate_limit"`
+	Services   ServicesConfig   `mapstructure:"services"`
 }
 
 type ServerConfig struct {
@@ -52,7 +53,6 @@ type JWTConfig struct {
 	RefreshTokenTTL int    `mapstructure:"refresh_token_ttl"`
 	PrivateKey      *rsa.PrivateKey
 	PublicKey       *rsa.PublicKey
-	PublicKeyPEM    string
 }
 
 type AMQPConfig struct {
@@ -101,6 +101,13 @@ type AppConfig struct {
 	// TOTP encryption: base64-encoded 32-byte AES-256 key (generate: openssl rand -base64 32)
 	TOTPEncryptionKey   string `mapstructure:"totp_encryption_key"`
 	TOTPChallengeTTLSec int    `mapstructure:"totp_challenge_ttl_sec"`
+}
+
+// ServicesConfig holds API keys for internal service-to-service calls (e.g. /introspect).
+type ServicesConfig struct {
+	// AllowedAPIKeys is the list of accepted keys for the Authorization: ApiKey <key> header.
+	// Generate with: openssl rand -hex 32
+	AllowedAPIKeys []string `mapstructure:"allowed_api_keys"`
 }
 
 type RateLimitConfig struct {
@@ -207,8 +214,8 @@ func setDefaults() {
 	viper.SetDefault("jwt.access_token_ttl", 900)     // 15 minutes
 	viper.SetDefault("jwt.refresh_token_ttl", 604800) // 7 days
 
-	viper.SetDefault("amqp.url", "amqp://duitara:password@localhost:5672/")
-	viper.SetDefault("amqp.exchange", "duitara.events")
+	viper.SetDefault("amqp.url", "amqp://auth1:password@localhost:5672/")
+	viper.SetDefault("amqp.exchange", "auth1.events")
 	viper.SetDefault("amqp.outbox_poll_secs", 5)
 	viper.SetDefault("amqp.max_attempts", 5)
 	viper.SetDefault("amqp.batch_size", 10)
@@ -244,6 +251,9 @@ func setDefaults() {
 	viper.SetDefault("app.require_phone_verification", false)
 	viper.SetDefault("app.totp_encryption_key", "")
 	viper.SetDefault("app.totp_challenge_ttl_sec", 300) // 5 minutes
+
+	// Service-to-service API keys
+	viper.SetDefault("services.allowed_api_keys", []string{})
 
 	// Rate limiting defaults
 	viper.SetDefault("rate_limit.enabled", true)
@@ -334,7 +344,6 @@ func loadJWTKeys(config *Config) error {
 	}
 
 	config.JWT.PublicKey = rsaPublicKey
-	config.JWT.PublicKeyPEM = string(publicKeyData)
 
 	return nil
 }

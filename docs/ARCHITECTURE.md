@@ -1,6 +1,6 @@
 # Architecture — Auth Service
 
-Platform-agnostic JWT authentication microservice. Designed to be embedded in any product (Duitara, SaaS, e-commerce) via config flags, not code changes.
+Platform-agnostic JWT authentication microservice. Designed to be embedded in any product (SaaS, e-commerce) via config flags, not code changes.
 
 ---
 

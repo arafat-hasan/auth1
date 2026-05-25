@@ -1,8 +1,6 @@
 # Authentication Microservice - Platform-Agnostic
 
-A secure, extensible, and **platform-agnostic** authentication microservice written in Go. Use it for any platform: matrimony apps (Duitara), e-commerce, SaaS, social networks, and more!
-
-**Part of the Duitara Monorepo** - This service is integrated into the Duitara monorepo but remains platform-agnostic and can be deployed independently.
+A secure, extensible, and **platform-agnostic** authentication microservice written in Go. Use it for any platform: e-commerce, SaaS, social networks, and more!
 
 ## ⚡ Quick Links
 
@@ -214,22 +212,173 @@ All API endpoints are prefixed with `/api/v1`.
 | POST | `/api/v1/auth/verify-login` | Verify login OTP |
 | POST | `/api/v1/auth/refresh` | Refresh access token |
 | POST | `/api/v1/auth/logout` | Logout and invalidate refresh token |
-| GET | `/api/v1/auth/public-key` | Get JWT public key for verification |
+| GET | `/.well-known/jwks.json` | JWKS public key (RFC 7517) — for downstream services |
+| GET | `/api/v1/auth/jwks` | Same JWKS (convenience alias under API prefix) |
 | POST | `/api/v1/auth/2fa/verify` | Verify 2FA code during login |
 
-### Protected Endpoints (Require Authentication)
+### Protected Endpoints (Require User JWT)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/auth/me` | Get current user information |
+| PUT | `/api/v1/auth/me` | Update own profile (name/phone) |
+| POST | `/api/v1/auth/change-password` | Change password (revokes all sessions) |
 | POST | `/api/v1/auth/2fa/setup` | Setup 2FA for user account |
+| POST | `/api/v1/auth/2fa/confirm` | Confirm 2FA setup with TOTP code |
 | POST | `/api/v1/auth/2fa/disable` | Disable 2FA for user account |
+| POST | `/api/v1/auth/forgot-password` | Request password reset email |
+| POST | `/api/v1/auth/reset-password` | Reset password with token from email |
+
+### Service-to-Service Endpoints (Require API Key)
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| POST | `/api/v1/auth/introspect` | `ApiKey <key>` | RFC 7662 token introspection with blacklist check |
+
+### Admin Endpoints (Require JWT + Admin Role)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/users/` | List users with pagination/filters |
+| GET | `/api/v1/users/{id}` | Get full user detail |
+| PUT | `/api/v1/users/{id}` | Update user profile/role/metadata |
+| DELETE | `/api/v1/users/{id}` | Soft-delete user + revoke sessions |
+| POST | `/api/v1/users/{id}/deactivate` | Deactivate + revoke sessions |
+| POST | `/api/v1/users/{id}/reactivate` | Reactivate user |
+| POST | `/api/v1/users/{id}/unlock` | Clear lockout |
+| GET | `/api/v1/users/{id}/sessions` | List active sessions (admin or self) |
+| DELETE | `/api/v1/users/{id}/sessions/{session_id}` | Revoke specific session (admin or self) |
 
 ### Health Check
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/health` | Service health status |
+| GET | `/livez` | Liveness probe |
+| GET | `/readyz` | Readiness probe |
+
+## Service Integration
+
+This auth service is designed to work with any downstream service (order service, inventory service, etc.) using standard JWT patterns. No SDK required.
+
+### How It Works
+
+Tokens use **RS256 (RSA asymmetric signing)**. The auth service holds the private key; downstream services only need the public key to verify tokens locally — no per-request call to the auth service.
+
+```
+Client
+  │  Bearer <access_token>
+  ▼
+Order Service
+  ├── Verify RS256 signature with cached public key  ← local, zero latency
+  ├── Check exp / iss / nbf
+  └── Extract: sub (userID), email, roles
+        │
+        │ (sensitive ops only — payment, address change, etc.)
+        │  POST /api/v1/auth/introspect
+        ▼
+  Auth Service
+  └── Checks signature + Redis blacklists → { "active": true/false }
+```
+
+### Step 1: Fetch Public Key at Startup
+
+```bash
+# JWKS format (recommended — works with most JWT libraries)
+curl http://auth-service:8080/.well-known/jwks.json
+
+```
+
+JWKS response:
+```json
+{
+  "keys": [{
+    "kty": "RSA", "use": "sig", "alg": "RS256",
+    "kid": "Xk3mN9pQ",
+    "n": "<base64url modulus>",
+    "e": "AQAB"
+  }]
+}
+```
+
+Cache the key by `kid`. Re-fetch when you see a `kid` you don't recognize (key rotation).
+
+### Step 2: Validate Tokens Locally
+
+```go
+// Example: Go order service middleware
+import "github.com/golang-jwt/jwt/v5"
+
+type Claims struct {
+    Sub   string   `json:"sub"`    // userID — use this as canonical user identity
+    Email string   `json:"email"`
+    Roles []string `json:"roles"`
+    jwt.RegisteredClaims
+}
+
+func validateToken(tokenStr string, publicKey *rsa.PublicKey) (*Claims, error) {
+    token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
+        if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+            return nil, fmt.Errorf("unexpected alg: %v", t.Header["alg"])
+        }
+        return publicKey, nil
+    })
+    if err != nil {
+        return nil, err
+    }
+    return token.Claims.(*Claims), nil
+}
+```
+
+**Always use `sub` (userID UUID) as the user identity — never `email`, which can change.**
+
+### Step 3: Call Introspect for Sensitive Operations
+
+Configure a service API key in auth service `config.yaml`:
+
+```yaml
+services:
+  allowed_api_keys:
+    - "your-order-service-key"   # generate: openssl rand -hex 32
+```
+
+Then call introspect for high-value operations (payment, checkout):
+
+```bash
+curl -X POST http://auth-service:8080/api/v1/auth/introspect \
+  -H "Authorization: ApiKey your-order-service-key" \
+  -H "Content-Type: application/json" \
+  -d '{"token": "<access_token>"}'
+```
+
+Response when valid:
+```json
+{
+  "active": true,
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
+  "email": "user@example.com",
+  "roles": ["user"],
+  "exp": 1716681600,
+  "iat": 1716680700,
+  "iss": "auth1",
+  "jti": "..."
+}
+```
+
+Response when invalid/revoked:
+```json
+{ "active": false }
+```
+
+### Trade-offs
+
+| Approach | Latency | Revocation |
+|---|---|---|
+| Local validation only | Zero overhead | 15 min gap (access token TTL) |
+| Local + introspect on sensitive ops | One extra call for high-value ops | Immediate |
+| Introspect on every request | +network RTT per request | Immediate — but defeats the purpose of JWTs |
+
+The recommended pattern is **local validation for most requests, introspect for sensitive operations**. This is the same model used by Auth0, AWS Cognito, and Keycloak.
 
 ## API Usage Examples
 

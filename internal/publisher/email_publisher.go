@@ -2,7 +2,7 @@ package publisher
 
 import "context"
 
-// Routing keys used when publishing to the duitara.events topic exchange.
+// Routing keys used when publishing to the auth1.events topic exchange.
 const (
 	RoutingKeyEmailOTP           = "email.otp"
 	RoutingKeyEmailPasswordReset = "email.password_reset"

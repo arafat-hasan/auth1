@@ -128,6 +128,20 @@ type Confirm2FASetupRequest struct {
 	TwoFACode string    `json:"two_fa_code" validate:"required,len=6"`
 }
 
+// --- Token introspection ---
+
+// IntrospectResult is the service-layer result for token introspection (RFC 7662).
+type IntrospectResult struct {
+	Active bool
+	Sub    string
+	Email  string
+	Roles  []string
+	Exp    int64
+	Iat    int64
+	Iss    string
+	JTI    string
+}
+
 // --- User management ---
 
 type UpdateUserRequest struct {

@@ -2,12 +2,31 @@ package utils
 
 import (
 	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
+
+// JWK is a single JSON Web Key (RFC 7517).
+type JWK struct {
+	Kty string `json:"kty"`
+	Use string `json:"use"`
+	Alg string `json:"alg"`
+	Kid string `json:"kid"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+}
+
+// JWKSet is the JSON Web Key Set returned at /.well-known/jwks.json.
+type JWKSet struct {
+	Keys []JWK `json:"keys"`
+}
 
 type JWTClaims struct {
 	UserID uuid.UUID `json:"sub"`
@@ -120,4 +139,27 @@ func (j *JWTManager) GetAccessTokenTTL() time.Duration {
 
 func (j *JWTManager) GetRefreshTokenTTL() time.Duration {
 	return j.refreshTokenTTL
+}
+
+// GetJWKS returns the public key as a JWKS document.
+// The kid is derived from an 8-byte SHA-256 fingerprint of the DER-encoded key
+// so it changes automatically on key rotation.
+func (j *JWTManager) GetJWKS() *JWKSet {
+	der, _ := x509.MarshalPKIXPublicKey(j.publicKey)
+	h := sha256.Sum256(der)
+	kid := base64.RawURLEncoding.EncodeToString(h[:8])
+
+	n := base64.RawURLEncoding.EncodeToString(j.publicKey.N.Bytes())
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(j.publicKey.E)).Bytes())
+
+	return &JWKSet{
+		Keys: []JWK{{
+			Kty: "RSA",
+			Use: "sig",
+			Alg: "RS256",
+			Kid: kid,
+			N:   n,
+			E:   e,
+		}},
+	}
 }

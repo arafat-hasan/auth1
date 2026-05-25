@@ -141,7 +141,6 @@ func main() {
 		TOTPSecretTTL:            10 * time.Minute,
 		TOTPChallengeTTL:         time.Duration(cfg.App.TOTPChallengeTTLSec) * time.Second,
 		PasswordResetTTL:         time.Duration(cfg.Security.PasswordResetTTL) * time.Minute,
-		PublicKeyPEM:             cfg.JWT.PublicKeyPEM,
 		MaxLoginAttempts:         cfg.Security.MaxLoginAttempts,
 		LockoutDuration:          time.Duration(cfg.Security.LockoutDurationMinutes) * time.Minute,
 		TOTPEncryptionKey:        totpEncKey,
@@ -204,6 +203,9 @@ func main() {
 
 	authHandler := v1.NewAuthHandler(authService, jwtManager, logger)
 	userHandler := v1.NewUserHandler(authService, logger)
+
+	// JWKS at the RFC 8414 well-known location — downstream services poll this at startup.
+	r.Get("/.well-known/jwks.json", authHandler.GetJWKS)
 
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		// ── Public endpoints with specific rate limits ─────────────────────
@@ -312,7 +314,7 @@ func main() {
 		r.Post("/logout", authHandler.Logout)
 
 		// Public key - no rate limit needed
-		r.Get("/public-key", authHandler.GetPublicKey)
+		r.Get("/jwks", authHandler.GetJWKS)
 
 		// Forgot password - IP-based rate limiting
 		r.Group(func(r chi.Router) {
@@ -402,6 +404,11 @@ func main() {
 			r.Post("/2fa/disable", authHandler.Disable2FA)
 		})
 	})
+
+	// ── Service-to-service introspect endpoint ────────────────────────────────
+	// Protected by API key (Authorization: ApiKey <key>), not by user JWT.
+	r.With(appMiddleware.RequireServiceAPIKey(cfg.Services.AllowedAPIKeys, logger)).
+		Post("/api/v1/auth/introspect", authHandler.IntrospectToken)
 
 	// ── User management routes (admin + self-service sessions) ───────────────
 	r.Route("/api/v1/users", func(r chi.Router) {

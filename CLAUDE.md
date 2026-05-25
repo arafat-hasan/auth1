@@ -64,6 +64,29 @@ Single binary HTTP service. Entry point: `cmd/auth-service/main.go`. Separate mi
 - **Token refresh**: `POST /api/v1/auth/refresh` (refresh token in body)
 - **Logout**: `POST /api/v1/auth/logout` — deletes refresh token JTI from Redis; access token blacklisted
 
+### Downstream service integration (service-to-service)
+
+RS256 asymmetric signing means downstream services validate tokens **locally** without calling the auth service per-request.
+
+**Primary flow (stateless local validation):**
+1. Downstream service fetches `GET /.well-known/jwks.json` once at startup; caches the `kid`→public-key mapping.
+2. On each request, the service validates JWT signature + `exp`/`iss`/`nbf` locally.
+3. Extracts `sub` (userID), `email`, `roles` from claims for authorization decisions.
+
+**Revocation check flow (sensitive operations only):**
+- `POST /api/v1/auth/introspect` — validates signature **and** checks Redis blacklists (per-token JTI + user-level).
+- Protected by `Authorization: ApiKey <key>` (not user JWT). Configure keys in `services.allowed_api_keys`.
+- Returns RFC 7662: `{ "active": true|false, sub, email, roles, exp, iat, iss, jti }`.
+- Use for high-value ops (payment, address change). Skip for read operations — 15 min TTL limits the risk window.
+
+**Key endpoints for downstream services:**
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /.well-known/jwks.json` | None | Public key in JWKS format (RFC 7517) — cache at startup |
+| `GET /api/v1/auth/jwks` | None | Same JWKS (convenience alias under API prefix) |
+| `POST /api/v1/auth/introspect` | `ApiKey <key>` | Full token validation including revocation state |
+
 ### JWT and token management
 
 RSA-2048 (RS256). Access token TTL default 15 min, refresh 7 days. Per-token JTI stored in Redis for refresh token tracking and individual revocation. Public key at `GET /api/v1/auth/public-key` for downstream services. On logout, the access token JTI is blacklisted in Redis with its remaining TTL; the refresh token key is deleted. On password change, `BlacklistAllUserJWTs` sets a user-level blacklist marker that the auth middleware checks.
@@ -120,6 +143,7 @@ TOTP secrets encrypted with AES-256-GCM before DB storage (`app.totp_encryption_
 | `security.*` | Login lockout, password policy, reset TTL |
 | `app.*` | Feature flags, OTP config, TOTP encryption key |
 | `rate_limit.*` | Per-endpoint limits and windows |
+| `services.*` | `allowed_api_keys` list for `/introspect` endpoint |
 
 Feature flags under `app.*`: `enable_email_auth`, `enable_phone_auth`, `enable_password_auth`, `enable_otp_auth`, `enable_2fa`, `enable_audit_log`, `require_email_verification`, `require_phone_verification`.
 
@@ -137,11 +161,13 @@ Feature flags under `app.*`: `enable_email_auth`, `enable_phone_auth`, `enable_p
 | `internal/service/twofa.go` | TOTP setup/confirm/verify-login/disable |
 | `internal/service/password.go` | Password reset + change (with session revocation) |
 | `internal/service/user.go` | User CRUD, role/metadata updates, session management |
+| `internal/service/introspect.go` | `GetJWKS()` + `IntrospectToken()` implementation |
 | `internal/service/config.go` | `service.Config` struct (TTLs, feature flags, encryption key) |
 | `internal/service/dto.go` | Service-layer request/response types |
 | `internal/app/handler/v1/auth_handler.go` | Auth HTTP handlers |
 | `internal/app/handler/v1/user_handler.go` | Admin user management HTTP handlers |
 | `internal/app/middleware/auth_chi.go` | JWT auth middleware (blacklist + user-level revocation check) |
+| `internal/app/middleware/api_key.go` | `RequireServiceAPIKey` middleware for `/introspect` |
 | `internal/app/middleware/rate_limit.go` | Rate limit middleware + key functions (IP, email, token, user) |
 | `internal/app/middleware/rbac.go` | `RequireRole` / `RequireAdmin` RBAC middleware |
 | `internal/app/repo/redis_repository.go` | All Redis ops: OTP, refresh tokens, 2FA, blacklist, login attempts |

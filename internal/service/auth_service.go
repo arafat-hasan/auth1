@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/arafat-hasan/auth1/internal/app/model/domain"
+	"github.com/arafat-hasan/auth1/internal/utils"
 )
 
 // AuthService defines the interface for authentication business logic.
@@ -66,6 +67,12 @@ type AuthService interface {
 	// Audit logging (called from handlers with full actor context)
 	AuditAdminAction(ctx context.Context, adminID uuid.UUID, eventType string, data map[string]interface{}, ip string)
 
-	// Public key for token verification
-	GetPublicKey() string
+	// GetJWKS returns the RSA public key as a JWKS document (RFC 7517).
+	// Downstream services fetch this at startup to validate tokens locally.
+	GetJWKS() *utils.JWKSet
+
+	// IntrospectToken validates a token and checks Redis blacklists (RFC 7662).
+	// Returns active=false for expired, invalid, or revoked tokens.
+	// This endpoint is for internal service-to-service use only; protect with API key middleware.
+	IntrospectToken(ctx context.Context, token string) (*IntrospectResult, error)
 }

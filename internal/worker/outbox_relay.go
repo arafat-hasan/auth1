@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	exchangeName = "duitara.events"
+	exchangeName = "auth1.events"
 	exchangeType = "topic"
 )
 

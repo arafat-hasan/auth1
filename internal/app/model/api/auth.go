@@ -94,13 +94,6 @@ type TwoFactorSetupResponse struct {
 	QRCodeURL string `json:"qr_code_url" example:"otpauth://totp/auth1:user@example.com?secret=JBSWY3DPEHPK3PXP&issuer=auth1"`
 }
 
-// PublicKeyResponse represents the public key response
-// @Description JWT public key response
-type PublicKeyResponse struct {
-	PublicKey string `json:"public_key" example:"-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEF..."`
-	KeyType   string `json:"key_type" example:"RSA"`
-}
-
 // SuccessResponse represents a generic success response
 // @Description Generic success response
 type SuccessResponse struct {
@@ -130,6 +123,26 @@ type HealthResponse struct {
 	Status  string `json:"status" example:"healthy"`
 	Service string `json:"service" example:"auth1"`
 	Version string `json:"version" example:"1.0.0"`
+}
+
+// IntrospectRequest is the body for POST /api/v1/auth/introspect.
+// @Description Token introspection request (service-to-service only)
+type IntrospectRequest struct {
+	Token string `json:"token" validate:"required" example:"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."`
+}
+
+// IntrospectResponse is the RFC 7662 token introspection response.
+// When active is false all other fields are omitted.
+// @Description RFC 7662 token introspection response
+type IntrospectResponse struct {
+	Active bool     `json:"active" example:"true"`
+	Sub    string   `json:"sub,omitempty" example:"550e8400-e29b-41d4-a716-446655440000"`
+	Email  string   `json:"email,omitempty" example:"user@example.com"`
+	Roles  []string `json:"roles,omitempty" example:"[\"user\"]"`
+	Exp    int64    `json:"exp,omitempty" example:"1716681600"`
+	Iat    int64    `json:"iat,omitempty" example:"1716680700"`
+	Iss    string   `json:"iss,omitempty" example:"auth1"`
+	JTI    string   `json:"jti,omitempty" example:"550e8400-e29b-41d4-a716-446655440001"`
 }
 
 // ForgotPasswordRequest represents the forgot password request payload

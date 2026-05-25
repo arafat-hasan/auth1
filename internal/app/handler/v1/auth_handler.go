@@ -47,7 +47,7 @@ func (h *AuthHandler) RegisterRoutes(r chi.Router) {
 		r.Post("/verify-login", h.VerifyLogin)
 		r.Post("/refresh", h.RefreshToken)
 		r.Post("/logout", h.Logout)
-		r.Get("/public-key", h.GetPublicKey)
+		r.Get("/jwks", h.GetJWKS)
 		r.Post("/2fa/verify", h.Verify2FA)
 
 		// Protected routes
@@ -434,22 +434,61 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	h.renderSuccess(w, r, http.StatusOK, "Logged out successfully")
 }
 
-// GetPublicKey handles public key retrieval
-// @Summary Get public key
-// @Description Get JWT public key for token verification
+// GetJWKS returns the RSA public key as a JSON Web Key Set (RFC 7517).
+// Downstream services should fetch this once at startup and cache it.
+// The kid field changes on key rotation so clients know when to re-fetch.
+// @Summary Get JWKS
+// @Description Get JSON Web Key Set for JWT verification by downstream services
 // @Tags auth
 // @Produce json
-// @Success 200 {object} api.PublicKeyResponse
-// @Router /api/v1/auth/public-key [get]
-func (h *AuthHandler) GetPublicKey(w http.ResponseWriter, r *http.Request) {
-	publicKey := h.authService.GetPublicKey()
-	response := &api.PublicKeyResponse{
-		PublicKey: publicKey,
-		KeyType:   "RSA",
+// @Success 200 {object} object "JWKS document"
+// @Router /api/v1/auth/jwks [get]
+func (h *AuthHandler) GetJWKS(w http.ResponseWriter, r *http.Request) {
+	render.Status(r, http.StatusOK)
+	render.JSON(w, r, h.authService.GetJWKS())
+}
+
+// IntrospectToken validates a token and checks all revocation state (RFC 7662).
+// Protected by service API key — not for end-user clients.
+// @Summary Introspect token
+// @Description Validate a token and check revocation state. For internal service-to-service use only.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param Authorization header string true "ApiKey <service-api-key>"
+// @Param request body api.IntrospectRequest true "Token to introspect"
+// @Success 200 {object} api.IntrospectResponse
+// @Failure 400 {object} api.ErrorResponse
+// @Failure 401 {object} api.ErrorResponse
+// @Failure 500 {object} api.ErrorResponse
+// @Router /api/v1/auth/introspect [post]
+func (h *AuthHandler) IntrospectToken(w http.ResponseWriter, r *http.Request) {
+	var req api.IntrospectRequest
+	if err := h.decodeAndValidate(r, &req); err != nil {
+		h.renderError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+
+	result, err := h.authService.IntrospectToken(r.Context(), req.Token)
+	if err != nil {
+		h.logger.WithError(err).Error("Token introspection failed")
+		h.renderError(w, r, http.StatusInternalServerError, "internal_error", "Failed to introspect token")
+		return
+	}
+
+	resp := &api.IntrospectResponse{Active: result.Active}
+	if result.Active {
+		resp.Sub = result.Sub
+		resp.Email = result.Email
+		resp.Roles = result.Roles
+		resp.Exp = result.Exp
+		resp.Iat = result.Iat
+		resp.Iss = result.Iss
+		resp.JTI = result.JTI
 	}
 
 	render.Status(r, http.StatusOK)
-	render.JSON(w, r, response)
+	render.JSON(w, r, resp)
 }
 
 // GetMe handles user profile retrieval

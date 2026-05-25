@@ -73,7 +73,7 @@ services:
       - "5672:5672"    # AMQP
       - "15672:15672"  # management UI
     environment:
-      RABBITMQ_DEFAULT_USER: duitara
+      RABBITMQ_DEFAULT_USER: auth1
       RABBITMQ_DEFAULT_PASS: password
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
@@ -105,7 +105,7 @@ services:
       REDIS_PORT: 6379
       APP_ENVIRONMENT: development
       APP_LOG_LEVEL: debug
-      AMQP_URL: amqp://duitara:password@rabbitmq:5672/
+      AMQP_URL: amqp://auth1:password@rabbitmq:5672/
     volumes:
       - ./config.yaml:/root/config.yaml:ro
       - ./assets:/root/assets:ro

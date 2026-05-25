@@ -11,7 +11,6 @@ type Config struct {
 	TOTPSecretTTL    time.Duration
 	TOTPChallengeTTL time.Duration
 	PasswordResetTTL time.Duration
-	PublicKeyPEM     string
 	MaxLoginAttempts int
 	LockoutDuration  time.Duration
 
