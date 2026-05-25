@@ -13,6 +13,7 @@ database:
   password: "password"
   name: "auth1"
   ssl_mode: "disable"
+  schema: ""  # optional: isolate tables in a named schema (e.g. "auth"); defaults to public
 
 redis:
   host: "localhost"

@@ -37,6 +37,7 @@ type DatabaseConfig struct {
 	Password string `mapstructure:"password"`
 	Name     string `mapstructure:"name"`
 	SSLMode  string `mapstructure:"ssl_mode"`
+	Schema   string `mapstructure:"schema"`
 }
 
 type RedisConfig struct {

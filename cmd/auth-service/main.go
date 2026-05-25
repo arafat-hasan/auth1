@@ -84,6 +84,9 @@ func main() {
 		cfg.Database.Host, cfg.Database.Port,
 		cfg.Database.Name, cfg.Database.SSLMode,
 	)
+	if cfg.Database.Schema != "" {
+		dsn += "&search_path=" + cfg.Database.Schema
+	}
 	sqlDB := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
 	db := bun.NewDB(sqlDB, pgdialect.New())
 	if cfg.App.LogLevel == "debug" {

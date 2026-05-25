@@ -75,13 +75,22 @@ func setupDatabase(cfg *config.Config, logger *logrus.Logger) (*bun.DB, error) {
 		cfg.Database.Name,
 		cfg.Database.SSLMode,
 	)
+	if cfg.Database.Schema != "" {
+		dsn += "&search_path=" + cfg.Database.Schema
+	}
 
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
 	db := bun.NewDB(sqldb, pgdialect.New())
 
-	// Test connection
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	if cfg.Database.Schema != "" {
+		if _, err := db.ExecContext(context.Background(), "CREATE SCHEMA IF NOT EXISTS "+cfg.Database.Schema); err != nil {
+			return nil, fmt.Errorf("failed to create schema %q: %w", cfg.Database.Schema, err)
+		}
+		logger.Infof("Using schema: %s", cfg.Database.Schema)
 	}
 
 	logger.Info("Database connected successfully")
@@ -100,6 +109,7 @@ func loadMigrationConfig() (*config.Config, error) {
 	cfg.Database.Password = getEnvOrDefault("DATABASE_PASSWORD", "password")
 	cfg.Database.Name = getEnvOrDefault("DATABASE_NAME", "auth_service")
 	cfg.Database.SSLMode = getEnvOrDefault("DATABASE_SSL_MODE", "disable")
+	cfg.Database.Schema = getEnvOrDefault("DATABASE_SCHEMA", "")
 
 	return cfg, nil
 }
