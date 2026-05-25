@@ -40,14 +40,20 @@ type JWTManager struct {
 	publicKey       *rsa.PublicKey
 	accessTokenTTL  time.Duration
 	refreshTokenTTL time.Duration
+	kid             string
 }
 
 func NewJWTManager(privateKey *rsa.PrivateKey, publicKey *rsa.PublicKey, accessTokenTTL, refreshTokenTTL int) *JWTManager {
+	der, _ := x509.MarshalPKIXPublicKey(publicKey)
+	h := sha256.Sum256(der)
+	kid := base64.RawURLEncoding.EncodeToString(h[:8])
+
 	return &JWTManager{
 		privateKey:      privateKey,
 		publicKey:       publicKey,
 		accessTokenTTL:  time.Duration(accessTokenTTL) * time.Second,
 		refreshTokenTTL: time.Duration(refreshTokenTTL) * time.Second,
+		kid:             kid,
 	}
 }
 
@@ -70,6 +76,7 @@ func (j *JWTManager) GenerateAccessToken(userID uuid.UUID, email string, roles [
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = j.kid
 	return token.SignedString(j.privateKey)
 }
 
@@ -87,6 +94,7 @@ func (j *JWTManager) GenerateRefreshToken(userID uuid.UUID) (string, string, err
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = j.kid
 	signedToken, err := token.SignedString(j.privateKey)
 	if err != nil {
 		return "", "", err
@@ -145,10 +153,6 @@ func (j *JWTManager) GetRefreshTokenTTL() time.Duration {
 // The kid is derived from an 8-byte SHA-256 fingerprint of the DER-encoded key
 // so it changes automatically on key rotation.
 func (j *JWTManager) GetJWKS() *JWKSet {
-	der, _ := x509.MarshalPKIXPublicKey(j.publicKey)
-	h := sha256.Sum256(der)
-	kid := base64.RawURLEncoding.EncodeToString(h[:8])
-
 	n := base64.RawURLEncoding.EncodeToString(j.publicKey.N.Bytes())
 	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(j.publicKey.E)).Bytes())
 
@@ -157,7 +161,7 @@ func (j *JWTManager) GetJWKS() *JWKSet {
 			Kty: "RSA",
 			Use: "sig",
 			Alg: "RS256",
-			Kid: kid,
+			Kid: j.kid,
 			N:   n,
 			E:   e,
 		}},
