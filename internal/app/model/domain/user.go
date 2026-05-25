@@ -57,7 +57,7 @@ func (u *User) CanLogin() bool {
 type PendingUser struct {
 	Email     string                 `json:"email"`
 	Phone     *string                `json:"phone,omitempty"`
-	Password  *string                `json:"-"`
+	Password  *string                `json:"password_hash,omitempty"`
 	Name      string                 `json:"name"`
 	Role      string                 `json:"role,omitempty"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`

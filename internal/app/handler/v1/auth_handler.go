@@ -210,6 +210,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if strings.Contains(err.Error(), "not verified") {
+			h.renderError(w, r, http.StatusForbidden, "email_not_verified", err.Error())
+			return
+		}
+
 		if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "not found") {
 			h.renderError(w, r, http.StatusUnauthorized, "invalid_credentials", "Invalid email or password")
 			return
@@ -328,6 +333,11 @@ func (h *AuthHandler) VerifyLogin(w http.ResponseWriter, r *http.Request) {
 
 		if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "expired") {
 			h.renderError(w, r, http.StatusUnauthorized, "invalid_otp", err.Error())
+			return
+		}
+
+		if strings.Contains(err.Error(), "not verified") {
+			h.renderError(w, r, http.StatusForbidden, "email_not_verified", err.Error())
 			return
 		}
 

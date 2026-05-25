@@ -85,18 +85,20 @@ func (s *authServiceImpl) VerifySignup(ctx context.Context, req *VerifySignupReq
 		return nil, fmt.Errorf("pending user not found")
 	}
 
+	now := time.Now()
 	user := &domain.User{
-		ID:           uuid.New(),
-		Email:        pendingUser.Email,
-		Name:         pendingUser.Name,
-		Phone:        pendingUser.Phone,
-		PasswordHash: pendingUser.Password,
-		IsVerified:   true,
-		IsActive:     true,
-		Is2FAEnabled: false,
-		Role:         domain.RoleUser,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		ID:              uuid.New(),
+		Email:           pendingUser.Email,
+		Name:            pendingUser.Name,
+		Phone:           pendingUser.Phone,
+		PasswordHash:    pendingUser.Password,
+		IsVerified:      true,
+		IsActive:        true,
+		Is2FAEnabled:    false,
+		EmailVerifiedAt: &now,
+		Role:            domain.RoleUser,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
 	if err = s.userRepo.Create(ctx, user); err != nil {
