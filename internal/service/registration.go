@@ -103,14 +103,14 @@ func (s *authServiceImpl) VerifySignup(ctx context.Context, req *VerifySignupReq
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
-	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role)
+	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role, derefStr(req.IPAddress), derefStr(req.UserAgent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}
 
 	s.redisRepo.DeletePendingUser(ctx, req.Email)
 	s.redisRepo.DeleteOTP(ctx, req.Email, "signup")
-	s.userRepo.UpdateLastLogin(ctx, user.ID, nil, nil)
+	s.userRepo.UpdateLastLogin(ctx, user.ID)
 
 	s.logger.WithFields(logrus.Fields{
 		"email":   req.Email,
@@ -206,14 +206,14 @@ func (s *authServiceImpl) VerifyPhoneSignup(ctx context.Context, req *VerifyPhon
 		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
-	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role)
+	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role, derefStr(req.IPAddress), derefStr(req.UserAgent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}
 
 	s.redisRepo.DeletePendingUser(ctx, req.Phone)
 	s.redisRepo.DeleteOTP(ctx, req.Phone, "signup")
-	s.userRepo.UpdateLastLogin(ctx, user.ID, nil, nil)
+	s.userRepo.UpdateLastLogin(ctx, user.ID)
 
 	s.logger.WithFields(logrus.Fields{
 		"phone":   req.Phone,

@@ -60,7 +60,7 @@ type AuthService interface {
 	UpdateUserMetadata(ctx context.Context, userID uuid.UUID, metadata map[string]interface{}) error
 
 	// Session management
-	ListUserSessions(ctx context.Context, userID uuid.UUID) ([]string, error)
+	ListUserSessions(ctx context.Context, userID uuid.UUID) ([]domain.SessionInfo, error)
 	RevokeUserSession(ctx context.Context, userID uuid.UUID, jti string) error
 
 	// Audit logging (called from handlers with full actor context)

@@ -124,9 +124,13 @@ func (h *AuthHandler) VerifySignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ipAddr := middleware.GetClientIP(r)
+	userAgent := r.UserAgent()
 	serviceReq := &service.VerifySignupRequest{
-		Email: req.Email,
-		OTP:   req.OTP,
+		Email:     req.Email,
+		OTP:       req.OTP,
+		IPAddress: &ipAddr,
+		UserAgent: &userAgent,
 	}
 
 	tokens, err := h.authService.VerifySignup(r.Context(), serviceReq)
@@ -306,9 +310,13 @@ func (h *AuthHandler) VerifyLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ipAddr := middleware.GetClientIP(r)
+	userAgent := r.UserAgent()
 	serviceReq := &service.VerifyLoginRequest{
-		Email: req.Email,
-		OTP:   req.OTP,
+		Email:     req.Email,
+		OTP:       req.OTP,
+		IPAddress: &ipAddr,
+		UserAgent: &userAgent,
 	}
 
 	tokens, err := h.authService.VerifyLoginOTP(r.Context(), serviceReq)
@@ -357,8 +365,12 @@ func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ipAddr := middleware.GetClientIP(r)
+	userAgent := r.UserAgent()
 	serviceReq := &service.RefreshTokenRequest{
 		RefreshToken: req.RefreshToken,
+		IPAddress:    &ipAddr,
+		UserAgent:    &userAgent,
 	}
 
 	tokens, err := h.authService.RefreshToken(r.Context(), serviceReq)
@@ -486,6 +498,54 @@ func (h *AuthHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, r, response)
 }
 
+// UpdateMe handles self-service profile update (name and phone only).
+// @Summary Update own profile
+// @Description Update the authenticated user's name and/or phone number
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body api.UpdateMeRequest true "Update request"
+// @Success 200 {object} api.SuccessResponse
+// @Failure 400 {object} api.ErrorResponse
+// @Failure 401 {object} api.ErrorResponse
+// @Failure 500 {object} api.ErrorResponse
+// @Router /api/v1/auth/me [put]
+func (h *AuthHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
+	userID := h.getUserID(r)
+	if userID == uuid.Nil {
+		h.renderError(w, r, http.StatusUnauthorized, "unauthorized", "User not authenticated")
+		return
+	}
+
+	var req api.UpdateMeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.renderError(w, r, http.StatusBadRequest, "invalid_body", "Invalid request body")
+		return
+	}
+	if err := h.validator.Struct(req); err != nil {
+		h.renderError(w, r, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+
+	if req.Name == nil && req.Phone == nil {
+		h.renderError(w, r, http.StatusBadRequest, "empty_request", "No fields to update")
+		return
+	}
+
+	if err := h.authService.UpdateUser(r.Context(), userID, &service.UpdateUserRequest{
+		Name:  req.Name,
+		Phone: req.Phone,
+	}); err != nil {
+		h.logger.WithError(err).Error("UpdateMe failed")
+		h.renderError(w, r, http.StatusInternalServerError, "internal_error", "Failed to update profile")
+		return
+	}
+
+	render.Status(r, http.StatusOK)
+	render.JSON(w, r, &api.SuccessResponse{Message: "Profile updated successfully", Success: true})
+}
+
 // Setup2FA handles 2FA setup
 // @Summary Setup 2FA
 // @Description Setup two-factor authentication for user
@@ -542,9 +602,13 @@ func (h *AuthHandler) Verify2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ipAddr := middleware.GetClientIP(r)
+	userAgent := r.UserAgent()
 	serviceReq := &service.Verify2FALoginRequest{
 		ChallengeToken: req.ChallengeToken,
 		TwoFACode:      req.TwoFACode,
+		IPAddress:      &ipAddr,
+		UserAgent:      &userAgent,
 	}
 
 	tokens, err := h.authService.Verify2FALogin(r.Context(), serviceReq)

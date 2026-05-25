@@ -128,12 +128,12 @@ func (s *authServiceImpl) Verify2FALogin(ctx context.Context, req *Verify2FALogi
 	// Challenge is single-use: delete immediately on success.
 	s.redisRepo.DeleteTwoFAChallenge(ctx, req.ChallengeToken)
 
-	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role)
+	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role, derefStr(req.IPAddress), derefStr(req.UserAgent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}
 
-	s.userRepo.UpdateLastLogin(ctx, userID, nil, nil)
+	s.userRepo.UpdateLastLogin(ctx, userID)
 
 	s.logger.WithFields(logrus.Fields{
 		"user_id": userID,

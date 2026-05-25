@@ -455,6 +455,61 @@ const docTemplate = `{
                         }
                     }
                 }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Update the authenticated user's name and/or phone number",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Update own profile",
+                "parameters": [
+                    {
+                        "description": "Update request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateMeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
             }
         },
         "/api/v1/auth/public-key": {
@@ -1260,6 +1315,84 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/health": {
+            "get": {
+                "description": "Full system metrics: dependency latencies, memory usage, goroutine count, uptime, build info, and outbox queue lag.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Comprehensive diagnostics",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/health.HealthResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/health.HealthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/livez": {
+            "get": {
+                "description": "Returns 200 if the process is running and goroutines are below threshold. No external dependency checks.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Liveness probe",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/health.LivezResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/health.LivezResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/readyz": {
+            "get": {
+                "description": "Returns 200 only when all hard dependencies (DB, Redis, RabbitMQ) are reachable. 503 on any failure.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Readiness probe",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/health.ReadyzResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/health.ReadyzResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -1455,7 +1588,16 @@ const docTemplate = `{
             "description": "Active session info",
             "type": "object",
             "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "ip_address": {
+                    "type": "string"
+                },
                 "session_id": {
+                    "type": "string"
+                },
+                "user_agent": {
                     "type": "string"
                 }
             }
@@ -1585,6 +1727,18 @@ const docTemplate = `{
                 }
             }
         },
+        "api.UpdateMeRequest": {
+            "description": "Self-service profile update request",
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "phone": {
+                    "type": "string"
+                }
+            }
+        },
         "api.UpdateUserAdminRequest": {
             "description": "Admin update user request",
             "type": "object",
@@ -1623,9 +1777,6 @@ const docTemplate = `{
                 "email": {
                     "type": "string"
                 },
-                "failed_login_attempts": {
-                    "type": "integer"
-                },
                 "id": {
                     "type": "string"
                 },
@@ -1639,9 +1790,6 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "last_login_at": {
-                    "type": "string"
-                },
-                "locked_until": {
                     "type": "string"
                 },
                 "metadata": {
@@ -1721,6 +1869,122 @@ const docTemplate = `{
                 "otp": {
                     "type": "string",
                     "example": "123456"
+                }
+            }
+        },
+        "health.HealthCheckDetail": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "latency_ms": {
+                    "type": "number"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "health.HealthResponse": {
+            "type": "object",
+            "properties": {
+                "build_date": {
+                    "type": "string"
+                },
+                "checks": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/health.HealthCheckDetail"
+                    }
+                },
+                "git_commit": {
+                    "type": "string"
+                },
+                "goroutines": {
+                    "type": "integer"
+                },
+                "memory": {
+                    "$ref": "#/definitions/health.MemoryStats"
+                },
+                "outbox": {
+                    "$ref": "#/definitions/health.OutboxStats"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "uptime_seconds": {
+                    "type": "number"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "health.LivezResponse": {
+            "type": "object",
+            "properties": {
+                "goroutines": {
+                    "type": "integer"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "health.MemoryStats": {
+            "type": "object",
+            "properties": {
+                "alloc_mb": {
+                    "type": "number"
+                },
+                "gc_runs": {
+                    "type": "integer"
+                },
+                "heap_in_use_mb": {
+                    "type": "number"
+                },
+                "sys_mb": {
+                    "type": "number"
+                }
+            }
+        },
+        "health.OutboxStats": {
+            "type": "object",
+            "properties": {
+                "failed_count": {
+                    "type": "integer"
+                },
+                "pending_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "health.ReadyzCheckResult": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "health.ReadyzResponse": {
+            "type": "object",
+            "properties": {
+                "checks": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/health.ReadyzCheckResult"
+                    }
+                },
+                "status": {
+                    "type": "string"
                 }
             }
         }

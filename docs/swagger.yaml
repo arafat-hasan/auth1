@@ -138,7 +138,13 @@ definitions:
   api.SessionItem:
     description: Active session info
     properties:
+      created_at:
+        type: string
+      ip_address:
+        type: string
       session_id:
+        type: string
+      user_agent:
         type: string
     type: object
   api.SignupRequest:
@@ -232,6 +238,14 @@ definitions:
         example: JBSWY3DPEHPK3PXP
         type: string
     type: object
+  api.UpdateMeRequest:
+    description: Self-service profile update request
+    properties:
+      name:
+        type: string
+      phone:
+        type: string
+    type: object
   api.UpdateUserAdminRequest:
     description: Admin update user request
     properties:
@@ -259,8 +273,6 @@ definitions:
         type: string
       email:
         type: string
-      failed_login_attempts:
-        type: integer
       id:
         type: string
       is_2fa_enabled:
@@ -270,8 +282,6 @@ definitions:
       is_verified:
         type: boolean
       last_login_at:
-        type: string
-      locked_until:
         type: string
       metadata:
         additionalProperties: true
@@ -329,6 +339,81 @@ definitions:
     required:
     - email
     - otp
+    type: object
+  health.HealthCheckDetail:
+    properties:
+      error:
+        type: string
+      latency_ms:
+        type: number
+      status:
+        type: string
+    type: object
+  health.HealthResponse:
+    properties:
+      build_date:
+        type: string
+      checks:
+        additionalProperties:
+          $ref: '#/definitions/health.HealthCheckDetail'
+        type: object
+      git_commit:
+        type: string
+      goroutines:
+        type: integer
+      memory:
+        $ref: '#/definitions/health.MemoryStats'
+      outbox:
+        $ref: '#/definitions/health.OutboxStats'
+      status:
+        type: string
+      uptime_seconds:
+        type: number
+      version:
+        type: string
+    type: object
+  health.LivezResponse:
+    properties:
+      goroutines:
+        type: integer
+      reason:
+        type: string
+      status:
+        type: string
+    type: object
+  health.MemoryStats:
+    properties:
+      alloc_mb:
+        type: number
+      gc_runs:
+        type: integer
+      heap_in_use_mb:
+        type: number
+      sys_mb:
+        type: number
+    type: object
+  health.OutboxStats:
+    properties:
+      failed_count:
+        type: integer
+      pending_count:
+        type: integer
+    type: object
+  health.ReadyzCheckResult:
+    properties:
+      error:
+        type: string
+      status:
+        type: string
+    type: object
+  health.ReadyzResponse:
+    properties:
+      checks:
+        additionalProperties:
+          $ref: '#/definitions/health.ReadyzCheckResult'
+        type: object
+      status:
+        type: string
     type: object
 host: localhost:8080
 info:
@@ -624,6 +709,41 @@ paths:
       security:
       - BearerAuth: []
       summary: Get user profile
+      tags:
+      - auth
+    put:
+      consumes:
+      - application/json
+      description: Update the authenticated user's name and/or phone number
+      parameters:
+      - description: Update request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.UpdateMeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update own profile
       tags:
       - auth
   /api/v1/auth/public-key:
@@ -1148,6 +1268,60 @@ paths:
       summary: Unlock user account (admin)
       tags:
       - admin
+  /health:
+    get:
+      description: 'Full system metrics: dependency latencies, memory usage, goroutine
+        count, uptime, build info, and outbox queue lag.'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/health.HealthResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/health.HealthResponse'
+      summary: Comprehensive diagnostics
+      tags:
+      - health
+  /livez:
+    get:
+      description: Returns 200 if the process is running and goroutines are below
+        threshold. No external dependency checks.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/health.LivezResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/health.LivezResponse'
+      summary: Liveness probe
+      tags:
+      - health
+  /readyz:
+    get:
+      description: Returns 200 only when all hard dependencies (DB, Redis, RabbitMQ)
+        are reachable. 503 on any failure.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/health.ReadyzResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/health.ReadyzResponse'
+      summary: Readiness probe
+      tags:
+      - health
 securityDefinitions:
   BearerAuth:
     description: Type "Bearer " followed by your access token

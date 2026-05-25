@@ -44,7 +44,7 @@ func (s *authServiceImpl) RefreshToken(ctx context.Context, req *RefreshTokenReq
 	// Rotate: delete the old token before issuing a new one.
 	s.redisRepo.DeleteRefreshToken(ctx, userID, claims.ID)
 
-	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role)
+	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role, derefStr(req.IPAddress), derefStr(req.UserAgent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}

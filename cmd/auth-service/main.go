@@ -47,11 +47,19 @@ import (
 	appMiddleware "github.com/arafat-hasan/auth1/internal/app/middleware"
 	"github.com/arafat-hasan/auth1/internal/app/repo"
 	"github.com/arafat-hasan/auth1/internal/config"
+	"github.com/arafat-hasan/auth1/internal/health"
 	"github.com/arafat-hasan/auth1/internal/publisher"
 	"github.com/arafat-hasan/auth1/internal/ratelimit"
 	"github.com/arafat-hasan/auth1/internal/service"
 	"github.com/arafat-hasan/auth1/internal/utils"
 	"github.com/arafat-hasan/auth1/internal/worker"
+)
+
+// Build-time variables — set via: go build -ldflags "-X main.version=1.2.3 -X main.gitCommit=abc1234 -X main.buildDate=2026-05-25"
+var (
+	version   = "dev"
+	gitCommit = "unknown"
+	buildDate = "unknown"
 )
 
 func main() {
@@ -181,11 +189,14 @@ func main() {
 		}).Info("Global rate limiting enabled")
 	}
 
-	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"healthy","service":"auth-service","version":"2.0.0"}`)
+	healthChecker := health.NewHealthChecker(db, redisClient, cfg.AMQP.URL, outboxRepo, logger, health.BuildInfo{
+		Version:   version,
+		GitCommit: gitCommit,
+		BuildDate: buildDate,
 	})
+	r.Get("/livez", healthChecker.Livez)
+	r.Get("/readyz", healthChecker.Readyz)
+	r.Get("/health", healthChecker.Health)
 
 	r.Get("/swagger/*", httpSwagger.Handler(
 		httpSwagger.URL("/swagger/doc.json"),
@@ -362,8 +373,9 @@ func main() {
 				}))
 			}
 
-			// User info endpoint
+			// User info and self-edit endpoints
 			r.Get("/me", authHandler.GetMe)
+			r.Put("/me", authHandler.UpdateMe)
 
 			// Change password (authenticated)
 			r.Post("/change-password", authHandler.ChangePassword)

@@ -40,6 +40,9 @@ func (s *authServiceImpl) UpdateUser(ctx context.Context, userID uuid.UUID, req 
 		user.Email = *req.Email
 	}
 	if req.Phone != nil {
+		if user.Phone == nil || *user.Phone != *req.Phone {
+			user.PhoneVerifiedAt = nil
+		}
 		user.Phone = req.Phone
 	}
 	user.UpdatedAt = time.Now()
@@ -86,9 +89,18 @@ func (s *authServiceImpl) DeleteUser(ctx context.Context, userID uuid.UUID) erro
 func (s *authServiceImpl) UnlockAccount(ctx context.Context, userID uuid.UUID) error {
 	s.logger.WithFields(logrus.Fields{"user_id": userID}).Info("Unlocking account")
 
-	if err := s.userRepo.UnlockAccount(ctx, userID); err != nil {
-		return fmt.Errorf("failed to unlock account: %w", err)
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
 	}
+	if user == nil {
+		return fmt.Errorf("user not found")
+	}
+
+	if err := s.redisRepo.ResetLoginAttempts(ctx, user.Email, "email"); err != nil {
+		return fmt.Errorf("failed to clear login attempts: %w", err)
+	}
+
 	s.auditLog(ctx, nil, domain.EventUserUnlocked, map[string]interface{}{"target_user_id": userID}, nil)
 	return nil
 }
@@ -141,12 +153,12 @@ func (s *authServiceImpl) ListUsers(ctx context.Context, req *ListUsersRequest) 
 	}, nil
 }
 
-func (s *authServiceImpl) ListUserSessions(ctx context.Context, userID uuid.UUID) ([]string, error) {
-	jtis, err := s.redisRepo.ListUserSessions(ctx, userID)
+func (s *authServiceImpl) ListUserSessions(ctx context.Context, userID uuid.UUID) ([]domain.SessionInfo, error) {
+	sessions, err := s.redisRepo.ListUserSessions(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sessions: %w", err)
 	}
-	return jtis, nil
+	return sessions, nil
 }
 
 func (s *authServiceImpl) RevokeUserSession(ctx context.Context, userID uuid.UUID, jti string) error {

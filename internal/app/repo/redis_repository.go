@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,11 +27,11 @@ type RedisRepository interface {
 	DeletePendingUser(ctx context.Context, email string) error
 
 	// Refresh token operations
-	SetRefreshToken(ctx context.Context, userID uuid.UUID, jti string, ttl time.Duration) error
+	SetRefreshToken(ctx context.Context, userID uuid.UUID, jti, ip, ua string, ttl time.Duration) error
 	GetRefreshToken(ctx context.Context, userID uuid.UUID, jti string) (bool, error)
 	DeleteRefreshToken(ctx context.Context, userID uuid.UUID, jti string) error
 	DeleteAllRefreshTokens(ctx context.Context, userID uuid.UUID) error
-	ListUserSessions(ctx context.Context, userID uuid.UUID) ([]string, error)
+	ListUserSessions(ctx context.Context, userID uuid.UUID) ([]domain.SessionInfo, error)
 
 	// 2FA secret operations (temp storage during setup)
 	SetTOTPSecret(ctx context.Context, userID uuid.UUID, secret string, ttl time.Duration) error
@@ -131,9 +132,13 @@ func (r *redisRepository) DeletePendingUser(ctx context.Context, email string) e
 }
 
 // Refresh token operations
-func (r *redisRepository) SetRefreshToken(ctx context.Context, userID uuid.UUID, jti string, ttl time.Duration) error {
+func (r *redisRepository) SetRefreshToken(ctx context.Context, userID uuid.UUID, jti, ip, ua string, ttl time.Duration) error {
 	key := fmt.Sprintf("refresh_token:%s:%s", userID.String(), jti)
-	return r.client.Set(ctx, key, "valid", ttl).Err()
+	pipe := r.client.Pipeline()
+	pipe.HSet(ctx, key, "ip", ip, "ua", ua, "created_at", time.Now().Unix())
+	pipe.Expire(ctx, key, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func (r *redisRepository) GetRefreshToken(ctx context.Context, userID uuid.UUID, jti string) (bool, error) {
@@ -164,23 +169,36 @@ func (r *redisRepository) DeleteAllRefreshTokens(ctx context.Context, userID uui
 	return nil
 }
 
-// ListUserSessions returns the JTI of every active refresh token for the user.
-func (r *redisRepository) ListUserSessions(ctx context.Context, userID uuid.UUID) ([]string, error) {
+// ListUserSessions returns metadata for every active session (refresh token) for the user.
+func (r *redisRepository) ListUserSessions(ctx context.Context, userID uuid.UUID) ([]domain.SessionInfo, error) {
 	pattern := fmt.Sprintf("refresh_token:%s:*", userID.String())
-	var jtis []string
+	var sessions []domain.SessionInfo
 	iter := r.client.Scan(ctx, 0, pattern, 0).Iterator()
 	for iter.Next(ctx) {
 		key := iter.Val()
 		// key format: refresh_token:{userID}:{jti}
 		parts := strings.SplitN(key, ":", 3)
-		if len(parts) == 3 {
-			jtis = append(jtis, parts[2])
+		if len(parts) != 3 {
+			continue
 		}
+		fields, err := r.client.HGetAll(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+		info := domain.SessionInfo{JTI: parts[2]}
+		info.IPAddress = fields["ip"]
+		info.UserAgent = fields["ua"]
+		if ts, ok := fields["created_at"]; ok {
+			if unix, err := strconv.ParseInt(ts, 10, 64); err == nil {
+				info.CreatedAt = time.Unix(unix, 0)
+			}
+		}
+		sessions = append(sessions, info)
 	}
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("failed to list sessions: %w", err)
 	}
-	return jtis, nil
+	return sessions, nil
 }
 
 // 2FA secret operations

@@ -63,6 +63,9 @@ func (s *authServiceImpl) Login(ctx context.Context, req *LoginRequest) (*LoginR
 	if !user.IsActive {
 		return nil, fmt.Errorf("account is deactivated")
 	}
+	if s.config.RequireEmailVerification && !user.IsVerified {
+		return nil, fmt.Errorf("email address not verified")
+	}
 
 	// Check password
 	if user.PasswordHash == nil || !utils.CheckPasswordHash(req.Password, *user.PasswordHash) {
@@ -142,12 +145,12 @@ func (s *authServiceImpl) Login(ctx context.Context, req *LoginRequest) (*LoginR
 		}, nil
 	}
 
-	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role)
+	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role, derefStr(req.IPAddress), derefStr(req.UserAgent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}
 
-	s.userRepo.UpdateLastLogin(ctx, user.ID, req.IPAddress, req.UserAgent)
+	s.userRepo.UpdateLastLogin(ctx, user.ID)
 
 	s.logger.WithFields(logrus.Fields{
 		"email":   req.Email,
@@ -210,6 +213,9 @@ func (s *authServiceImpl) LoginWithPhone(ctx context.Context, req *LoginWithPhon
 	}
 	if !user.IsActive {
 		return nil, fmt.Errorf("account is deactivated")
+	}
+	if s.config.RequirePhoneVerification && user.PhoneVerifiedAt == nil {
+		return nil, fmt.Errorf("phone number not verified")
 	}
 
 	// Check password
@@ -286,12 +292,12 @@ func (s *authServiceImpl) LoginWithPhone(ctx context.Context, req *LoginWithPhon
 		}, nil
 	}
 
-	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role)
+	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role, derefStr(req.IPAddress), derefStr(req.UserAgent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}
 
-	s.userRepo.UpdateLastLogin(ctx, user.ID, req.IPAddress, req.UserAgent)
+	s.userRepo.UpdateLastLogin(ctx, user.ID)
 
 	s.logger.WithFields(logrus.Fields{
 		"phone":   req.Phone,
@@ -355,14 +361,17 @@ func (s *authServiceImpl) VerifyLoginOTP(ctx context.Context, req *VerifyLoginRe
 	if !user.IsActive {
 		return nil, fmt.Errorf("account is deactivated")
 	}
+	if s.config.RequireEmailVerification && !user.IsVerified {
+		return nil, fmt.Errorf("email address not verified")
+	}
 
-	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role)
+	tokens, err := s.generateTokens(ctx, user.ID, user.Email, user.Role, derefStr(req.IPAddress), derefStr(req.UserAgent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}
 
 	s.redisRepo.DeleteOTP(ctx, req.Email, "login")
-	s.userRepo.UpdateLastLogin(ctx, user.ID, nil, nil)
+	s.userRepo.UpdateLastLogin(ctx, user.ID)
 
 	s.logger.WithFields(logrus.Fields{
 		"email":   req.Email,

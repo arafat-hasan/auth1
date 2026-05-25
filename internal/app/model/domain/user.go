@@ -25,8 +25,6 @@ type User struct {
 	// Security fields
 	Is2FAEnabled         bool       `json:"is_2fa_enabled"`
 	TOTPSecret           *string    `json:"-"`
-	FailedLoginAttempts  int        `json:"-"`
-	LockedUntil          *time.Time `json:"locked_until,omitempty"`
 	PasswordChangedAt    *time.Time `json:"password_changed_at,omitempty"`
 	MustChangePassword   bool       `json:"must_change_password"`
 	LastPasswordResetAt  *time.Time `json:"-"`
@@ -39,20 +37,10 @@ type User struct {
 	
 	// Tracking fields
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
-	IPAddress   *string    `json:"ip_address,omitempty"`
-	UserAgent   *string    `json:"-"`
 	
 	// Timestamps
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// IsLocked checks if the user account is currently locked
-func (u *User) IsLocked() bool {
-	if u.LockedUntil == nil {
-		return false
-	}
-	return time.Now().Before(*u.LockedUntil)
 }
 
 // IsDeleted checks if the user is soft-deleted
@@ -62,7 +50,7 @@ func (u *User) IsDeleted() bool {
 
 // CanLogin checks if the user can log in
 func (u *User) CanLogin() bool {
-	return u.IsActive && !u.IsLocked() && !u.IsDeleted()
+	return u.IsActive && !u.IsDeleted()
 }
 
 // PendingUser represents a user awaiting verification
@@ -105,6 +93,14 @@ type TOTPSetupData struct {
 	Secret    string `json:"secret"`
 	QRCodeURL string `json:"qr_code_url"`
 	BackupCodes []string `json:"backup_codes,omitempty"`
+}
+
+// SessionInfo represents an active session stored in Redis.
+type SessionInfo struct {
+	JTI       string    `json:"session_id"`
+	IPAddress string    `json:"ip_address,omitempty"`
+	UserAgent string    `json:"user_agent,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // PasswordResetRequest represents a password reset request

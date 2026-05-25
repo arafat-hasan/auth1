@@ -17,6 +17,7 @@ type OutboxRepository interface {
 	MarkPublished(ctx context.Context, id uuid.UUID) error
 	MarkFailed(ctx context.Context, id uuid.UUID, errMsg string) error
 	IncrementAttempts(ctx context.Context, id uuid.UUID) error
+	CountByStatus(ctx context.Context, status string) (int, error)
 }
 
 type outboxRepository struct {
@@ -80,4 +81,15 @@ func (r *outboxRepository) IncrementAttempts(ctx context.Context, id uuid.UUID) 
 		return fmt.Errorf("failed to increment outbox attempts: %w", err)
 	}
 	return nil
+}
+
+func (r *outboxRepository) CountByStatus(ctx context.Context, status string) (int, error) {
+	count, err := r.db.NewSelect().
+		Model((*db.EmailOutbox)(nil)).
+		Where("status = ?", status).
+		Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count outbox rows by status: %w", err)
+	}
+	return count, nil
 }

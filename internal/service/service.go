@@ -46,7 +46,7 @@ func NewAuthService(
 }
 
 // generateTokens creates a new access/refresh token pair and stores the refresh token in Redis.
-func (s *authServiceImpl) generateTokens(ctx context.Context, userID uuid.UUID, userEmail, role string) (*domain.TokenPair, error) {
+func (s *authServiceImpl) generateTokens(ctx context.Context, userID uuid.UUID, userEmail, role, ip, ua string) (*domain.TokenPair, error) {
 	if role == "" {
 		role = domain.RoleUser
 	}
@@ -60,7 +60,7 @@ func (s *authServiceImpl) generateTokens(ctx context.Context, userID uuid.UUID, 
 		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
 	}
 
-	if err = s.redisRepo.SetRefreshToken(ctx, userID, jti, s.config.RefreshTokenTTL); err != nil {
+	if err = s.redisRepo.SetRefreshToken(ctx, userID, jti, ip, ua, s.config.RefreshTokenTTL); err != nil {
 		return nil, fmt.Errorf("failed to store refresh token: %w", err)
 	}
 
@@ -69,6 +69,13 @@ func (s *authServiceImpl) generateTokens(ctx context.Context, userID uuid.UUID, 
 		RefreshToken: refreshToken,
 		ExpiresIn:    int(s.jwtManager.GetAccessTokenTTL().Seconds()),
 	}, nil
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // generateAndSendOTP creates an OTP, hashes and stores it in Redis, then enqueues an

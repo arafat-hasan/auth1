@@ -17,8 +17,6 @@ type UserAdminResponse struct {
 	IsVerified          bool                   `json:"is_verified"`
 	IsActive            bool                   `json:"is_active"`
 	Is2FAEnabled        bool                   `json:"is_2fa_enabled"`
-	FailedLoginAttempts int                    `json:"failed_login_attempts"`
-	LockedUntil         *time.Time             `json:"locked_until,omitempty"`
 	LastLoginAt         *time.Time             `json:"last_login_at,omitempty"`
 	CreatedAt           time.Time              `json:"created_at"`
 	UpdatedAt           time.Time              `json:"updated_at"`
@@ -45,10 +43,20 @@ type UpdateUserAdminRequest struct {
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
+// UpdateMeRequest allows a user to update their own profile (name/phone only).
+// @Description Self-service profile update request
+type UpdateMeRequest struct {
+	Name  *string `json:"name,omitempty"`
+	Phone *string `json:"phone,omitempty"`
+}
+
 // SessionItem represents one active session (identified by the refresh token JTI).
 // @Description Active session info
 type SessionItem struct {
-	SessionID string `json:"session_id"`
+	SessionID string    `json:"session_id"`
+	IPAddress string    `json:"ip_address,omitempty"`
+	UserAgent string    `json:"user_agent,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ListSessionsResponse holds active sessions for a user.

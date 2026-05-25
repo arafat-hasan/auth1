@@ -26,13 +26,17 @@ type SignupWithPhoneRequest struct {
 }
 
 type VerifySignupRequest struct {
-	Email string `json:"email" validate:"required,email"`
-	OTP   string `json:"otp"   validate:"required,len=6"`
+	Email     string  `json:"email" validate:"required,email"`
+	OTP       string  `json:"otp"   validate:"required,len=6"`
+	IPAddress *string `json:"-"`
+	UserAgent *string `json:"-"`
 }
 
 type VerifyPhoneSignupRequest struct {
-	Phone string `json:"phone" validate:"required"`
-	OTP   string `json:"otp"   validate:"required,len=6"`
+	Phone     string  `json:"phone" validate:"required"`
+	OTP       string  `json:"otp"   validate:"required,len=6"`
+	IPAddress *string `json:"-"`
+	UserAgent *string `json:"-"`
 }
 
 // --- Login ---
@@ -69,9 +73,11 @@ type RequestOTPRequest struct {
 }
 
 type VerifyLoginRequest struct {
-	Email string `json:"email,omitempty"`
-	Phone string `json:"phone,omitempty"`
-	OTP   string `json:"otp" validate:"required,len=6"`
+	Email     string  `json:"email,omitempty"`
+	Phone     string  `json:"phone,omitempty"`
+	OTP       string  `json:"otp" validate:"required,len=6"`
+	IPAddress *string `json:"-"`
+	UserAgent *string `json:"-"`
 }
 
 // --- Password management ---
@@ -96,7 +102,9 @@ type ChangePasswordRequest struct {
 // --- Token management ---
 
 type RefreshTokenRequest struct {
-	RefreshToken string `json:"refresh_token" validate:"required"`
+	RefreshToken string  `json:"refresh_token" validate:"required"`
+	IPAddress    *string `json:"-"`
+	UserAgent    *string `json:"-"`
 }
 
 type LogoutRequest struct {
@@ -108,8 +116,10 @@ type LogoutRequest struct {
 // Verify2FALoginRequest is used to complete login after a 2FA challenge is issued.
 // The ChallengeToken was returned in the 202 response from Login.
 type Verify2FALoginRequest struct {
-	ChallengeToken string `json:"challenge_token" validate:"required"`
-	TwoFACode      string `json:"two_fa_code"     validate:"required,len=6"`
+	ChallengeToken string  `json:"challenge_token" validate:"required"`
+	TwoFACode      string  `json:"two_fa_code"     validate:"required,len=6"`
+	IPAddress      *string `json:"-"`
+	UserAgent      *string `json:"-"`
 }
 
 // Confirm2FASetupRequest confirms TOTP setup. UserID is set from the JWT, not request body.

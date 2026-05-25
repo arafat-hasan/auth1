@@ -92,7 +92,7 @@ Config → DB → Redis → Repos → RateLimiter → EmailPublisher
 | Docker compose (dev) | ✅ | postgres + redis + rabbitmq + redis-insight + service |
 | Docker compose (staging/prod) | ✅ | Separate files with resource limits |
 | Database migrations | ✅ | Separate `migrate` binary with up/down/seed |
-| Health check endpoint | ✅ | `GET /health` |
+| Health check endpoints | ✅ | `GET /livez` (liveness), `GET /readyz` (readiness), `GET /health` (full diagnostics) |
 
 ### User Management (Admin API)
 
@@ -116,7 +116,7 @@ Config → DB → Redis → Repos → RateLimiter → EmailPublisher
 | Item | Notes |
 |------|-------|
 | Test suite | Zero coverage. Unit tests for repo, service. Integration tests hitting real DB/Redis. |
-| Enhanced health check | Current `/health` is static. Should ping DB + Redis + RabbitMQ and report dependency status. |
+| ~~Enhanced health check~~ | ✅ Done — `/livez`, `/readyz`, `/health` implemented in `internal/health/`. |
 
 ### P1 — High Priority
 
@@ -220,7 +220,9 @@ POST /api/v1/auth/forgot-password
 POST /api/v1/auth/reset-password
 POST /api/v1/auth/2fa/verify
 GET  /api/v1/auth/public-key
-GET  /health
+GET  /livez    — liveness probe (process alive, goroutines ≤ 10 000)
+GET  /readyz   — readiness probe (DB + Redis + RabbitMQ reachable)
+GET  /health   — full diagnostics (latencies, memory, uptime, build info, outbox lag)
 GET  /swagger/*
 ```
 

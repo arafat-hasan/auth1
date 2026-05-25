@@ -33,11 +33,7 @@ type UserRepository interface {
 	List(ctx context.Context, filter ListUsersFilter) ([]*domain.User, int, error)
 	
 	// Authentication tracking
-	UpdateLastLogin(ctx context.Context, userID uuid.UUID, ipAddress, userAgent *string) error
-	IncrementFailedLoginAttempts(ctx context.Context, userID uuid.UUID) error
-	ResetFailedLoginAttempts(ctx context.Context, userID uuid.UUID) error
-	LockAccount(ctx context.Context, userID uuid.UUID, lockUntil time.Time) error
-	UnlockAccount(ctx context.Context, userID uuid.UUID) error
+	UpdateLastLogin(ctx context.Context, userID uuid.UUID) error
 	
 	// Password management
 	UpdatePassword(ctx context.Context, userID uuid.UUID, passwordHash string) error
@@ -97,16 +93,12 @@ func (r *userRepository) Create(ctx context.Context, user *domain.User) error {
 		PhoneVerifiedAt:     user.PhoneVerifiedAt,
 		Is2FAEnabled:        user.Is2FAEnabled,
 		TOTPSecret:          user.TOTPSecret,
-		FailedLoginAttempts: user.FailedLoginAttempts,
-		LockedUntil:         user.LockedUntil,
 		PasswordChangedAt:   user.PasswordChangedAt,
 		MustChangePassword:  user.MustChangePassword,
 		LastPasswordResetAt: user.LastPasswordResetAt,
 		Role:                user.Role,
 		Metadata:            db.Metadata(user.Metadata),
 		LastLoginAt:         user.LastLoginAt,
-		IPAddress:           user.IPAddress,
-		UserAgent:           user.UserAgent,
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
@@ -172,15 +164,22 @@ func (r *userRepository) GetByPhone(ctx context.Context, phone string) (*domain.
 
 func (r *userRepository) Update(ctx context.Context, user *domain.User) error {
 	dbUser := &db.User{
-		ID:           user.ID,
-		Email:        user.Email,
-		Phone:        user.Phone,
-		PasswordHash: user.PasswordHash,
-		IsVerified:   user.IsVerified,
-		Is2FAEnabled: user.Is2FAEnabled,
-		TOTPSecret:   user.TOTPSecret,
-		LastLoginAt:  user.LastLoginAt,
-		UpdatedAt:    time.Now(),
+		ID:                 user.ID,
+		Email:              user.Email,
+		Name:               user.Name,
+		Phone:              user.Phone,
+		PasswordHash:       user.PasswordHash,
+		IsVerified:         user.IsVerified,
+		IsActive:           user.IsActive,
+		EmailVerifiedAt:    user.EmailVerifiedAt,
+		PhoneVerifiedAt:    user.PhoneVerifiedAt,
+		Is2FAEnabled:       user.Is2FAEnabled,
+		TOTPSecret:         user.TOTPSecret,
+		MustChangePassword: user.MustChangePassword,
+		Role:               user.Role,
+		Metadata:           db.Metadata(user.Metadata),
+		LastLoginAt:        user.LastLoginAt,
+		UpdatedAt:          time.Now(),
 	}
 
 	_, err := r.db.NewUpdate().Model(dbUser).Where("id = ?", user.ID).Exec(ctx)
@@ -193,72 +192,16 @@ func (r *userRepository) Update(ctx context.Context, user *domain.User) error {
 	return nil
 }
 
-func (r *userRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID, ipAddress, userAgent *string) error {
+func (r *userRepository) UpdateLastLogin(ctx context.Context, userID uuid.UUID) error {
 	now := time.Now()
 	_, err := r.db.NewUpdate().
 		Model((*db.User)(nil)).
-		Set("last_login_at = ?, ip_address = ?, user_agent = ?, updated_at = ?", now, ipAddress, userAgent, now).
+		Set("last_login_at = ?, updated_at = ?", now, now).
 		Where("id = ?", userID).
 		Exec(ctx)
 
 	if err != nil {
 		return fmt.Errorf("failed to update last login: %w", err)
-	}
-
-	return nil
-}
-
-func (r *userRepository) IncrementFailedLoginAttempts(ctx context.Context, userID uuid.UUID) error {
-	_, err := r.db.NewUpdate().
-		Model((*db.User)(nil)).
-		Set("failed_login_attempts = failed_login_attempts + 1, updated_at = ?", time.Now()).
-		Where("id = ?", userID).
-		Exec(ctx)
-
-	if err != nil {
-		return fmt.Errorf("failed to increment failed login attempts: %w", err)
-	}
-
-	return nil
-}
-
-func (r *userRepository) ResetFailedLoginAttempts(ctx context.Context, userID uuid.UUID) error {
-	_, err := r.db.NewUpdate().
-		Model((*db.User)(nil)).
-		Set("failed_login_attempts = 0, updated_at = ?", time.Now()).
-		Where("id = ?", userID).
-		Exec(ctx)
-
-	if err != nil {
-		return fmt.Errorf("failed to reset failed login attempts: %w", err)
-	}
-
-	return nil
-}
-
-func (r *userRepository) LockAccount(ctx context.Context, userID uuid.UUID, lockUntil time.Time) error {
-	_, err := r.db.NewUpdate().
-		Model((*db.User)(nil)).
-		Set("locked_until = ?, updated_at = ?", lockUntil, time.Now()).
-		Where("id = ?", userID).
-		Exec(ctx)
-
-	if err != nil {
-		return fmt.Errorf("failed to lock account: %w", err)
-	}
-
-	return nil
-}
-
-func (r *userRepository) UnlockAccount(ctx context.Context, userID uuid.UUID) error {
-	_, err := r.db.NewUpdate().
-		Model((*db.User)(nil)).
-		Set("locked_until = NULL, failed_login_attempts = 0, updated_at = ?", time.Now()).
-		Where("id = ?", userID).
-		Exec(ctx)
-
-	if err != nil {
-		return fmt.Errorf("failed to unlock account: %w", err)
 	}
 
 	return nil
@@ -576,16 +519,12 @@ func (r *userRepository) toDomainUser(dbUser *db.User) *domain.User {
 		DeletedAt:           dbUser.DeletedAt,
 		Is2FAEnabled:        dbUser.Is2FAEnabled,
 		TOTPSecret:          dbUser.TOTPSecret,
-		FailedLoginAttempts: dbUser.FailedLoginAttempts,
-		LockedUntil:         dbUser.LockedUntil,
 		PasswordChangedAt:   dbUser.PasswordChangedAt,
 		MustChangePassword:  dbUser.MustChangePassword,
 		LastPasswordResetAt: dbUser.LastPasswordResetAt,
 		Role:                dbUser.Role,
 		Metadata:            map[string]interface{}(dbUser.Metadata),
 		LastLoginAt:         dbUser.LastLoginAt,
-		IPAddress:           dbUser.IPAddress,
-		UserAgent:           dbUser.UserAgent,
 		CreatedAt:           dbUser.CreatedAt,
 		UpdatedAt:           dbUser.UpdatedAt,
 	}

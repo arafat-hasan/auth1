@@ -77,8 +77,6 @@ func userToAdminResponse(u *domain.User) api.UserAdminResponse {
 		IsVerified:          u.IsVerified,
 		IsActive:            u.IsActive,
 		Is2FAEnabled:        u.Is2FAEnabled,
-		FailedLoginAttempts: u.FailedLoginAttempts,
-		LockedUntil:         u.LockedUntil,
 		LastLoginAt:         u.LastLoginAt,
 		CreatedAt:           u.CreatedAt,
 		UpdatedAt:           u.UpdatedAt,
@@ -438,16 +436,21 @@ func (h *UserHandler) ListUserSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jtis, err := h.authService.ListUserSessions(r.Context(), targetID)
+	sessions, err := h.authService.ListUserSessions(r.Context(), targetID)
 	if err != nil {
 		h.logger.WithError(err).Error("ListUserSessions failed")
 		h.renderErr(w, r, http.StatusInternalServerError, "internal_error", "Failed to list sessions")
 		return
 	}
 
-	items := make([]api.SessionItem, len(jtis))
-	for i, jti := range jtis {
-		items[i] = api.SessionItem{SessionID: jti}
+	items := make([]api.SessionItem, len(sessions))
+	for i, s := range sessions {
+		items[i] = api.SessionItem{
+			SessionID: s.JTI,
+			IPAddress: s.IPAddress,
+			UserAgent: s.UserAgent,
+			CreatedAt: s.CreatedAt,
+		}
 	}
 
 	render.Status(r, http.StatusOK)

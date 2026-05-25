@@ -59,8 +59,6 @@ type User struct {
 	// Security fields
 	Is2FAEnabled         bool       `bun:"is_2fa_enabled,notnull,default:false" json:"is_2fa_enabled"`
 	TOTPSecret           *string    `bun:"totp_secret" json:"-"`
-	FailedLoginAttempts  int        `bun:"failed_login_attempts,default:0" json:"-"`
-	LockedUntil          *time.Time `bun:"locked_until" json:"locked_until,omitempty"`
 	PasswordChangedAt    *time.Time `bun:"password_changed_at" json:"-"`
 	MustChangePassword   bool       `bun:"must_change_password,default:false" json:"must_change_password"`
 	LastPasswordResetAt  *time.Time `bun:"last_password_reset_at" json:"-"`
@@ -73,43 +71,10 @@ type User struct {
 	
 	// Tracking fields
 	LastLoginAt *time.Time `bun:"last_login_at" json:"last_login_at,omitempty"`
-	IPAddress   *string    `bun:"ip_address" json:"ip_address,omitempty"`
-	UserAgent   *string    `bun:"user_agent" json:"-"`
 	
 	// Timestamps
 	CreatedAt time.Time `bun:"created_at,nullzero,notnull,default:current_timestamp" json:"created_at"`
 	UpdatedAt time.Time `bun:"updated_at,nullzero,notnull,default:current_timestamp" json:"updated_at"`
-}
-
-// RefreshToken represents a refresh token in the database
-type RefreshToken struct {
-	bun.BaseModel `bun:"table:refresh_tokens,alias:rt"`
-
-	ID                 uuid.UUID  `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
-	UserID             uuid.UUID  `bun:"user_id,notnull" json:"user_id"`
-	TokenHash          string     `bun:"token_hash,unique,notnull" json:"-"`
-	ExpiresAt          time.Time  `bun:"expires_at,notnull" json:"expires_at"`
-	RevokedAt          *time.Time `bun:"revoked_at" json:"revoked_at,omitempty"`
-	ReplacedByTokenID  *uuid.UUID `bun:"replaced_by_token_id" json:"replaced_by_token_id,omitempty"`
-	CreatedAt          time.Time  `bun:"created_at,nullzero,notnull,default:current_timestamp" json:"created_at"`
-	IPAddress          *string    `bun:"ip_address" json:"ip_address,omitempty"`
-	UserAgent          *string    `bun:"user_agent" json:"-"`
-	DeviceInfo         Metadata   `bun:"device_info,type:jsonb,default:'{}'" json:"device_info,omitempty"`
-}
-
-// Session represents a user session in the database
-type Session struct {
-	bun.BaseModel `bun:"table:sessions,alias:s"`
-
-	ID             uuid.UUID `bun:"id,pk,type:uuid,default:gen_random_uuid()" json:"id"`
-	UserID         uuid.UUID `bun:"user_id,notnull" json:"user_id"`
-	SessionToken   string    `bun:"session_token,unique,notnull" json:"-"`
-	ExpiresAt      time.Time `bun:"expires_at,notnull" json:"expires_at"`
-	CreatedAt      time.Time `bun:"created_at,nullzero,notnull,default:current_timestamp" json:"created_at"`
-	LastActivityAt time.Time `bun:"last_activity_at,default:current_timestamp" json:"last_activity_at"`
-	IPAddress      *string   `bun:"ip_address" json:"ip_address,omitempty"`
-	UserAgent      *string   `bun:"user_agent" json:"-"`
-	DeviceInfo     Metadata  `bun:"device_info,type:jsonb,default:'{}'" json:"device_info,omitempty"`
 }
 
 // PasswordResetToken represents a password reset token in the database
