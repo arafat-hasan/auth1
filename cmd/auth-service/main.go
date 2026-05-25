@@ -1,5 +1,5 @@
 // @title           Auth Service API
-// @version         2.0.0
+// @version         1.0.0
 // @description     JWT-based authentication service with OTP, 2FA, and RBAC.
 // @termsOfService  http://swagger.io/terms/
 

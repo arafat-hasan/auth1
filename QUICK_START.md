@@ -40,7 +40,7 @@ docker-compose logs -f auth-service
 curl http://localhost:8080/health
 
 # Expected response:
-# {"status":"healthy","service":"auth-service","version":"2.0.0"}
+# {"status":"healthy","service":"auth-service","version":"1.0.0"}
 ```
 
 ---

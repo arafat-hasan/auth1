@@ -455,7 +455,7 @@ info:
     url: https://opensource.org/licenses/MIT
   termsOfService: http://swagger.io/terms/
   title: Auth Service API
-  version: 2.0.0
+  version: 1.0.0
 paths:
   /api/v1/auth/2fa/confirm:
     post:
