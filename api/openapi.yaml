@@ -98,6 +98,9 @@ paths:
       description: |
         Creates a `pending` account and sends one verification per identifier, by the method the
         identifier policy sets. Refused if a value is another account's verified identifier.
+
+        The flow endpoints below (`verify`, `resend`, `complete`) serve registration flows and the
+        flows opened by accepting an invitation alike (docs/design.md D-8).
       security: []
       requestBody:
         required: true
@@ -120,7 +123,7 @@ paths:
       tags: [Registration]
       operationId: verifyRegistrationCode
       summary: Verify an identifier with a code
-      description: 'Checks a code sent to one identifier. Three wrong codes close the challenge. A value another account verified first gives `IDENTIFIER_TAKEN`.'
+      description: 'Checks a code sent to one identifier. Three wrong codes close the challenge. Failed verifications are also limited per account and per IP (`RATE_LIMITED`). A value another account verified first gives `IDENTIFIER_TAKEN`.'
       security: []
       parameters:
         - $ref: '#/components/parameters/FlowId'
@@ -211,6 +214,10 @@ paths:
       description: |
         A suspended or banned account receives a restricted session when the deployment allows it
         (`statuses.restricted_sign_in`); its tokens carry `status` other than `active`.
+
+        A `pending` account with the correct password gets `403 REGISTRATION_INCOMPLETE` whose
+        problem carries `resume`: a new flow handle, replacing the old one, and the identifier
+        types still pending. A wrong password always gets `INVALID_CREDENTIALS`.
       security: []
       requestBody:
         required: true
@@ -575,8 +582,12 @@ paths:
     post:
       tags: [Invitations]
       operationId: acceptInvitation
-      summary: Accept an invitation and set the password
-      description: 'Verifies the invited email, sets the password and activates the account.'
+      summary: Accept an invitation, set the password and supply the other required identifiers
+      description: |
+        Verifies the invited email, stores the password and opens one challenge for each other
+        identifier the policy requires, whose values the request supplies. The browser then
+        verifies them and calls `complete` through the registration flow endpoints, which
+        activates the account with the invited roles and signs in.
       security: []
       requestBody:
         required: true
@@ -584,16 +595,22 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/InvitationAccept' }
       responses:
-        '204': { description: The account is active. Sign in next }
+        '200':
+          description: Accepted. The flow, and the identifier types still pending (possibly none)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegistrationStarted' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/introspect:
     post:
       tags: [Introspection]
       operationId: introspectToken
       summary: Introspect an access token (RFC 7662)
-      description: 'Inactive for a bad signature, issuer or audience, an expired token, a revoked or expired session, or a deleted account. Otherwise returns the account status as it is now.'
+      description: 'Inactive for a bad signature or issuer, an audience that is none of the deployment''s clients, an expired token, a revoked or expired session, or a deleted account. The audience is not compared with the caller, which is a service and never an audience. Otherwise returns the account status as it is now.'
       x-auth1-scope: tokens:introspect
       security:
         - workload: []
@@ -694,7 +711,7 @@ paths:
       tags: [Account control]
       operationId: deleteAccount
       summary: Close an account
-      description: Revokes every session, erases credentials and releases the identifiers. Idempotent.
+      description: Revokes every session, erases credentials and releases the identifiers. Also closes a `pending` account (an abandoned registration or invitation). Idempotent.
       x-auth1-scope: accounts:delete
       security:
         - workload: []
@@ -715,8 +732,9 @@ paths:
       operationId: setAccountStatus
       summary: Set an account's status
       description: |
-        `until` is information for display; auth1 never changes a status on a timer. Sessions are
-        marked so that the next refresh issues tokens with the new status.
+        `until` is information for display; auth1 never changes a status on a timer. The next
+        refresh of any session reads the new status. The allowed transitions are in
+        docs/design.md D-4; any other is `409 STATUS_TRANSITION_INVALID`.
       x-auth1-scope: accounts:status:write
       security:
         - workload: []
@@ -854,7 +872,13 @@ paths:
       summary: Resolve the references of a delivery request at send time
       description: |
         Called by the notification service for requests auth1 submitted. Returns a value only for a
-        reference whose challenge is still open. The caller must not store, log or emit the values.
+        reference whose challenge is still open. The caller must not store, cache, log or emit the
+        values, and must drop a delivery whose values are absent. Idempotent per `request_id`:
+        resolving again returns the same values while the challenge is open, and moves no counter.
+
+        The resolver contract belongs to the notification service, which calls every resolver the
+        same way. The request and response shapes here are auth1's proposal for that contract,
+        until the notification service publishes it; auth1 then conforms (docs/design.md D-13, O-1).
       x-auth1-scope: delivery:resolve
       security:
         - workload: []
@@ -911,7 +935,8 @@ webhooks:
         Sent by auth1's `notification` adapter to `delivery.notification.request_url`, over the
         mesh, idempotent on `request_id`. It holds references only; the notification service
         resolves them at send time through `/v1/hooks/delivery/resolve`. The request API itself is
-        the notification service's contract; this is the body auth1 sends.
+        the notification service's contract; this body is auth1's proposal for it, until that
+        contract is published (docs/design.md D-13, O-1).
       security:
         - workload: []
       requestBody:
@@ -1077,6 +1102,10 @@ components:
         instance: { type: string }
         retry_after: { type: integer, minimum: 1 }
         attempts_left: { type: integer, minimum: 0 }
+        resume:
+          description: 'For `REGISTRATION_INCOMPLETE` after a correct password: the flow to resume. Its handle replaces the previous one'
+          allOf:
+            - $ref: '#/components/schemas/RegistrationStarted'
         reasons:
           type: array
           description: For `PASSWORD_REJECTED`
@@ -1365,6 +1394,11 @@ components:
         token: { type: string }
         password: { $ref: '#/components/schemas/Password' }
         locale: { $ref: '#/components/schemas/Locale' }
+        identifiers:
+          type: object
+          description: A value for every identifier type the policy requires other than the invited email
+          additionalProperties: { type: string, minLength: 3, maxLength: 320 }
+          example: { phone: '+15555550100' }
 
     IntrospectionRequest:
       type: object
@@ -1514,6 +1548,7 @@ components:
 
     ResolveRequest:
       type: object
+      description: auth1's proposal for the notification service's resolver contract (docs/design.md D-13)
       required: [request_id, type, references]
       properties:
         request_id: { type: string, description: The id auth1 gave the delivery request }

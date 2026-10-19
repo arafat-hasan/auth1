@@ -3,7 +3,7 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Date | 2026-10-16 |
+| Date | 2026-10-19 |
 | Owner | Arafat Hasan |
 | Reviewers | The owners of each relying product's integration. For the first deployment, the reviewers of that product's identity design (its TDD-13) |
 | Version | auth1 1.0. The first release governed by a published contract |
@@ -140,6 +140,7 @@ repository; each product keeps its configuration in its own repository.
 - **Uniqueness applies to verified, current identifiers only**: a partial unique index on `(type, blind index)`. An unverified value never blocks another account. Two accounts racing to verify the same value: the unique index settles it, and the loser gets `IDENTIFIER_TAKEN`.
 - **Normalisation.** Email: trimmed, lower-cased, Unicode NFC; no provider-specific folding. Phone: parsed to E.164 with libphonenumber; refused unless its calling code is in the policy's list and its national number matches the policy's length.
 - **Storage.** The value is encrypted per field (AES-256-GCM, key id in the ciphertext). Lookups use a blind index: HMAC-SHA256 of the normalised value under a separate key.
+- **Expiry releases.** When a `pending` account's registration or invitation flow expires, its identifiers are retired at once (`retired_at` set), so an abandoned registration that verified a value stops holding it. The account row itself is purged later (D-15).
 
 **Identifier policy** (example for a product that needs email and phone):
 
@@ -149,6 +150,14 @@ identifiers:
   phone: { required: true, verify: sms_otp, sign_in: false,
            calling_codes: ["+<cc>"], national_digits: 10 }
 ```
+
+**Why, and what was rejected.**
+
+| Option | Verdict |
+|---|---|
+| A column per identifier type on the account, unique when stored (today's code) | Rejected. An unverified registration squats on a value, and one column cannot hold a pending change beside the current value |
+| **Identifier rows, unique once verified and current** | **Chosen.** Each identifier is verified on its own, a change is a new row, and the same code serves a product that needs only an email or a username |
+| Uniqueness checked in code, without an index | Rejected. Two concurrent verifications would both pass |
 
 ### D-3. Flows and challenges
 
@@ -164,6 +173,16 @@ is used or expires, the encrypted secret is erased.
 
 - OTP: 6 digits *(cfg)*, from a CSPRNG. Verified by comparing HMAC-SHA256 under a server key, in constant time. A plain hash of six digits could be reversed offline; a keyed one cannot.
 - Link token: 256 bits, base64url. Stored as SHA-256.
+- **Resending** reuses the open challenge and its secret, and increments its send counter. A new secret is drawn only when the challenge has closed and a new one is opened. **Sends are counted when the delivery is requested** (the outbox row is written), never when the notification service resolves it (D-13).
+- **Resuming a registration.** The flow's handle lives only in the browser. If it is lost (the tab closed) while the flow is open, a sign-in with the account's identifier and the **correct** password answers `403 REGISTRATION_INCOMPLETE` with a `resume` object: a new handle, which replaces the old one, and the identifier types still pending. A wrong password answers `INVALID_CREDENTIALS`, as for any account, so nothing is learned without the password. An invitation is resumed the same way once its password is set (D-8).
+
+**Why, and what was rejected.**
+
+| Option | Verdict |
+|---|---|
+| Pending registrations in Redis (today's code) | Rejected. Lost on a Redis failure, not transactional with the outbox, not auditable |
+| **Flows and challenges in PostgreSQL** | **Chosen.** One transaction writes the challenge and its delivery row; attempts and sends survive restarts |
+| One generic "verification" table with no flow | Rejected. A change needs two challenges tied together (old and new address), and a registration needs one per identifier |
 
 ### D-4. Account states
 
@@ -172,17 +191,38 @@ States: `pending`, `active`, `suspended`, `banned`, `deleted`. `suspended` and `
 
 | Flow | `pending` | `active` | `suspended`, `banned` | `deleted` |
 |---|---|---|---|---|
-| Sign in | `REGISTRATION_INCOMPLETE` | Session | **Restricted session** *(cfg: or `ACCOUNT_RESTRICTED`)* | `INVALID_CREDENTIALS` (neutral) |
+| Sign in | `REGISTRATION_INCOMPLETE`, with `resume` after a correct password (D-3) | Session | **Restricted session** *(cfg: or `ACCOUNT_RESTRICTED`)* | `INVALID_CREDENTIALS` (neutral) |
 | Refresh | — | Tokens | Restricted tokens | Refused; sessions revoked |
 | Password reset | — | Allowed | Allowed; status unchanged | Nothing sent; 202 as always |
 | Identifier change, TOTP changes | — | Allowed | `ACCOUNT_RESTRICTED` | — |
 | Introspection | — | Active, `status: active` | Active, `status` as stored | Inactive |
 
 - **Restricted session.** Tokens carry `status` not equal to `active`. auth1 itself accepts them only on `GET /v1/me`, the session list and sign-out. Relying services refuse them. The token response carries `account_status` and `status_until`, so a client can explain the state. Whether a fresh sign-in gets one is configuration (`statuses.restricted_sign_in`).
-- **A status change** marks every session of the account `reissue`: the next refresh issues tokens with the new status and roles. Access tokens already issued live until they expire.
+- **A status change leaves the sessions alone.** Every refresh reads the account's current status and roles (one primary-key read) and issues tokens from them, so the first refresh after a change carries it. Access tokens already issued live until they expire.
 - **`until` is information only.** auth1 never changes a status on a timer. A product that wants automatic reinstatement runs it where it decides sanctions, and calls account control.
 - **Deletion** revokes every session, erases the password hash and TOTP secret, and releases the identifiers from uniqueness. The account row and identifiers remain, encrypted, for audit (retention: D-15).
 - **Version.** Every change to an account's status, roles, identifiers or credentials increments `accounts.version`. Events carry it (D-12).
+
+**Transitions through account control** (`PUT /v1/accounts/{id}/status`, `DELETE /v1/accounts/{id}`):
+
+| From ↓ · To → | `active` | `suspended` | `banned` | `deleted` |
+|---|---|---|---|---|
+| `pending` | Refused: only completing the flow activates | Refused | Refused | Allowed: closes an abandoned registration or invitation |
+| `active` | No-op, 200 | Allowed | Allowed | Allowed |
+| `suspended` | Allowed | Allowed: changes `until` or the reason | Allowed | Allowed |
+| `banned` | Allowed | Allowed | No-op, 200 | Allowed |
+| `deleted` | Refused | Refused | Refused | No-op, 200 |
+
+A refused transition is `409 STATUS_TRANSITION_INVALID`. auth1 attaches no meaning to the order of
+sanctions: which transitions a product uses is the product's policy.
+
+**Why, and what was rejected.**
+
+| Option | Verdict |
+|---|---|
+| `is_active` and a soft delete (today's code) | Rejected. No suspension or ban, no reason, nothing for a client to explain |
+| auth1 lifts a suspension itself when `until` passes | Rejected. The product usually has other steps to undo (hidden content, restrictions); auth1 lifting alone would report `active` while the product still restricts. The product lifts, through account control |
+| Revoke every session on a sanction | Rejected. The client could not tell the person why they were signed out. A restricted session can, and opens nothing at the relying services |
 
 ### D-5. Clients, sign-in and roles
 
@@ -207,12 +247,25 @@ the account's sessions *(cfg: `roles.revoke_sessions_on_removal`)*.
 OTP *verification* of a phone exists whether or not OTP *sign-in* is allowed: they are different
 challenge purposes.
 
+**Why, and what was rejected.**
+
+| Option | Verdict |
+|---|---|
+| One role per account (today's code) | Rejected. Cannot express an account with two duties |
+| Roles in auth1 with a built-in hierarchy | Rejected. A hierarchy is product policy; the product applies it when it reads the token |
+| **A role set per account, intersected with the client's allowed roles** | **Chosen.** A console can refuse accounts without its roles, and a token never carries a role its client should not see |
+
 ### D-6. Passwords
 
 - Length 8 to 128 characters *(cfg)*. No composition rules.
 - Refused if it equals or contains, case-insensitively, any current identifier of the account or the registration (an email, its local part, a phone in E.164 or national form), or appears in the deny-list.
 - Hash: bcrypt, cost 12 *(cfg; refused below 12)*, applied to base64(SHA-256(password)) so passwords over 72 bytes are not truncated. Stored as a PHC string (`$bcrypt-sha256$v=2,t=2b,r=12$…`). Verification rehashes on sign-in when the stored parameters are below the configured ones.
 - A password change requires the current password, revokes every other session, and emits `account.password_changed`.
+
+**Why bcrypt.** It meets the floor that relying products set (cost 12 or more), its Go
+implementation is mature, and its cost does not depend on a pod's memory limit. Argon2id is
+stronger against GPU attacks but needs memory sized per pod; the PHC format lets a later release
+switch and rehash at sign-in (O-3).
 
 ### D-7. Recovery
 
@@ -222,13 +275,16 @@ challenge purposes.
 
 **Step-up policy** *(cfg: `recovery.step_up`)*: `always` (whenever the account has a verified
 phone), `by_attribute` (when a trusted service has set the account attribute `recovery_step_up`
-through account control), or `never`.
+through account control), or `never`. It applies to invited accounts as to registered ones, since
+both verify every identifier the policy requires (D-8).
 
 ### D-8. Identifier changes and invitations
 
 - **Email change.** Needs the current password. auth1 refuses a value that is another account's verified email, then sends `email_change_confirm_old` to the current address and `email_change_confirm_new` to the new one. The change applies when both are confirmed: the old identifier stops being current, the new one is current and verified, and `account.identifier_changed` is emitted.
 - **Phone change.** Needs the current password. An OTP goes to the new number (`phone_change_code`); on success, uniqueness is checked by the index and the swap applies.
-- **Invitation.** A service with `accounts:invite` invites an email with a display name, a client and roles. auth1 creates a `pending` account with that email (to be verified by the invitation link), the roles, and sends `invitation_link`. Following the link and setting a password verifies the email and activates the account. Invitations expire after 72 h *(cfg)*.
+- **Invitation.** A service with `accounts:invite` invites an email with a display name, a client and roles. An email that is another account's verified email is refused, `409 IDENTIFIER_TAKEN`. Otherwise auth1 creates a `pending` account with that email (to be verified by the invitation link) and the roles, opens an `invitation` flow, and sends `invitation_link`.
+- **Accepting an invitation** (`POST /v1/invitations/accept`) takes the link token, a password and a value for **every other identifier the policy requires** (a phone, when the policy requires one). It verifies the email, stores the password, and opens one challenge per remaining identifier, by the policy's method, exactly as a registration does. It answers with the flow's id, a handle and the identifier types still pending. The browser then uses the same flow endpoints as a registration (`/v1/registrations/{flow_id}/verify`, `/resend`, `/complete`); `complete` activates the account with the invited roles and signs in. A value that is another account's verified identifier is refused, at acceptance or at verification. So an invited account is held to the same identifier policy as a registered one, and gets the same recovery step-up (D-7).
+- Invitations expire after 72 h *(cfg)*; an expired invitation retires its identifiers (D-2).
 - **Bootstrap.** If no account holds a role listed in `bootstrap.roles` (for example the product's administrator role), auth1 invites each email in `bootstrap.emails` with that role at start-up. It does nothing once one exists.
 
 ### D-9. Tokens, sessions and keys
@@ -251,11 +307,11 @@ No email, phone or name: tokens are cached by browsers and logged by proxies.
 
 **Sessions and refresh tokens.**
 
-- A session is created at sign-in, per client. It has an idle expiry (7 days *(cfg)*), an absolute expiry (30 days *(cfg)*), a `reissue` flag and a revocation time.
+- A session is created at sign-in, per client. It has an idle expiry (7 days *(cfg)*), an absolute expiry (30 days *(cfg)*) and a revocation time. It holds no copy of the account's status or roles; a refresh reads them from the account.
 - Refresh tokens are opaque 256-bit values, stored as SHA-256, chained per session. Each use rotates: the presented token is marked rotated and a successor issued.
-- **Reuse detection.** A rotated token presented again after the grace window (10 s *(cfg)*) revokes the session and is audited. Inside the window, auth1 returns the successor already issued, so two tabs refreshing at once do not sign the member out.
+- **Reuse detection.** A rotated token presented again after the grace window (10 s *(cfg)*) revokes the session and is audited. Inside the window, auth1 returns the successor already issued, so two tabs refreshing at once do not sign the member out. To do that it keeps the successor's raw value **encrypted** (`refresh_tokens.successor_enc`) for the grace window only; the refresh path ignores it after the window, and a job erases it within a minute.
 - **Transport.** For a browser client, the refresh token is set in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie whose path is auth1's session path. A non-browser client may receive it in the body *(cfg per client)*.
-- **Revocation.** Sign-out revokes the session. A password change or reset revokes all of them. A deletion revokes all of them. A status or role change marks them `reissue` (and a role removal can revoke them, D-5).
+- **Revocation.** Sign-out revokes the session. A password change or reset revokes all of them. A deletion revokes all of them. A status or role change takes effect at the next refresh, which reads the account afresh (D-4); a role removal can also revoke them (D-5).
 
 **Signing keys.** A keyring of RSA keys (2048 bits *(cfg: 3072)*), loaded from a mounted secret.
 Each key has a `kid` (the RFC 7638 thumbprint) and a state:
@@ -271,12 +327,31 @@ JWKS refresh interval (configured as `keys.min_publish_before_use`, default 15 m
 to `active`, which retires the previous one. auth1 refuses to promote a key that has not been
 published for that long. The keyring is re-read on change without a restart.
 
-**Introspection** (RFC 7662, `tokens:introspect`). `active` is false if the signature, expiry,
-issuer or audience fails, the session is revoked or expired, or the account is deleted. Otherwise
-it returns `sub`, `aud`, `sid`, `client_id`, `roles`, `status`, `exp`, `iat`, `jti`.
+**Where the times live.** The mounted keyring holds the key material and the state the operator
+wants. The times are in PostgreSQL, in `signing_keys` (§5): the first replica that loads a key
+records `first_published_at`; the first to sign with it records `activated_at`; the first to see it
+retired records `retired_at`. Every replica reads the same rows, so the promotion check and the
+moment a retired key leaves the JWKS hold across restarts and replicas. A replica that loads an
+`active` key whose `first_published_at` is too recent keeps signing with the previous key and
+alerts.
+
+**Introspection** (RFC 7662, `tokens:introspect`). `active` is false if the signature, expiry or
+issuer fails, the audience is not one of the deployment's clients, the session is revoked or
+expired, or the account is deleted. The audience is **not** compared with the caller: the caller
+is a service, never an audience, and decides for itself which audiences its routes accept.
+Otherwise it returns `sub`, `aud`, `sid`, `client_id`, `roles`, `status`, `exp`, `iat`, `jti`.
 
 **Metadata.** `/.well-known/jwks.json` (cacheable 5 min) and
 `/.well-known/oauth-authorization-server` (issuer, JWKS URI, introspection and token endpoints).
+
+**Why, and what was rejected.**
+
+| Choice | Rejected alternative | Why |
+|---|---|---|
+| Opaque refresh tokens, hashed, rotated and chained per session | JWT refresh tokens with JTIs and blacklists in Redis (today's code) | An opaque token carries nothing to leak; revocation is a row, not a blacklist that Redis can lose; reuse detection needs the chain |
+| Returning the stored successor inside the grace window | Issuing a second successor | Two live successors would fork the chain, and a later reuse could no longer be told from a race |
+| A keyring with `next`, `active`, `retired` | One key from a file (today's code) | Rotation without a gap in which relying services meet an unknown `kid` |
+| Access tokens without personal data | The email in every token (today's code) | Tokens are cached by browsers and logged by proxies |
 
 ### D-10. Service callers
 
@@ -296,6 +371,11 @@ it returns `sub`, `aud`, `sid`, `client_id`, `roles`, `status`, `exp`, `iat`, `j
 
 - No static API key exists. If `service_auth.mode` is not configured, auth1 refuses to start outside `development`.
 
+**Why.** A static API key (today's code) has no identity, must be rotated by hand, and leaves an
+endpoint open when it is unset. The mesh's workload identity costs nothing per call and is
+already how the product's services know each other; client credentials with `private_key_jwt`
+serve a product without a mesh, with no shared secret.
+
 ### D-11. Directory and account control
 
 **Directory** (`directory:read`). Batch get (up to 100 ids), search (exactly one of email or phone,
@@ -306,6 +386,10 @@ the current identifiers with type, value and `verified_at`. Deleted accounts app
 `include_deleted`. Each call is audited with the caller, the acting person if the caller names one
 in `Auth1-Actor`, the operation and the result count, never the values.
 
+**No search by display name, and no fuzzy or prefix search.** A name is not unique, and a partial
+match would let a caller enumerate accounts. A product that needs to find people by name searches
+its own data.
+
 **Account control.** Each write requires an `Idempotency-Key`; auth1 stores the key with the
 caller, a hash of the request and the response for 24 h *(cfg)*, and replays the response on a
 retry (a different request with the same key is `IDEMPOTENCY_KEY_REUSED`). Each names the acting
@@ -313,12 +397,12 @@ person in `Auth1-Actor` when there is one, for the audit and the event's `actor`
 
 | Operation | Scope | Effect |
 |---|---|---|
-| `PUT /v1/accounts/{id}/status` | `accounts:status:write` | D-4. `reason_code` required for `suspended` and `banned`; `until` only for `suspended`. Refused for `pending` and `deleted` accounts |
+| `PUT /v1/accounts/{id}/status` | `accounts:status:write` | The transitions of D-4. `reason_code` required for `suspended` and `banned`; `until` only for `suspended` |
 | `POST /v1/accounts/{id}/sessions/revoke` | `accounts:status:write` | Revokes every session |
 | `PUT /v1/accounts/{id}/attributes` | `accounts:status:write` | Sets `recovery_step_up` (for `by_attribute`) |
 | `PUT /v1/accounts/{id}/roles` | `accounts:roles:write` | Replaces the role set; every role must be in the catalog |
 | `POST /v1/invitations` | `accounts:invite` | D-8 |
-| `DELETE /v1/accounts/{id}` | `accounts:delete` | D-4 deletion |
+| `DELETE /v1/accounts/{id}` | `accounts:delete` | D-4 deletion, also of a `pending` account |
 
 ### D-12. Lifecycle events
 
@@ -354,6 +438,11 @@ Published rows are kept 7 days *(cfg)*.
 **Compatibility.** Within `dataversion`, changes are additive only. A breaking change publishes
 both versions until consumers have moved, and is announced one release ahead.
 
+**Why CloudEvents.** auth1 cannot use a relying product's own envelope without depending on that
+product. Its own ad-hoc envelope would need every product to write a decoder for it. CloudEvents is
+a published standard that brokers and tools already read, and a product maps it onto its own
+envelope in one adapter.
+
 ### D-13. Message delivery
 
 A **`MessageDelivery` port** with three adapters, chosen by `delivery.adapter`:
@@ -364,11 +453,30 @@ A **`MessageDelivery` port** with three adapters, chosen by `delivery.adapter`:
 | `direct` | auth1 renders a mounted template and calls an SMTP server or an HTTP SMS provider itself | Products without one; a stopgap |
 | `capture` | Writes messages to an in-memory inbox readable at `GET /dev/messages` | `development` only; refused elsewhere |
 
+**Whose contract.** The request API and the resolver hook belong to the **notification
+service**: it serves the one and calls the other, and every resolver it calls, the product's and
+auth1's alike, implements the same resolver contract. auth1's `notification` adapter is an adapter
+*for* that contract, as `direct` is an adapter for SMTP; a product whose notification service has
+a different contract needs a different adapter, or uses `direct`. auth1 serves the hook, so the
+endpoint is in `api/openapi.yaml`; the request body and the resolver's shapes there are auth1's
+**proposal** for the notification service's contract. When that contract is published, auth1 pins
+it and conforms (O-1).
+
+**What auth1 needs that contract to keep.** A resolver of secrets needs four rules. Each is generic,
+and a product's resolver of other high-risk values needs the same:
+
+| Rule | Meaning |
+|---|---|
+| Absent means do not send | A reference the resolver does not return is closed. The notification service drops the delivery; it never sends with a value missing |
+| No storing or caching | Resolved values are used for one delivery and never stored, cached, logged or emitted. The response carries `Cache-Control: no-store` |
+| Idempotent per request | Resolving the same `request_id` again returns the same values while the challenge is open, and changes nothing: no counter moves |
+| Addresses under verification | A recipient may be a value that is not yet an identifier (`auth1:challenge-target:`), for an email or phone change |
+
 **The `notification` adapter.**
 
-1. The flow writes the challenge, then a delivery row to the outbox, in one transaction. The row holds: `request_id` = `<challenge id>:<send number>`, the message `type` (configured per purpose), the `locale`, the recipient `auth1:identifier:<id>` or, for a change, `auth1:challenge-target:<challenge id>`, and the variable `code` or `link` as `auth1:secret:<challenge id>`.
+1. The flow writes the challenge, then a delivery row to the outbox, in one transaction, and counts the send on the challenge. The row holds: `request_id` = `<challenge id>:<send number>`, the message `type` (configured per purpose), the `locale`, the recipient `auth1:identifier:<id>` or, for a change, `auth1:challenge-target:<challenge id>`, and the variable `code` or `link` as `auth1:secret:<challenge id>`.
 2. The relay `POST`s it to the configured request endpoint over the mesh, idempotent on `request_id`.
-3. The notification service calls `POST /v1/hooks/delivery/resolve` (`delivery:resolve`) with the references. auth1 returns each value **only if its challenge is open** (not used, not expired, sends not exhausted). A closed challenge resolves to nothing, and the delivery is dropped.
+3. The notification service calls `POST /v1/hooks/delivery/resolve` (`delivery:resolve`) with the request id and the references. auth1 returns each value **only if its challenge is open** (not used, not expired, not out of attempts). A closed challenge resolves to nothing, and the delivery is dropped. Resolving moves no counter, so a retry by the notification service never exhausts a challenge.
 4. Nothing resolved is stored, logged or put in an event by either side.
 
 **Message types and purposes** (the type names are configuration):
@@ -389,6 +497,15 @@ A **`MessageDelivery` port** with three adapters, chosen by `delivery.adapter`:
 registration from the request and changeable through `PATCH /v1/me`. Every delivery request
 carries it.
 
+**Why, and what was rejected.**
+
+| Option | Verdict |
+|---|---|
+| The secret inside the delivery request, marked as a secret variable | Rejected. The code would sit in auth1's outbox, cross the relay and wait in the notification service's queue; a promise would replace a structural guarantee |
+| The product's own resolver resolves auth1's references | Rejected. The product would hold or fetch auth1's secrets, and cannot resolve an address still under verification |
+| **References only, resolved by auth1 at send time** | **Chosen.** The secret never reaches an outbox, a broker or the notification service's store |
+| `direct` only | Kept as an adapter, not the default: a product with a notification service wants one place for templates, providers and delivery tracking |
+
 ### D-14. Rate limits and abuse
 
 | Control | Key | Store | Default *(cfg)* | On store failure |
@@ -396,13 +513,17 @@ carries it.
 | Failed sign-ins | Account | PostgreSQL (`accounts.failed_sign_ins`, `sign_in_delay_until`) | After 5 failures, a delay that doubles from 1 s to 15 min; reset on success | Not applicable |
 | Sign-in attempts | IP | Redis sliding window | 30 per 5 min | Fail open, alert |
 | OTP verification | Challenge | PostgreSQL (`attempts`) | 3 per code, then the challenge closes and a 15-minute cooldown applies to new sends for that target | Not applicable |
+| Failed OTP verifications | Account | PostgreSQL (`accounts.otp_failures`, `otp_failures_since`) | 10 per hour, across codes and purposes; then verification is refused until the hour has passed | Not applicable |
+| Failed OTP verifications | IP | Redis | 30 per hour, across accounts | Fail open, alert |
 | OTP sends | Target identifier | PostgreSQL (`sends`, `last_sent_at`) | One per 60 s; 5 per hour | Not applicable |
 | OTP sends, reset requests, registrations | IP | Redis | 20, 10, 5 per hour | Fail open, alert |
 | Reset requests | Account | PostgreSQL | 3 per hour | Not applicable |
 | Global | IP | Redis | 600 per minute | Fail open, alert |
 
 The per-account and per-challenge controls are in PostgreSQL, so losing Redis never weakens
-them. A hard lockout is not used: it would let anyone lock a member out.
+them. A hard lockout is not used: it would let anyone lock a member out. The per-account limit on
+failed verifications stops a guesser who asks for new codes to get fresh attempts; it is an
+hour's wait, never a lockout, and a correct code does not reset it.
 
 ### D-15. Operations
 
@@ -414,8 +535,8 @@ them. A hard lockout is not used: it would let anyone lock a member out.
 | Database | Its own database and role. Migrations as a separate binary, run as a pre-deploy job. Expand and contract only |
 | Secrets | Signing keys, field-encryption keys, the blind-index key, the OTP HMAC key, provider credentials: from mounted secrets. Never in configuration files in git |
 | Health | `/livez` (process), `/readyz` (PostgreSQL, keys loaded; Redis and the broker are reported but do not fail readiness) |
-| Retention *(cfg)* | Pending registrations: purged 7 days after expiry. Closed challenges: 30 days. Revoked sessions and their refresh tokens: 90 days. Idempotency keys: 24 h. Published outbox rows: 7 days. `auth_audit`: kept; a product sets a horizon if its law requires one. Deleted accounts: kept, encrypted, released from uniqueness; erasure on a product's request is an operator command |
-| Jobs | Purging and the outbox relay. Purge jobs elect one leader with a PostgreSQL advisory lock |
+| Retention *(cfg)* | Pending registrations and invitations: identifiers retired at expiry (D-2); rows purged 7 days after. Closed challenges: 30 days. Revoked sessions and their refresh tokens: 90 days. A successor kept for the refresh grace window: erased within a minute of the window. Idempotency keys: 24 h. Published outbox rows: 7 days. `auth_audit`: rows kept, in monthly partitions; their `ip` and `user_agent`, which are personal data, cleared after 90 days. A product sets a horizon for the rows if its law requires one. Deleted accounts: kept, encrypted, released from uniqueness; erasure on a product's request is an operator command |
+| Jobs | The outbox relay; expiring flows and retiring their identifiers; erasing grace-window successors; purging; clearing audit IPs; creating the next audit partition. Each job other than the relay elects one leader with a PostgreSQL advisory lock |
 
 ## 5. Data model
 
@@ -437,6 +558,8 @@ CREATE TABLE accounts (
     recovery_step_up    boolean NOT NULL DEFAULT false, -- for recovery.step_up = by_attribute
     failed_sign_ins     integer NOT NULL DEFAULT 0,
     sign_in_delay_until timestamptz,
+    otp_failures        integer NOT NULL DEFAULT 0,     -- failed OTP verifications in the current window (D-14)
+    otp_failures_since  timestamptz,
     version             bigint NOT NULL DEFAULT 1,
     created_at          timestamptz NOT NULL DEFAULT now(),
     updated_at          timestamptz NOT NULL DEFAULT now(),
@@ -495,6 +618,7 @@ CREATE TABLE flows (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX flows_account ON flows (account_id, kind) WHERE completed_at IS NULL AND cancelled_at IS NULL;
+CREATE INDEX flows_open_expiry ON flows (expires_at) WHERE completed_at IS NULL AND cancelled_at IS NULL;
 
 CREATE TABLE challenges (
     id             uuid PRIMARY KEY,
@@ -519,6 +643,9 @@ CREATE TABLE challenges (
 );
 CREATE UNIQUE INDEX challenges_secret_mac ON challenges (secret_mac) WHERE method = 'email_link';
 CREATE INDEX challenges_open ON challenges (expires_at) WHERE closed_at IS NULL;
+CREATE INDEX challenges_flow ON challenges (flow_id);
+CREATE INDEX challenges_identifier ON challenges (identifier_id, created_at) WHERE identifier_id IS NOT NULL;  -- cooldown per target
+CREATE INDEX challenges_target ON challenges (target_bidx, created_at) WHERE target_bidx IS NOT NULL;
 
 CREATE TABLE sessions (
     id                   uuid PRIMARY KEY,
@@ -529,19 +656,20 @@ CREATE TABLE sessions (
     last_used_at         timestamptz NOT NULL DEFAULT now(),
     idle_expires_at      timestamptz NOT NULL,
     absolute_expires_at  timestamptz NOT NULL,
-    reissue              boolean NOT NULL DEFAULT false,
     revoked_at           timestamptz,
     revoke_reason        text,
     user_agent           text
 );
 CREATE INDEX sessions_account ON sessions (account_id) WHERE revoked_at IS NULL;
+CREATE INDEX sessions_revoked ON sessions (revoked_at) WHERE revoked_at IS NOT NULL;  -- purge
 
 CREATE TABLE refresh_tokens (
     token_hash      bytea PRIMARY KEY,                  -- sha256
     session_id      uuid NOT NULL REFERENCES sessions (id),
     issued_at       timestamptz NOT NULL DEFAULT now(),
     rotated_at      timestamptz,
-    successor_hash  bytea
+    successor_hash  bytea,
+    successor_enc   bytea                               -- enc: the successor's raw value, for the grace window only
 );
 CREATE INDEX refresh_tokens_session ON refresh_tokens (session_id);
 
@@ -554,9 +682,17 @@ CREATE TABLE idempotency_keys (
     created_at    timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (caller, key)
 );
+CREATE INDEX idempotency_keys_created ON idempotency_keys (created_at);  -- purge
+
+CREATE TABLE signing_keys (
+    kid                 text PRIMARY KEY,               -- RFC 7638 thumbprint; the key material is in the mounted keyring
+    first_published_at  timestamptz NOT NULL DEFAULT now(),
+    activated_at        timestamptz,
+    retired_at          timestamptz
+);
 
 CREATE TABLE auth_audit (
-    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id          bigint GENERATED ALWAYS AS IDENTITY,
     at          timestamptz NOT NULL DEFAULT now(),
     account_id  uuid,
     actor_kind  text NOT NULL CHECK (actor_kind IN ('account','service','system','anonymous')),
@@ -566,10 +702,12 @@ CREATE TABLE auth_audit (
     client_id   text,
     ip          inet,
     user_agent  text,
-    details     jsonb NOT NULL DEFAULT '{}'             -- never a secret or an identifier value
-);
+    details     jsonb NOT NULL DEFAULT '{}',            -- never a secret or an identifier value
+    PRIMARY KEY (id, at)
+) PARTITION BY RANGE (at);                              -- one partition a month, created ahead by a job
 CREATE INDEX auth_audit_account ON auth_audit (account_id, at);
--- auth1's role has INSERT and SELECT on auth_audit, and no UPDATE, DELETE or TRUNCATE.
+-- auth1's role has INSERT and SELECT on auth_audit, and no DELETE or TRUNCATE. Its only UPDATE
+-- grant is on the columns ip and user_agent, used by the job that clears them after 90 days.
 
 CREATE TABLE outbox (
     id               uuid PRIMARY KEY,                  -- UUIDv7; the CloudEvents id for events
@@ -585,6 +723,7 @@ CREATE TABLE outbox (
     last_error       text
 );
 CREATE INDEX outbox_pending ON outbox (next_attempt_at) WHERE published_at IS NULL;
+CREATE INDEX outbox_subject_pending ON outbox (subject, id) WHERE published_at IS NULL;  -- the per-account order rule (D-12)
 ```
 
 **Redis** (prefix configurable): `rl:<rule>:<key>` sorted sets for the per-IP windows. Nothing else.
@@ -613,7 +752,7 @@ edge can route a prefix to auth1 without rewriting.
 | `RESEND_TOO_SOON` | 429 | A new code was asked for before `retry_after` | Yes, after `retry_after` |
 | `INVALID_CREDENTIALS` | 401 | Wrong email or password, or a deleted account | No |
 | `SIGN_IN_DELAYED` | 429 | Too many failures; `retry_after` | Yes, after `retry_after` |
-| `REGISTRATION_INCOMPLETE` | 403 | The account is still `pending` | No |
+| `REGISTRATION_INCOMPLETE` | 403 | The account is still `pending`. After a correct password, the problem carries `resume` (D-3) | No. Resume the flow |
 | `ROLE_NOT_PERMITTED` | 403 | The account holds none of the client's allowed roles | No |
 | `ACCOUNT_RESTRICTED` | 403 | The operation is not available to a suspended or banned account | No |
 | `MFA_REQUIRED` | 202 | Not an error: the sign-in needs a TOTP code; `mfa_token` | — |
@@ -625,7 +764,7 @@ edge can route a prefix to auth1 without rewriting.
 | `STATUS_TRANSITION_INVALID` | 409 | For example, suspending a `pending` or `deleted` account | No |
 | `ROLE_UNKNOWN` | 422 | A role outside the catalog | No |
 | `NOT_FOUND` | 404 | The account or flow does not exist | No |
-| `RATE_LIMITED` | 429 | A per-IP limit; `retry_after` | Yes |
+| `RATE_LIMITED` | 429 | A per-IP or per-account limit (D-14); `retry_after` | Yes |
 | `UNAVAILABLE` | 503 | A dependency is down | Yes |
 
 ## 7. Behaviour
@@ -687,9 +826,10 @@ sequenceDiagram
   B->>A: POST sessions/refresh, with the cookie
   A->>A: Find the token by hash, lock its session row
   alt Token current, session live
-    A->>A: Rotate: mark rotated, issue successor. Re-read status and roles if reissue [tx]
+    A->>A: Read the account's status and roles. Rotate: mark rotated, issue successor, keep it encrypted for the grace window [tx]
     A-->>B: 200: new access token. Set-Cookie: successor
   else Token rotated within the grace window
+    A->>A: Decrypt the stored successor
     A-->>B: 200: the successor already issued
   else Token rotated outside the grace window
     A->>A: Revoke the session, audit refresh_reuse [tx]
@@ -724,9 +864,9 @@ sequenceDiagram
   participant A as auth1
   S->>A: PUT accounts/id/status: banned, reason. Idempotency-Key. Auth1-Actor
   A->>A: Identity to scope. Idempotency check
-  A->>A: Conditional update on version. Sessions marked reissue. account.status_changed. Audit [tx]
+  A->>A: Check the transition (D-4). Conditional update on version. account.status_changed. Audit [tx]
   A-->>S: 200: account summary
-  Note over A: The next refresh of any session issues restricted tokens
+  Note over A: The next refresh of any session reads the new status and issues restricted tokens
 ```
 
 ### 7.6 Delivering a secret
@@ -741,8 +881,8 @@ sequenceDiagram
   R->>N: Request: id, type, locale, recipient auth1 identifier, code auth1 secret
   N-->>R: 202. Idempotent on the request id
   R->>R: Mark the outbox row published
-  N->>H: Resolve the references, as the notification identity
-  H->>H: Scope delivery resolve. Challenge open. Count the send
+  N->>H: Resolve the request id and references, as the notification identity
+  H->>H: Scope delivery resolve. Challenge open. No counter moves
   H-->>N: Address and code
   N->>P: Send
   Note over N,H: Neither side stores, logs or emits the resolved values
@@ -757,7 +897,71 @@ sequenceDiagram
 **A leaked key** skips the waiting: K2 becomes `active` at once, K1 is removed, and
 `POST /v1/accounts/{id}/sessions/revoke` is not needed per account because an operator command
 (`auth1 sessions revoke-all`) marks every session revoked. Relying services refuse K1 tokens at
-their next JWKS refresh.
+their next JWKS refresh. The operator command `auth1 keys force-activate <kid>` is the only way to
+skip `min_publish_before_use`, and it is audited.
+
+### 7.8 Accepting an invitation
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant S as Product service, with accounts invite
+  actor B as Browser
+  participant A as auth1
+  participant N as Notification service
+  S->>A: POST invitations: email, display name, client, roles. Idempotency-Key. Auth1-Actor
+  A->>A: Email not another account's verified email. Pending account, roles, invitation flow, link challenge, delivery row [tx]
+  A-->>S: 201
+  A->>N: Relay: invitation link, references only
+  B->>A: POST invitations/accept: link token, password, phone
+  A->>A: Email verified. Password policy and hash. Phone not verified elsewhere. Phone challenge, delivery row [tx]
+  A-->>B: 200: flow id, handle, pending phone
+  A->>N: Relay: phone code, references only
+  B->>A: POST registrations/flow/verify: handle, phone, code
+  A->>A: Phone verified, secret erased, account.identifier_verified [tx]
+  B->>A: POST registrations/flow/complete: handle
+  A->>A: Status active, session, account.registered [tx]
+  A-->>B: 200: access token. Set-Cookie: refresh token
+```
+
+When the policy requires no identifier beyond the email, acceptance answers with nothing pending,
+and the browser calls `complete` at once.
+
+### 7.9 Changing an email
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor B as Browser
+  participant A as auth1
+  participant N as Notification service
+  B->>A: POST me/email-changes: current password, new email
+  A->>A: Password checked. New value not another account's verified email. Flow, confirm-old and confirm-new challenges, two delivery rows [tx]
+  A-->>B: 202
+  A->>N: Relay: one link to the current address, one to challenge-target
+  B->>A: POST verification-links/confirm: the old address's token
+  A->>A: Old side confirmed [tx]
+  B->>A: POST verification-links/confirm: the new address's token
+  A->>A: Both confirmed. Old identifier retired, new one current and verified, account.identifier_changed [tx]
+  A-->>B: 200: complete
+```
+
+A phone change is the same with one challenge: an OTP to the new number (`challenge-target`),
+verified at `POST /v1/me/phone-changes/{flow_id}/verify`. In both, the unique index settles a race
+with another account verifying the same value: the loser gets `IDENTIFIER_TAKEN`.
+
+### 7.10 Closing an account
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant S as Product service, with accounts delete
+  participant A as auth1
+  S->>A: DELETE accounts/id. Idempotency-Key. Auth1-Actor
+  A->>A: Status deleted. Every session revoked. Password hash and TOTP secret erased. Identifiers retired. account.deleted. Audit [tx]
+  A-->>S: 204
+  Note over A: A retry with the same key replays the 204. Sign-in now answers INVALID_CREDENTIALS
+```
 
 ## 8. Invariants, concurrency and idempotency
 
@@ -773,7 +977,11 @@ their next JWKS refresh.
 | I-8 | One account's events are published in order | The relay's per-subject claim rule (D-12) |
 | I-9 | An account-control write applies once per `Idempotency-Key` | `idempotency_keys` primary key, written in the same transaction |
 | I-10 | Status and role changes apply in order | `UPDATE accounts … WHERE id = $1 AND version = $2` |
-| I-11 | `auth_audit` is never altered | Grants |
+| I-11 | `auth_audit` rows are never deleted, and only their `ip` and `user_agent` change, to null | Grants (§5) |
+| I-12 | An expired `pending` account holds no current identifier | The expiry job sets `retired_at` when the flow expires (D-2) |
+| I-13 | A successor's raw value exists only inside the grace window | The refresh path ignores it after the window; a job erases it |
+| I-14 | A key signs only after it has been published for `min_publish_before_use` | The check against `signing_keys.first_published_at` on every keyring load |
+| I-15 | Resolving a delivery changes no challenge counter | The resolver only reads (D-13) |
 
 ## 9. Failure modes
 
@@ -785,6 +993,8 @@ their next JWKS refresh.
 | Notification service down | Relay errors | Delivery requests wait and are retried within each challenge's validity. A request older than its challenge is dropped | Automatic | Yes, on delivery outbox age above 30 s |
 | Resolver hook unreachable from the notification service | That service's retries | Deliveries wait | Automatic | At the notification service |
 | Keyring secret invalid on reload | Validation | The previous keyring stays in use | Fix the secret | Yes |
+| A key marked `active` before its publication time | The I-14 check | The replica keeps signing with the previous key | Wait, or force-activate (§7.7) | Yes |
+| The expiry job stalls | Age of the oldest expired open flow | Expired registrations keep holding their verified values | The next leader runs it | Yes, above 1 h |
 | Clock skew | `nbf` failures at relying services | Leeway at the relying services | NTP | Node alert |
 | bcrypt saturating CPU | Sign-in latency | Horizontal scaling on CPU | Automatic | Yes, on p95 |
 
@@ -825,6 +1035,20 @@ Traces continue the caller's `traceparent`; events and delivery requests carry i
 
 **SLIs** (99.9% monthly): the share of sign-in, refresh and JWKS requests answered without a 5xx,
 and within 500 ms, 300 ms and 200 ms respectively.
+
+**Alerts** (thresholds *(cfg)*; each product routes them to its on-call):
+
+| Alert | Condition |
+|---|---|
+| SLO burn | Sign-in, refresh or JWKS burning the monthly budget faster than 14× over 1 h, or 6× over 6 h |
+| Delivery outbox age | `auth1_outbox_age_seconds{destination="delivery"}` above 30 s |
+| Event outbox age | `auth1_outbox_age_seconds{destination="event"}` above 5 min |
+| Parked outbox rows | Any row at `max_attempts` |
+| Refresh reuse | `auth1_refresh_total{result="reuse"}` above its usual rate (a stolen token, or a client bug) |
+| Denied service calls | Any increase of `auth1_service_calls_denied_total` |
+| Key not promotable | A replica refusing an `active` key (§9) |
+| Redis down | Per-IP limits failing open |
+| Expiry job stalled | §9 |
 
 ## 12. Configuration
 
@@ -930,6 +1154,8 @@ rate_limits:
   registration_ip:   { limit: 5, window: 1h }
   global_ip:         { limit: 600, window: 1m }
   reset_account:     { limit: 3, window: 1h }
+  otp_verify_account: { limit: 10, window: 1h }      # failed verifications
+  otp_verify_ip:     { limit: 30, window: 1h }       # failed verifications
   sign_in_failures:  { threshold: 5, first_delay: 1s, max_delay: 15m }
 events:
   exchange: auth1.events
@@ -947,6 +1173,7 @@ retention:
   revoked_sessions: 2160h
   idempotency_keys: 24h
   published_outbox: 168h
+  audit_client_details: 2160h        # then auth_audit.ip and user_agent are cleared
 product_word_guard:
   words_file: /config/denied-words.txt   # used by the CI test, not at run time
 ```
@@ -986,6 +1213,19 @@ Every value above except the security floors (`access_ttl` at most 15 m, `bcrypt
 | T-15 | A `next` key cannot be promoted before `min_publish_before_use` | N-13 |
 | T-16 | Per-account sign-in delays hold with Redis stopped | N-15 |
 | T-17 | auth1 refuses to start in `production` with `delivery.adapter: capture`, or with no `service_auth` | N-9, D-13 |
+| T-18 | Two refreshes with the same token 2 s apart both succeed and return the same successor; the same token 11 s later revokes the session; no `successor_enc` older than the window survives the job | N-13 |
+| T-19 | A registration verifies both identifiers and is abandoned: at expiry its identifiers are retired, and a new registration with the same values succeeds | N-2 |
+| T-20 | Sign-in on a `pending` account with the right password returns `resume`, whose handle completes the flow while the old handle is refused; with a wrong password, `INVALID_CREDENTIALS` | N-1 |
+| T-21 | An invitation under a policy that requires a phone stays `pending` until the phone is verified; acceptance with a phone verified on another account gets `IDENTIFIER_TAKEN`; inviting an email verified on another account gets `IDENTIFIER_TAKEN` | N-16, N-2 |
+| T-22 | The eleventh failed OTP verification in an hour for one account, across new codes, is refused; so is the thirty-first from one IP across accounts | N-15 |
+| T-23 | The resolver called twice for one `request_id` returns the same values and leaves `sends` and `attempts` unchanged | N-11 |
+| T-24 | An `active` key whose `first_published_at` is 5 min old is not used for signing, on any replica, after a restart | N-13 |
+| T-25 | Introspecting a valid token as a service that is not its audience answers `active: true`; a token whose `aud` is no client of the deployment answers `active: false` | N-14 |
+| T-26 | Each cell of the transition table in D-4, including a no-op and a refused transition | N-7 |
+| T-27 | An account-control write retried with the same `Idempotency-Key` replays the response; the same key with a different body gets `IDEMPOTENCY_KEY_REUSED` | N-16 |
+| T-28 | A closed account: every session revoked, sign-in `INVALID_CREDENTIALS`, its identifiers free for a new registration | N-16, N-2 |
+| T-29 | A restricted token is accepted on `GET /v1/me`, the session list and sign-out, and refused everywhere else | N-7 |
+| T-30 | With two relay replicas, one account's events are published in commit order | N-8 |
 
 ## 14. Migration and rollout
 
@@ -1060,7 +1300,7 @@ starts from this repository and ports only what the table below keeps.
 
 | # | Item | Proposal | Owner |
 |---|---|---|---|
-| O-1 | The resolver hook is defined by the notification service, which is not built yet. Its request and response shape in `api/openapi.yaml` is auth1's proposal | Agree it when the notification service drafts its contract; it must route `auth1:` references to this hook | auth1 and Notification owners |
+| O-1 | The request API and the resolver contract belong to the notification service, which has not published them yet. The shapes in `api/openapi.yaml` are auth1's proposal (D-13) | When the notification service drafts its contract, it adopts one resolver contract for every resolver, keeping D-13's four rules, and routes `auth1:` references to this hook. auth1 then pins that contract and conforms | auth1 and Notification owners |
 | O-2 | Erasing a deleted account's identifiers on request | An operator command that replaces the ciphertext and the blind index; when the product's law requires it | Product owner |
 | O-3 | Argon2id instead of bcrypt | Revisit after load tests; the PHC format allows a rehash on sign-in | auth1 owner |
 | O-4 | The client IP behind the product's edge | `http.trusted_proxies`: the hops whose `X-Forwarded-For` is trusted, for the per-IP limits and the audit | auth1 owner |
@@ -1071,3 +1311,4 @@ starts from this repository and ports only what the table below keeps.
 | Version | Date | Change |
 |---|---|---|
 | 0.1 | 2026-10-16 | First draft of the 1.0 design, needs first, with the gap analysis against both copies of today's code |
+| 0.2 | 2026-10-19 | After review. The refresh grace window returns a stored, encrypted successor (D-9). An expired registration or invitation retires its identifiers, and a sign-in with the right password resumes a pending flow (D-2, D-3). Key publication times are kept in `signing_keys` (D-9). Sends are counted at request; resolving moves no counter (D-3, D-13). The session `reissue` flag is removed: every refresh reads the account (D-4). Failed OTP verifications are limited per account and per IP (D-14). Accepting an invitation verifies every identifier the policy requires (D-8). Introspection does not compare the audience with the caller (D-9). The request API and the resolver contract are the notification service's, with auth1's shapes as a proposal (D-13, O-1). A transition table for account states (D-4), no search by name (D-11), the reasons behind each decision, flows for invitations, identifier changes and closing (§7.8–§7.10), missing indexes, audit partitions and IP clearing (§5, D-15), alert rules (§11), and tests T-18–T-30 |
