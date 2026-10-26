@@ -8,21 +8,23 @@ info:
 
     Every message is a **CloudEvents 1.0** event in structured JSON mode
     (`application/cloudevents+json`). Delivery is at least once; consumers deduplicate on `id`.
-    One account's events are published in order; consumers that keep state compare
-    `accountversion`.
 
-    **No identifier value (email, phone) and no secret (password, code, token) ever appears in
-    an event.** A consumer that needs a value reads it from the directory API.
+    **Order.** One account's events are published in `accountversion` order. Versions are
+    monotonic but not contiguous: a change that emits no event still moves the version, so
+    consumers must accept gaps and use the version only to order and to discard stale data.
 
-    Design: docs/design.md §D-12.
+    **No identifier value (email, phone), display name or secret (password, code, token) ever
+    appears in an event.** A consumer that needs a value reads it from the directory API.
+
+    Design: docs/design.md D-15 and docs/tdd/TDD-06-events-and-delivery.md.
   contact:
     name: auth1 maintainers
     url: https://github.com/arafat-hasan/auth1
   license:
     name: Proprietary
   tags:
-    - name: identity
-      description: Account lifecycle
+  - name: identity
+    description: Account lifecycle
 defaultContentType: application/cloudevents+json
 servers:
   broker:
@@ -34,7 +36,8 @@ channels:
   account_registered:
     address: account.registered
     title: account.registered
-    description: 'A registration completed: every required identifier is verified and the account is active.'
+    description: 'A registration or an accepted invitation completed: every required identifier is verified
+      and the account is active. MFA enrolment follows.'
     messages:
       account_registered_v1:
         $ref: '#/components/messages/account_registered_v1'
@@ -51,7 +54,7 @@ channels:
   account_identifier_verified:
     address: account.identifier_verified
     title: account.identifier_verified
-    description: An identifier was verified, at registration or later.
+    description: 'An identifier was verified: at registration, at invitation acceptance, or by a resume.'
     messages:
       account_identifier_verified_v1:
         $ref: '#/components/messages/account_identifier_verified_v1'
@@ -68,10 +71,29 @@ channels:
   account_identifier_changed:
     address: account.identifier_changed
     title: account.identifier_changed
-    description: An email or phone change applied. The previous identifier is no longer current.
+    description: An email or phone change applied, by the account or through support. The previous identifier
+      is no longer current.
     messages:
       account_identifier_changed_v1:
         $ref: '#/components/messages/account_identifier_changed_v1'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: auth1.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  account_profile_updated:
+    address: account.profile_updated
+    title: account.profile_updated
+    description: The display name or the locale changed. Consumers that cache the display name read it
+      from the directory.
+    messages:
+      account_profile_updated_v1:
+        $ref: '#/components/messages/account_profile_updated_v1'
     bindings:
       amqp:
         is: routingKey
@@ -102,10 +124,46 @@ channels:
   account_password_reset:
     address: account.password_reset
     title: account.password_reset
-    description: A password reset completed. Every session was revoked; the status did not change.
+    description: A password reset completed. Every session was revoked; the status and the TOTP factor
+      did not change.
     messages:
       account_password_reset_v1:
         $ref: '#/components/messages/account_password_reset_v1'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: auth1.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  account_mfa_enrolled:
+    address: account.mfa_enrolled
+    title: account.mfa_enrolled
+    description: The account confirmed its first TOTP factor. Its first full session follows.
+    messages:
+      account_mfa_enrolled_v1:
+        $ref: '#/components/messages/account_mfa_enrolled_v1'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: auth1.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  account_mfa_reset:
+    address: account.mfa_reset
+    title: account.mfa_reset
+    description: A service reset the account's lost second factor. The factor and recovery codes were
+      erased and every session revoked; the next sign-in enrols again.
+    messages:
+      account_mfa_reset_v1:
+        $ref: '#/components/messages/account_mfa_reset_v1'
     bindings:
       amqp:
         is: routingKey
@@ -150,10 +208,47 @@ channels:
           autoDelete: false
           vhost: /
         bindingVersion: 0.3.0
+  account_sessions_revoked:
+    address: account.sessions_revoked
+    title: account.sessions_revoked
+    description: Every session of the account was revoked at once (by a service, a status change, a role
+      removal or an operator). Sign-out and per-session revocations are not reported.
+    messages:
+      account_sessions_revoked_v1:
+        $ref: '#/components/messages/account_sessions_revoked_v1'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: auth1.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  account_registration_expired:
+    address: account.registration_expired
+    title: account.registration_expired
+    description: A registration or invitation expired before it completed. The pending account's identifiers
+      were released and the account closed.
+    messages:
+      account_registration_expired_v1:
+        $ref: '#/components/messages/account_registration_expired_v1'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: auth1.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
   account_deleted:
     address: account.deleted
     title: account.deleted
-    description: The account was closed. Its sessions are revoked and its identifiers released.
+    description: The account was closed. Its sessions are revoked, its credentials and factors erased,
+      and its identifiers released.
     messages:
       account_deleted_v1:
         $ref: '#/components/messages/account_deleted_v1'
@@ -171,54 +266,70 @@ operations:
   publish_account_registered:
     action: send
     title: Publish account.registered
-    summary: 'A registration completed: every required identifier is verified and the account is active.'
+    summary: 'A registration or an accepted invitation completed: every required identifier is verified
+      and the account is active. MFA enrolment follows.'
     channel:
       $ref: '#/channels/account_registered'
     messages:
-      - $ref: '#/channels/account_registered/messages/account_registered_v1'
+    - $ref: '#/channels/account_registered/messages/account_registered_v1'
     bindings:
       amqp:
         deliveryMode: 2
         mandatory: false
         ack: true
         bindingVersion: 0.3.0
-    description: >-
-      Written to the outbox in the transaction that made the change, then published by the relay
-      with publisher confirms. At least once, in order per account.
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
   publish_account_identifier_verified:
     action: send
     title: Publish account.identifier_verified
-    summary: An identifier was verified, at registration or later.
+    summary: 'An identifier was verified: at registration, at invitation acceptance, or by a resume.'
     channel:
       $ref: '#/channels/account_identifier_verified'
     messages:
-      - $ref: '#/channels/account_identifier_verified/messages/account_identifier_verified_v1'
+    - $ref: '#/channels/account_identifier_verified/messages/account_identifier_verified_v1'
     bindings:
       amqp:
         deliveryMode: 2
         mandatory: false
         ack: true
         bindingVersion: 0.3.0
-    description: >-
-      Written to the outbox in the transaction that made the change, then published by the relay
-      with publisher confirms. At least once, in order per account.
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
   publish_account_identifier_changed:
     action: send
     title: Publish account.identifier_changed
-    summary: An email or phone change applied. The previous identifier is no longer current.
+    summary: An email or phone change applied, by the account or through support. The previous identifier
+      is no longer current.
     channel:
       $ref: '#/channels/account_identifier_changed'
     messages:
-      - $ref: '#/channels/account_identifier_changed/messages/account_identifier_changed_v1'
+    - $ref: '#/channels/account_identifier_changed/messages/account_identifier_changed_v1'
     bindings:
       amqp:
         deliveryMode: 2
         mandatory: false
         ack: true
         bindingVersion: 0.3.0
-    description: >-
-      Written to the outbox in the transaction that made the change, then published by the relay
-      with publisher confirms. At least once, in order per account.
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
+  publish_account_profile_updated:
+    action: send
+    title: Publish account.profile_updated
+    summary: The display name or the locale changed. Consumers that cache the display name read it from
+      the directory.
+    channel:
+      $ref: '#/channels/account_profile_updated'
+    messages:
+    - $ref: '#/channels/account_profile_updated/messages/account_profile_updated_v1'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        mandatory: false
+        ack: true
+        bindingVersion: 0.3.0
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
   publish_account_password_changed:
     action: send
     title: Publish account.password_changed
@@ -226,33 +337,65 @@ operations:
     channel:
       $ref: '#/channels/account_password_changed'
     messages:
-      - $ref: '#/channels/account_password_changed/messages/account_password_changed_v1'
+    - $ref: '#/channels/account_password_changed/messages/account_password_changed_v1'
     bindings:
       amqp:
         deliveryMode: 2
         mandatory: false
         ack: true
         bindingVersion: 0.3.0
-    description: >-
-      Written to the outbox in the transaction that made the change, then published by the relay
-      with publisher confirms. At least once, in order per account.
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
   publish_account_password_reset:
     action: send
     title: Publish account.password_reset
-    summary: A password reset completed. Every session was revoked; the status did not change.
+    summary: A password reset completed. Every session was revoked; the status and the TOTP factor did
+      not change.
     channel:
       $ref: '#/channels/account_password_reset'
     messages:
-      - $ref: '#/channels/account_password_reset/messages/account_password_reset_v1'
+    - $ref: '#/channels/account_password_reset/messages/account_password_reset_v1'
     bindings:
       amqp:
         deliveryMode: 2
         mandatory: false
         ack: true
         bindingVersion: 0.3.0
-    description: >-
-      Written to the outbox in the transaction that made the change, then published by the relay
-      with publisher confirms. At least once, in order per account.
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
+  publish_account_mfa_enrolled:
+    action: send
+    title: Publish account.mfa_enrolled
+    summary: The account confirmed its first TOTP factor. Its first full session follows.
+    channel:
+      $ref: '#/channels/account_mfa_enrolled'
+    messages:
+    - $ref: '#/channels/account_mfa_enrolled/messages/account_mfa_enrolled_v1'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        mandatory: false
+        ack: true
+        bindingVersion: 0.3.0
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
+  publish_account_mfa_reset:
+    action: send
+    title: Publish account.mfa_reset
+    summary: A service reset the account's lost second factor. The factor and recovery codes were erased
+      and every session revoked; the next sign-in enrols again.
+    channel:
+      $ref: '#/channels/account_mfa_reset'
+    messages:
+    - $ref: '#/channels/account_mfa_reset/messages/account_mfa_reset_v1'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        mandatory: false
+        ack: true
+        bindingVersion: 0.3.0
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
   publish_account_status_changed:
     action: send
     title: Publish account.status_changed
@@ -260,16 +403,15 @@ operations:
     channel:
       $ref: '#/channels/account_status_changed'
     messages:
-      - $ref: '#/channels/account_status_changed/messages/account_status_changed_v1'
+    - $ref: '#/channels/account_status_changed/messages/account_status_changed_v1'
     bindings:
       amqp:
         deliveryMode: 2
         mandatory: false
         ack: true
         bindingVersion: 0.3.0
-    description: >-
-      Written to the outbox in the transaction that made the change, then published by the relay
-      with publisher confirms. At least once, in order per account.
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
   publish_account_roles_changed:
     action: send
     title: Publish account.roles_changed
@@ -277,46 +419,80 @@ operations:
     channel:
       $ref: '#/channels/account_roles_changed'
     messages:
-      - $ref: '#/channels/account_roles_changed/messages/account_roles_changed_v1'
+    - $ref: '#/channels/account_roles_changed/messages/account_roles_changed_v1'
     bindings:
       amqp:
         deliveryMode: 2
         mandatory: false
         ack: true
         bindingVersion: 0.3.0
-    description: >-
-      Written to the outbox in the transaction that made the change, then published by the relay
-      with publisher confirms. At least once, in order per account.
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
+  publish_account_sessions_revoked:
+    action: send
+    title: Publish account.sessions_revoked
+    summary: Every session of the account was revoked at once (by a service, a status change, a role removal
+      or an operator). Sign-out and per-session revocations are not reported.
+    channel:
+      $ref: '#/channels/account_sessions_revoked'
+    messages:
+    - $ref: '#/channels/account_sessions_revoked/messages/account_sessions_revoked_v1'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        mandatory: false
+        ack: true
+        bindingVersion: 0.3.0
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
+  publish_account_registration_expired:
+    action: send
+    title: Publish account.registration_expired
+    summary: A registration or invitation expired before it completed. The pending account's identifiers
+      were released and the account closed.
+    channel:
+      $ref: '#/channels/account_registration_expired'
+    messages:
+    - $ref: '#/channels/account_registration_expired/messages/account_registration_expired_v1'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        mandatory: false
+        ack: true
+        bindingVersion: 0.3.0
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
   publish_account_deleted:
     action: send
     title: Publish account.deleted
-    summary: The account was closed. Its sessions are revoked and its identifiers released.
+    summary: The account was closed. Its sessions are revoked, its credentials and factors erased, and
+      its identifiers released.
     channel:
       $ref: '#/channels/account_deleted'
     messages:
-      - $ref: '#/channels/account_deleted/messages/account_deleted_v1'
+    - $ref: '#/channels/account_deleted/messages/account_deleted_v1'
     bindings:
       amqp:
         deliveryMode: 2
         mandatory: false
         ack: true
         bindingVersion: 0.3.0
-    description: >-
-      Written to the outbox in the transaction that made the change, then published by the relay
-      with publisher confirms. At least once, in order per account.
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
 components:
   schemas:
     AccountId:
       type: string
       format: uuid
+      description: A UUIDv7
     AccountStatus:
       type: string
       enum:
-        - pending
-        - active
-        - suspended
-        - banned
-        - deleted
+      - pending
+      - active
+      - suspended
+      - banned
+      - deleted
     IdentifierType:
       type: string
       description: A type from the deployment's identifier policy
@@ -329,35 +505,37 @@ components:
       type: object
       description: Who caused the change
       required:
-        - kind
+      - kind
       properties:
         kind:
           type: string
           enum:
-            - account
-            - service
-            - system
+          - account
+          - service
+          - operator
+          - system
         id:
           type: string
-          description: The account id, or the calling service's workload identity or client id
+          description: The account id, the calling service's workload identity or client id, the operator's
+            name, or the system job
         on_behalf_of:
           type: string
-          format: uuid
-          description: The person a calling service acted for, from its Auth1-Actor header
+          maxLength: 128
+          description: The person a calling service acted for, verbatim from its Auth1-Actor header
     CloudEvent:
       type: object
       description: CloudEvents 1.0 attributes, as auth1 sets them
       required:
-        - specversion
-        - id
-        - source
-        - type
-        - subject
-        - time
-        - datacontenttype
-        - dataversion
-        - accountversion
-        - data
+      - specversion
+      - id
+      - source
+      - type
+      - subject
+      - time
+      - datacontenttype
+      - dataversion
+      - accountversion
+      - data
       properties:
         specversion:
           type: string
@@ -391,7 +569,7 @@ components:
         accountversion:
           type: integer
           minimum: 1
-          description: Extension. The account's version after the change
+          description: Extension. The account's version after the change. Monotonic per account, not contiguous
         traceparent:
           type: string
           description: Extension (distributed tracing). W3C trace context
@@ -411,398 +589,714 @@ components:
     account_registered_v1:
       name: account.registered
       title: account.registered v1
-      summary: 'A registration completed: every required identifier is verified and the account is active.'
+      summary: 'A registration or an accepted invitation completed: every required identifier is verified
+        and the account is active. MFA enrolment follows.'
       traits:
-        - $ref: '#/components/messageTraits/cloudEvent'
+      - $ref: '#/components/messageTraits/cloudEvent'
       payload:
         allOf:
-          - $ref: '#/components/schemas/CloudEvent'
-          - type: object
-            properties:
-              type:
-                const: account.registered
-              dataversion:
-                const: 1
-              data:
-                type: object
-                additionalProperties: false
-                required:
-                  - account_id
-                  - roles
-                  - client_id
-                  - locale
-                properties:
-                  account_id:
-                    $ref: '#/components/schemas/AccountId'
-                  roles:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Role'
-                  client_id:
-                    type: string
-                    description: The client the account registered through, or `invitation`
-                  locale:
-                    type: string
-      examples:
-        - name: example
-          payload:
-            specversion: '1.0'
-            id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
-            source: /auth1
-            type: account.registered
-            subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-            time: '2026-10-16T09:30:00.000Z'
-            datacontenttype: application/json
-            dataversion: 1
-            accountversion: 3
-            traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.registered
+            dataversion:
+              const: 1
             data:
-              account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-              roles:
-                - user
-              client_id: web
-              locale: en
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - client_id
+              - roles
+              - locale
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                client_id:
+                  type: string
+                  description: The client the account registered through, or `invitation`
+                roles:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Role'
+                locale:
+                  type: string
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.registered
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            client_id: web
+            roles:
+            - user
+            locale: en
+            actor:
+              kind: account
+              id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
     account_identifier_verified_v1:
       name: account.identifier_verified
       title: account.identifier_verified v1
-      summary: An identifier was verified, at registration or later.
+      summary: 'An identifier was verified: at registration, at invitation acceptance, or by a resume.'
       traits:
-        - $ref: '#/components/messageTraits/cloudEvent'
+      - $ref: '#/components/messageTraits/cloudEvent'
       payload:
         allOf:
-          - $ref: '#/components/schemas/CloudEvent'
-          - type: object
-            properties:
-              type:
-                const: account.identifier_verified
-              dataversion:
-                const: 1
-              data:
-                type: object
-                additionalProperties: false
-                required:
-                  - account_id
-                  - identifier_id
-                  - identifier_type
-                properties:
-                  account_id:
-                    $ref: '#/components/schemas/AccountId'
-                  identifier_id:
-                    type: string
-                    format: uuid
-                  identifier_type:
-                    $ref: '#/components/schemas/IdentifierType'
-      examples:
-        - name: example
-          payload:
-            specversion: '1.0'
-            id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
-            source: /auth1
-            type: account.identifier_verified
-            subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-            time: '2026-10-16T09:30:00.000Z'
-            datacontenttype: application/json
-            dataversion: 1
-            accountversion: 3
-            traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.identifier_verified
+            dataversion:
+              const: 1
             data:
-              account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-              identifier_id: 0b9e8d7c-6a5f-4e3d-8c2b-1a0f9e8d7c6b
-              identifier_type: phone
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - identifier_id
+              - identifier_type
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                identifier_id:
+                  type: string
+                  format: uuid
+                identifier_type:
+                  $ref: '#/components/schemas/IdentifierType'
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.identifier_verified
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            identifier_id: 0b9e8d7c-6a5f-4e3d-8c2b-1a0f9e8d7c6b
+            identifier_type: phone
+            actor:
+              kind: account
+              id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
     account_identifier_changed_v1:
       name: account.identifier_changed
       title: account.identifier_changed v1
-      summary: An email or phone change applied. The previous identifier is no longer current.
+      summary: An email or phone change applied, by the account or through support. The previous identifier
+        is no longer current.
       traits:
-        - $ref: '#/components/messageTraits/cloudEvent'
+      - $ref: '#/components/messageTraits/cloudEvent'
       payload:
         allOf:
-          - $ref: '#/components/schemas/CloudEvent'
-          - type: object
-            properties:
-              type:
-                const: account.identifier_changed
-              dataversion:
-                const: 1
-              data:
-                type: object
-                additionalProperties: false
-                required:
-                  - account_id
-                  - identifier_type
-                  - identifier_id
-                  - previous_identifier_id
-                properties:
-                  account_id:
-                    $ref: '#/components/schemas/AccountId'
-                  identifier_type:
-                    $ref: '#/components/schemas/IdentifierType'
-                  identifier_id:
-                    type: string
-                    format: uuid
-                  previous_identifier_id:
-                    type: string
-                    format: uuid
-      examples:
-        - name: example
-          payload:
-            specversion: '1.0'
-            id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
-            source: /auth1
-            type: account.identifier_changed
-            subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-            time: '2026-10-16T09:30:00.000Z'
-            datacontenttype: application/json
-            dataversion: 1
-            accountversion: 3
-            traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.identifier_changed
+            dataversion:
+              const: 1
             data:
-              account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-              identifier_type: email
-              identifier_id: 1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f
-              previous_identifier_id: 7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - identifier_type
+              - identifier_id
+              - previous_identifier_id
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                identifier_type:
+                  $ref: '#/components/schemas/IdentifierType'
+                identifier_id:
+                  type: string
+                  format: uuid
+                previous_identifier_id:
+                  type: string
+                  format: uuid
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.identifier_changed
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            identifier_type: email
+            identifier_id: 1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f
+            previous_identifier_id: 7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d
+            actor:
+              kind: account
+              id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+    account_profile_updated_v1:
+      name: account.profile_updated
+      title: account.profile_updated v1
+      summary: The display name or the locale changed. Consumers that cache the display name read it from
+        the directory.
+      traits:
+      - $ref: '#/components/messageTraits/cloudEvent'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.profile_updated
+            dataversion:
+              const: 1
+            data:
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - changed
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                changed:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    enum:
+                    - display_name
+                    - locale
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.profile_updated
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            changed:
+            - display_name
+            actor:
+              kind: account
+              id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
     account_password_changed_v1:
       name: account.password_changed
       title: account.password_changed v1
       summary: The account holder changed the password. Every other session was revoked.
       traits:
-        - $ref: '#/components/messageTraits/cloudEvent'
+      - $ref: '#/components/messageTraits/cloudEvent'
       payload:
         allOf:
-          - $ref: '#/components/schemas/CloudEvent'
-          - type: object
-            properties:
-              type:
-                const: account.password_changed
-              dataversion:
-                const: 1
-              data:
-                type: object
-                additionalProperties: false
-                required:
-                  - account_id
-                properties:
-                  account_id:
-                    $ref: '#/components/schemas/AccountId'
-      examples:
-        - name: example
-          payload:
-            specversion: '1.0'
-            id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
-            source: /auth1
-            type: account.password_changed
-            subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-            time: '2026-10-16T09:30:00.000Z'
-            datacontenttype: application/json
-            dataversion: 1
-            accountversion: 3
-            traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.password_changed
+            dataversion:
+              const: 1
             data:
-              account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.password_changed
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            actor:
+              kind: account
+              id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
     account_password_reset_v1:
       name: account.password_reset
       title: account.password_reset v1
-      summary: A password reset completed. Every session was revoked; the status did not change.
+      summary: A password reset completed. Every session was revoked; the status and the TOTP factor did
+        not change.
       traits:
-        - $ref: '#/components/messageTraits/cloudEvent'
+      - $ref: '#/components/messageTraits/cloudEvent'
       payload:
         allOf:
-          - $ref: '#/components/schemas/CloudEvent'
-          - type: object
-            properties:
-              type:
-                const: account.password_reset
-              dataversion:
-                const: 1
-              data:
-                type: object
-                additionalProperties: false
-                required:
-                  - account_id
-                  - step_up
-                properties:
-                  account_id:
-                    $ref: '#/components/schemas/AccountId'
-                  step_up:
-                    type: boolean
-                    description: Whether a second factor was required
-      examples:
-        - name: example
-          payload:
-            specversion: '1.0'
-            id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
-            source: /auth1
-            type: account.password_reset
-            subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-            time: '2026-10-16T09:30:00.000Z'
-            datacontenttype: application/json
-            dataversion: 1
-            accountversion: 3
-            traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.password_reset
+            dataversion:
+              const: 1
             data:
-              account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-              step_up: true
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - second_factor
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                second_factor:
+                  type: string
+                  enum:
+                  - totp
+                  - recovery_code
+                  - none
+                  description: What completed the reset. `none` only for an account that never completed
+                    enrolment
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.password_reset
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            second_factor: totp
+            actor:
+              kind: account
+              id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+    account_mfa_enrolled_v1:
+      name: account.mfa_enrolled
+      title: account.mfa_enrolled v1
+      summary: The account confirmed its first TOTP factor. Its first full session follows.
+      traits:
+      - $ref: '#/components/messageTraits/cloudEvent'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.mfa_enrolled
+            dataversion:
+              const: 1
+            data:
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.mfa_enrolled
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            actor:
+              kind: account
+              id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+    account_mfa_reset_v1:
+      name: account.mfa_reset
+      title: account.mfa_reset v1
+      summary: A service reset the account's lost second factor. The factor and recovery codes were erased
+        and every session revoked; the next sign-in enrols again.
+      traits:
+      - $ref: '#/components/messageTraits/cloudEvent'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.mfa_reset
+            dataversion:
+              const: 1
+            data:
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.mfa_reset
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            actor:
+              kind: service
+              id: spiffe://cluster.local/ns/example/sa/backoffice
+              on_behalf_of: staff:2d3e4f5a
     account_status_changed_v1:
       name: account.status_changed
       title: account.status_changed v1
       summary: The account's status changed through account control.
       traits:
-        - $ref: '#/components/messageTraits/cloudEvent'
+      - $ref: '#/components/messageTraits/cloudEvent'
       payload:
         allOf:
-          - $ref: '#/components/schemas/CloudEvent'
-          - type: object
-            properties:
-              type:
-                const: account.status_changed
-              dataversion:
-                const: 1
-              data:
-                type: object
-                additionalProperties: false
-                required:
-                  - account_id
-                  - status
-                  - previous_status
-                  - actor
-                properties:
-                  account_id:
-                    $ref: '#/components/schemas/AccountId'
-                  status:
-                    $ref: '#/components/schemas/AccountStatus'
-                  previous_status:
-                    $ref: '#/components/schemas/AccountStatus'
-                  reason_code:
-                    type: string
-                    description: From the deployment's reason codes. Present for suspended and banned
-                  until:
-                    type: string
-                    format: date-time
-                    description: Suspended only. Information; auth1 never lifts a status on its own
-                  actor:
-                    $ref: '#/components/schemas/Actor'
-      examples:
-        - name: example
-          payload:
-            specversion: '1.0'
-            id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
-            source: /auth1
-            type: account.status_changed
-            subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-            time: '2026-10-16T09:30:00.000Z'
-            datacontenttype: application/json
-            dataversion: 1
-            accountversion: 3
-            traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.status_changed
+            dataversion:
+              const: 1
             data:
-              account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-              status: suspended
-              previous_status: active
-              reason_code: policy_violation
-              until: '2026-11-15T00:00:00Z'
-              actor:
-                kind: service
-                id: spiffe://cluster.local/ns/example/sa/moderation
-                on_behalf_of: 2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - status
+              - previous_status
+              - sessions_revoked
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                status:
+                  $ref: '#/components/schemas/AccountStatus'
+                previous_status:
+                  $ref: '#/components/schemas/AccountStatus'
+                reason_code:
+                  type: string
+                  description: From the deployment's reason codes. Present for suspended and banned
+                until:
+                  type: string
+                  format: date-time
+                  description: Suspended only. Information; auth1 never lifts a status on its own
+                sessions_revoked:
+                  type: boolean
+                  description: Whether the caller asked for every session to be revoked at once
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.status_changed
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            status: suspended
+            previous_status: active
+            reason_code: policy_violation
+            until: '2026-11-15T00:00:00Z'
+            sessions_revoked: false
+            actor:
+              kind: service
+              id: spiffe://cluster.local/ns/example/sa/backoffice
+              on_behalf_of: staff:2d3e4f5a
     account_roles_changed_v1:
       name: account.roles_changed
       title: account.roles_changed v1
       summary: The account's roles were replaced through account control.
       traits:
-        - $ref: '#/components/messageTraits/cloudEvent'
+      - $ref: '#/components/messageTraits/cloudEvent'
       payload:
         allOf:
-          - $ref: '#/components/schemas/CloudEvent'
-          - type: object
-            properties:
-              type:
-                const: account.roles_changed
-              dataversion:
-                const: 1
-              data:
-                type: object
-                additionalProperties: false
-                required:
-                  - account_id
-                  - roles
-                  - previous_roles
-                  - actor
-                properties:
-                  account_id:
-                    $ref: '#/components/schemas/AccountId'
-                  roles:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Role'
-                  previous_roles:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Role'
-                  actor:
-                    $ref: '#/components/schemas/Actor'
-      examples:
-        - name: example
-          payload:
-            specversion: '1.0'
-            id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
-            source: /auth1
-            type: account.roles_changed
-            subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-            time: '2026-10-16T09:30:00.000Z'
-            datacontenttype: application/json
-            dataversion: 1
-            accountversion: 3
-            traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.roles_changed
+            dataversion:
+              const: 1
             data:
-              account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-              roles:
-                - admin
-              previous_roles: []
-              actor:
-                kind: service
-                id: spiffe://cluster.local/ns/example/sa/backoffice
-                on_behalf_of: 2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - roles
+              - previous_roles
+              - added
+              - removed
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                roles:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Role'
+                previous_roles:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Role'
+                added:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Role'
+                removed:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Role'
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.roles_changed
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            roles:
+            - admin
+            - user
+            previous_roles:
+            - user
+            added:
+            - admin
+            removed: []
+            actor:
+              kind: service
+              id: spiffe://cluster.local/ns/example/sa/backoffice
+              on_behalf_of: staff:2d3e4f5a
+    account_sessions_revoked_v1:
+      name: account.sessions_revoked
+      title: account.sessions_revoked v1
+      summary: Every session of the account was revoked at once (by a service, a status change, a role
+        removal or an operator). Sign-out and per-session revocations are not reported.
+      traits:
+      - $ref: '#/components/messageTraits/cloudEvent'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.sessions_revoked
+            dataversion:
+              const: 1
+            data:
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - reason
+              - count
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                reason:
+                  type: string
+                  enum:
+                  - service_revoked
+                  - status_change
+                  - roles_removed
+                  - operator
+                count:
+                  type: integer
+                  minimum: 0
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.sessions_revoked
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            reason: service_revoked
+            count: 3
+            actor:
+              kind: service
+              id: spiffe://cluster.local/ns/example/sa/backoffice
+              on_behalf_of: staff:2d3e4f5a
+    account_registration_expired_v1:
+      name: account.registration_expired
+      title: account.registration_expired v1
+      summary: A registration or invitation expired before it completed. The pending account's identifiers
+        were released and the account closed.
+      traits:
+      - $ref: '#/components/messageTraits/cloudEvent'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.registration_expired
+            dataversion:
+              const: 1
+            data:
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - client_id
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                client_id:
+                  type: string
+                  description: The client the registration started through, or `invitation`
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.registration_expired
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            client_id: web
+            actor:
+              kind: system
+              id: flow-expiry
     account_deleted_v1:
       name: account.deleted
       title: account.deleted v1
-      summary: The account was closed. Its sessions are revoked and its identifiers released.
+      summary: The account was closed. Its sessions are revoked, its credentials and factors erased, and
+        its identifiers released.
       traits:
-        - $ref: '#/components/messageTraits/cloudEvent'
+      - $ref: '#/components/messageTraits/cloudEvent'
       payload:
         allOf:
-          - $ref: '#/components/schemas/CloudEvent'
-          - type: object
-            properties:
-              type:
-                const: account.deleted
-              dataversion:
-                const: 1
-              data:
-                type: object
-                additionalProperties: false
-                required:
-                  - account_id
-                  - actor
-                properties:
-                  account_id:
-                    $ref: '#/components/schemas/AccountId'
-                  actor:
-                    $ref: '#/components/schemas/Actor'
-      examples:
-        - name: example
-          payload:
-            specversion: '1.0'
-            id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
-            source: /auth1
-            type: account.deleted
-            subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-            time: '2026-10-16T09:30:00.000Z'
-            datacontenttype: application/json
-            dataversion: 1
-            accountversion: 3
-            traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.deleted
+            dataversion:
+              const: 1
             data:
-              account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
-              actor:
-                kind: service
-                id: spiffe://cluster.local/ns/example/sa/profiles
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.deleted
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            actor:
+              kind: service
+              id: spiffe://cluster.local/ns/example/sa/backoffice
+              on_behalf_of: staff:2d3e4f5a
