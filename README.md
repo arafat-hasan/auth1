@@ -4,7 +4,8 @@ A product-agnostic identity service in Go: accounts, identifiers, passwords, man
 authentication, sessions, tokens, account state and roles. One deployment serves one product;
 everything that differs between products is configuration.
 
-> **Status: redesign for 1.0.** The design below is agreed and the implementation plan comes next.
+> **Status: redesign for 1.0.** The design below is agreed; the implementation plan is in GitHub
+> issues, starting from the pinned [roadmap #69](https://github.com/arafat-hasan/auth1/issues/69).
 > The code in this repository is a pre-1.0 prototype that 1.0 replaces, with a fresh schema and no
 > compatibility with the prototype's API, tokens or data.
 
