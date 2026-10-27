@@ -357,8 +357,13 @@ func (v *validator) telemetry() {
 		v.add("telemetry.metrics_listen", "must differ from http.listen, so metrics stay off the public listener")
 	}
 	if t.OTLPEndpoint != "" {
-		if u, err := url.Parse(t.OTLPEndpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		u, err := url.Parse(t.OTLPEndpoint)
+		switch {
+		case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
 			v.add("telemetry.otlp_endpoint", "%q is not an absolute http or https URL", t.OTLPEndpoint)
+		case u.RawQuery != "" || u.Fragment != "" || u.ForceQuery:
+			// The exporter appends /v1/traces to the URL, which a query or fragment would swallow.
+			v.add("telemetry.otlp_endpoint", "%q has a query or fragment; give the collector's base URL", t.OTLPEndpoint)
 		}
 	}
 	if t.ServiceName == "" {
