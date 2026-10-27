@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/arafat-hasan/auth1/internal/telemetry"
 )
 
 // checkTimeout bounds each readiness check.
@@ -88,7 +90,7 @@ func (c *Checker) Ready() http.Handler {
 				}
 				c.logger.LogAttrs(r.Context(), slog.LevelWarn, "readiness check failing",
 					slog.String("check", ch.name), slog.Bool("critical", ch.critical),
-					slog.String("error", errs[i].Error()))
+					telemetry.Err(errs[i]))
 			}
 			body.Checks[i] = res
 		}

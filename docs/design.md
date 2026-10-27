@@ -1013,8 +1013,8 @@ The other flows are in TDD-02 and TDD-03.
 **Non-error outcomes** (202, `application/json`): `MFA_REQUIRED` and `MFA_ENROLMENT_REQUIRED`, each
 with a flow handle and its expiry.
 
-**Outside the table:** a request body over 64 KiB (TDD-07 §7) answers 413 with `VALIDATION_FAILED`;
-an unknown path or unsupported method answers 404 with `NOT_FOUND`. `Retry-After` and `retry_after`
+**Outside the table:** a request body over 64 KiB (TDD-07 §7) answers 413 with `VALIDATION_FAILED`,
+whatever the method; the contract lists 413 only on the operations that take a body. An unknown path or unsupported method answers 404 with `NOT_FOUND`. `Retry-After` and `retry_after`
 are sent only when the error carries a wait; an unexpected failure answers `UNAVAILABLE` without
 them.
 
