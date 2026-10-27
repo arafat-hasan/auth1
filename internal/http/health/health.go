@@ -35,6 +35,8 @@ func New(logger *slog.Logger) *Checker {
 
 // Register adds a readiness check. A failing critical check makes /readyz answer 503; a failing
 // non-critical one is only reported. Registering a name again replaces the earlier check in place.
+// fn should return when its context is done; one that does not is counted as failing at the check
+// timeout and left to finish on its own.
 func (c *Checker) Register(name string, fn func(context.Context) error, critical bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -103,14 +105,25 @@ func (c *Checker) run(ctx context.Context, checks []check) []error {
 	errs := make([]error, len(checks))
 	var wg sync.WaitGroup
 	for i, ch := range checks {
-		wg.Go(func() {
-			cctx, cancel := context.WithTimeout(ctx, c.timeout)
-			defer cancel()
-			errs[i] = ch.fn(cctx)
-		})
+		wg.Go(func() { errs[i] = c.runOne(ctx, ch.fn) })
 	}
 	wg.Wait()
 	return errs
+}
+
+// runOne runs fn bounded by the check timeout. When the timeout passes first, it returns the
+// context's error without waiting for fn, so a check that ignores its context cannot hold /readyz.
+func (c *Checker) runOne(ctx context.Context, fn func(context.Context) error) error {
+	cctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	done := make(chan error, 1) // buffered, so an abandoned check's goroutine can still finish
+	go func() { done <- fn(cctx) }()
+	select {
+	case err := <-done:
+		return err
+	case <-cctx.Done():
+		return cctx.Err()
+	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

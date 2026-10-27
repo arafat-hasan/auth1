@@ -142,6 +142,27 @@ func TestReadyTimeout(t *testing.T) {
 	}
 }
 
+func TestReadyAbandonsStuckCheck(t *testing.T) {
+	t.Parallel()
+
+	c := New(slog.New(slog.DiscardHandler))
+	c.timeout = 50 * time.Millisecond
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	c.Register("stuck", func(context.Context) error { // ignores its context
+		<-release
+		return nil
+	}, true)
+	start := time.Now()
+	rec, b := get(t, c.Ready())
+	if rec.Code != http.StatusServiceUnavailable || b.Checks[0].Status != "failing" {
+		t.Errorf("got %d %+v", rec.Code, b)
+	}
+	if time.Since(start) > time.Second {
+		t.Error("a check that ignores its context held /readyz past the timeout")
+	}
+}
+
 func TestDefaultTimeout(t *testing.T) {
 	t.Parallel()
 
