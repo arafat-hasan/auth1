@@ -48,13 +48,9 @@ make generate              # go generate ./...
 Code layout follows TDD-08 §2; every package has a `doc.go` naming the TDD section it implements.
 The binary is `cmd/auth1` (cobra; `newRootCmd` in `root.go` is where subcommands are added).
 
-`test/guard` holds two repository-wide checks that run with `make test` and in CI:
-- **Layering** (`TestLayering`): from `go list -deps`, `internal/domain` imports nothing internal
-  and `internal/app` imports only `internal/domain` and `internal/app`.
-- **Product words** (`TestProductWords`, D-1): scans code, default configuration and migrations
-  for the words in the file named by `AUTH1_PRODUCT_WORDS_FILE`. The list never lives in this
-  repository; the test skips when the variable is unset. CI fills it from the
-  `AUTH1_PRODUCT_WORDS` repository variable or secret and fails when that is empty.
+`test/guard` holds the layering check (`TestLayering`), run by `make test` and in CI: from
+`go list -deps`, `internal/domain` imports nothing internal and `internal/app` imports only
+`internal/domain` and `internal/app`.
 
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
