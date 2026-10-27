@@ -12,7 +12,7 @@ import (
 func TestDefault(t *testing.T) {
 	t.Parallel()
 
-	want := map[string]any{
+	want := map[string]any{ //nolint:gosec // key names such as password_file, not credentials
 		"app.environment": EnvProduction,
 
 		"http.listen":          ":8080",

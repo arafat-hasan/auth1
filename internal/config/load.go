@@ -157,12 +157,8 @@ func numberToByteSizeHook(from, to reflect.Type, data any) (any, error) {
 	if to != byteSizeType || from == byteSizeType || !isNumber(from.Kind()) {
 		return data, nil
 	}
-	v := reflect.ValueOf(data)
-	switch {
-	case v.CanInt() && v.Int() >= 0:
+	if v := reflect.ValueOf(data); v.CanInt() && v.Int() >= 0 {
 		return ByteSize(v.Int()), nil
-	case v.CanUint() && v.Uint() <= 1<<63-1:
-		return ByteSize(v.Uint()), nil
 	}
 	return nil, fmt.Errorf("%v is not a size: use a whole number of bytes or a KiB, MiB or GiB suffix", data)
 }

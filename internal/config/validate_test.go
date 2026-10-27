@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -43,6 +44,7 @@ func validConfig(t *testing.T, dir string) Config {
 		LinkBaseURL:      "https://www.example.test/account",
 	}}
 	c.ServiceAuth.Mode = ServiceAuthMesh
+	c.RateLimits.SMSBudgetPerHour = 100
 	return c
 }
 
@@ -204,5 +206,252 @@ func TestValidateAllAtOnce(t *testing.T) {
 	want := []string{"clients[0].audience", "database.dsn_file", "http.issuer"}
 	if diff := cmp.Diff(want, problemPaths(t, &c)); diff != "" {
 		t.Errorf("problem paths (-want +got):\n%s", diff)
+	}
+}
+
+// TestValidateFloors covers every security floor of TDD-08 §3.1: the floor itself passes, one step
+// past it is refused outside development, and development relaxes it.
+func TestValidateFloors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path        string
+		floor, past func(c *Config)
+	}{
+		{"tokens.access_ttl",
+			func(c *Config) { c.Tokens.AccessTTL = 15 * time.Minute },
+			func(c *Config) { c.Tokens.AccessTTL = 15*time.Minute + time.Second }},
+		{"tokens.refresh_reuse_grace",
+			func(c *Config) { c.Tokens.RefreshReuseGrace = 60 * time.Second },
+			func(c *Config) { c.Tokens.RefreshReuseGrace = 61 * time.Second }},
+		{"passwords.min_length",
+			func(c *Config) { c.Passwords.MinLength = 8 },
+			func(c *Config) { c.Passwords.MinLength = 7 }},
+		{"passwords.max_length",
+			func(c *Config) { c.Passwords.MaxLength = 64 },
+			func(c *Config) { c.Passwords.MaxLength = 63 }},
+		{"passwords.argon2.memory",
+			func(c *Config) { c.Passwords.Argon2.Memory = 19 * MiB },
+			func(c *Config) { c.Passwords.Argon2.Memory = 19*MiB - KiB }},
+		{"passwords.argon2.iterations",
+			func(c *Config) { c.Passwords.Argon2.Iterations = 2 },
+			func(c *Config) { c.Passwords.Argon2.Iterations = 1 }},
+		{"otp.length",
+			func(c *Config) { c.OTP.Length = 6 },
+			func(c *Config) { c.OTP.Length = 5 }},
+		{"otp.max_attempts",
+			func(c *Config) { c.OTP.MaxAttempts = 5 },
+			func(c *Config) { c.OTP.MaxAttempts = 6 }},
+		{"mfa.totp.skew_steps",
+			func(c *Config) { c.MFA.TOTP.SkewSteps = 2 },
+			func(c *Config) { c.MFA.TOTP.SkewSteps = 3 }},
+		{"links.reset_ttl",
+			func(c *Config) { c.Links.ResetTTL = 2 * time.Hour },
+			func(c *Config) { c.Links.ResetTTL = 2*time.Hour + time.Second }},
+		{"service_auth.client_credentials.token_ttl",
+			func(c *Config) { c.ServiceAuth.ClientCredentials.TokenTTL = 15 * time.Minute },
+			func(c *Config) { c.ServiceAuth.ClientCredentials.TokenTTL = 15*time.Minute + time.Second }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+			for _, run := range []struct {
+				name   string
+				env    Environment
+				change func(c *Config)
+				want   []string
+			}{
+				{"at the floor", EnvProduction, tt.floor, nil},
+				{"past the floor", EnvProduction, tt.past, []string{tt.path}},
+				{"past the floor in staging", EnvStaging, tt.past, []string{tt.path}},
+				{"past the floor in development", EnvDevelopment, tt.past, nil},
+			} {
+				c := validConfig(t, t.TempDir())
+				c.App.Environment = run.env
+				run.change(&c)
+				if diff := cmp.Diff(run.want, problemPaths(t, &c), cmpopts.EquateEmpty()); diff != "" {
+					t.Errorf("%s: problem paths (-want +got):\n%s", run.name, diff)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateRules covers every other rule: each violation alone is reported at its path, in
+// production and, unless the rule is production-only, in development too.
+func TestValidateRules(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		change     func(c *Config)
+		want       []string
+		devRelaxed bool
+	}{
+		// Production-only rules (TDD-08 §3.1).
+		{name: "capture delivery", change: func(c *Config) { c.Delivery.Adapter = DeliveryCapture },
+			want: []string{"delivery.adapter"}, devRelaxed: true},
+		{name: "no service auth mode", change: func(c *Config) { c.ServiceAuth.Mode = "" },
+			want: []string{"service_auth.mode"}, devRelaxed: true},
+		{name: "plain http origin", change: func(c *Config) {
+			c.Clients[0].Origins = []string{"https://a.example.test", "http://b.example.test"}
+		}, want: []string{"clients[0].origins[1]"}, devRelaxed: true},
+
+		// Roles.
+		{name: "allowed role outside the catalog", change: func(c *Config) {
+			c.Clients[0].AllowedRoles = []string{"user", "ghost"}
+		}, want: []string{"clients[0].allowed_roles[1]"}},
+		{name: "default role outside the catalog", change: func(c *Config) {
+			c.Clients[0].DefaultRoles = []string{"ghost"}
+		}, want: []string{"clients[0].default_roles[0]"}},
+		{name: "default role not allowed", change: func(c *Config) {
+			c.Clients[0].DefaultRoles = []string{"user", "admin"}
+		}, want: []string{"clients[0].default_roles[1]"}},
+
+		// Values that must be one of a set.
+		{name: "environment capitalised", change: func(c *Config) { c.App.Environment = "Production" },
+			want: []string{"app.environment"}},
+		{name: "environment abbreviated", change: func(c *Config) { c.App.Environment = "dev" },
+			want: []string{"app.environment"}},
+		{name: "client mfa", change: func(c *Config) { c.Clients[0].MFA = "sometimes" },
+			want: []string{"clients[0].mfa"}},
+		{name: "first factors without password", change: func(c *Config) {
+			c.Clients[0].FirstFactors = []Factor{FactorOTP}
+			c.Clients[0].OTPChannel = OTPChannelEmail
+		}, want: []string{"clients[0].first_factors"}},
+		{name: "first factors unknown", change: func(c *Config) {
+			c.Clients[0].FirstFactors = []Factor{FactorPassword, "magic"}
+		}, want: []string{"clients[0].first_factors"}},
+		{name: "first factors empty", change: func(c *Config) { c.Clients[0].FirstFactors = nil },
+			want: []string{"clients[0].first_factors"}},
+		{name: "otp without a channel", change: func(c *Config) {
+			c.Clients[0].FirstFactors = []Factor{FactorPassword, FactorOTP}
+		}, want: []string{"clients[0].otp_channel"}},
+		{name: "otp with an unknown channel", change: func(c *Config) {
+			c.Clients[0].FirstFactors = []Factor{FactorPassword, FactorOTP}
+			c.Clients[0].OTPChannel = "pigeon"
+		}, want: []string{"clients[0].otp_channel"}},
+		{name: "otp by email", change: func(c *Config) {
+			c.Clients[0].FirstFactors = []Factor{FactorOTP, FactorPassword}
+			c.Clients[0].OTPChannel = OTPChannelEmail
+		}},
+		{name: "refresh transport", change: func(c *Config) { c.Clients[0].RefreshTransport = "" },
+			want: []string{"clients[0].refresh_transport"}},
+		{name: "totp label", change: func(c *Config) { c.MFA.TOTP.Label = "phone" },
+			want: []string{"mfa.totp.label"}},
+		{name: "confirm old email", change: func(c *Config) { c.IdentifierChanges.ConfirmOldEmail = "maybe" },
+			want: []string{"identifier_changes.confirm_old_email"}},
+		{name: "delivery adapter", change: func(c *Config) { c.Delivery.Adapter = "pigeon" },
+			want: []string{"delivery.adapter"}},
+		{name: "service auth mode", change: func(c *Config) { c.ServiceAuth.Mode = "trust" },
+			want: []string{"service_auth.mode"}},
+		{name: "mesh source", change: func(c *Config) { c.ServiceAuth.Mesh.Source = "dns" },
+			want: []string{"service_auth.mesh.source"}},
+		{name: "mesh format", change: func(c *Config) { c.ServiceAuth.Mesh.Format = "json" },
+			want: []string{"service_auth.mesh.format"}},
+
+		// Identifier policy, structurally (the type registry is WP-20's).
+		{name: "identifier without verify", change: func(c *Config) { setVerify(c, "phone", "") },
+			want: []string{"identifiers.phone.verify"}},
+		{name: "identifier with an unknown method", change: func(c *Config) { setVerify(c, "phone", "fax") },
+			want: []string{"identifiers.phone.verify"}},
+		{name: "calling codes well-formed", change: func(c *Config) { setCallingCodes(c, "1", "44", "880") }},
+		{name: "calling code with a plus", change: func(c *Config) { setCallingCodes(c, "44", "+44") },
+			want: []string{"identifiers.phone.calling_codes[1]"}},
+		{name: "calling code with a leading zero", change: func(c *Config) { setCallingCodes(c, "044") },
+			want: []string{"identifiers.phone.calling_codes[0]"}},
+		{name: "calling code too long", change: func(c *Config) { setCallingCodes(c, "1234") },
+			want: []string{"identifiers.phone.calling_codes[0]"}},
+
+		// SMS budget.
+		{name: "no sms method and no budget", change: func(c *Config) {
+			delete(c.Identifiers, "phone")
+			c.RateLimits.SMSBudgetPerHour = 0
+		}},
+		{name: "sms identifier and no budget", change: func(c *Config) { c.RateLimits.SMSBudgetPerHour = 0 },
+			want: []string{"rate_limits.sms_budget_per_hour"}},
+		{name: "sms sign-in and no budget", change: func(c *Config) {
+			delete(c.Identifiers, "phone")
+			c.RateLimits.SMSBudgetPerHour = 0
+			c.Clients[0].FirstFactors = []Factor{FactorPassword, FactorOTP}
+			c.Clients[0].OTPChannel = OTPChannelSMS
+		}, want: []string{"rate_limits.sms_budget_per_hour"}},
+		{name: "sms step-up and no budget", change: func(c *Config) {
+			delete(c.Identifiers, "phone")
+			c.RateLimits.SMSBudgetPerHour = 0
+			c.Recovery.SMSStepUp = true
+		}, want: []string{"rate_limits.sms_budget_per_hour"}},
+
+		// Client credentials.
+		{name: "client credentials without an audience", change: func(c *Config) {
+			c.ServiceAuth.Mode = ServiceAuthClientCredentials
+			c.ServiceAuth.ClientCredentials.Audience = ""
+		}, want: []string{"service_auth.client_credentials.audience"}},
+		{name: "both modes without an audience", change: func(c *Config) {
+			c.ServiceAuth.Mode = ServiceAuthBoth
+			c.ServiceAuth.ClientCredentials.Audience = ""
+		}, want: []string{"service_auth.client_credentials.audience"}},
+		{name: "mesh only without an audience", change: func(c *Config) {
+			c.ServiceAuth.ClientCredentials.Audience = ""
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := validConfig(t, t.TempDir())
+			tt.change(&c)
+			if diff := cmp.Diff(tt.want, problemPaths(t, &c), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("production: problem paths (-want +got):\n%s", diff)
+			}
+
+			c = validConfig(t, t.TempDir())
+			c.App.Environment = EnvDevelopment
+			tt.change(&c)
+			want := tt.want
+			if tt.devRelaxed {
+				want = nil
+			}
+			if diff := cmp.Diff(want, problemPaths(t, &c), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("development: problem paths (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func setVerify(c *Config, name string, method VerifyMethod) {
+	p := c.Identifiers[name]
+	p.Verify = method
+	c.Identifiers[name] = p
+}
+
+func setCallingCodes(c *Config, codes ...string) {
+	p := c.Identifiers["phone"]
+	p.CallingCodes = codes
+	c.Identifiers["phone"] = p
+}
+
+// TestT17Production is acceptance test T-17 at unit level: production refuses capture delivery,
+// a missing service-auth mode and a setting below a floor; development accepts all three.
+func TestT17Production(t *testing.T) {
+	t.Parallel()
+
+	changes := map[string]func(c *Config){
+		"delivery.adapter":  func(c *Config) { c.Delivery.Adapter = DeliveryCapture },
+		"service_auth.mode": func(c *Config) { c.ServiceAuth.Mode = "" },
+		"tokens.access_ttl": func(c *Config) { c.Tokens.AccessTTL = time.Hour },
+	}
+	for path, change := range changes {
+		for _, env := range []Environment{EnvProduction, EnvDevelopment} {
+			c := validConfig(t, t.TempDir())
+			c.App.Environment = env
+			change(&c)
+			err := c.Validate()
+			if env == EnvProduction && (err == nil || problemPaths(t, &c)[0] != path) {
+				t.Errorf("production with a bad %s: Validate = %v, want it refused", path, err)
+			}
+			if env == EnvDevelopment && err != nil {
+				t.Errorf("development with a bad %s: Validate = %v, want nil", path, err)
+			}
+		}
 	}
 }
