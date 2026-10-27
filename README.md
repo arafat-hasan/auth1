@@ -6,8 +6,8 @@ everything that differs between products is configuration.
 
 > **Status: redesign for 1.0.** The design below is agreed; the implementation plan is in GitHub
 > issues, starting from the pinned [roadmap #69](https://github.com/arafat-hasan/auth1/issues/69).
-> The code in this repository is a pre-1.0 prototype that 1.0 replaces, with a fresh schema and no
-> compatibility with the prototype's API, tokens or data.
+> The repository holds the 1.0 skeleton; the pre-1.0 prototype is in git history only. 1.0 has a
+> fresh schema and no compatibility with the prototype's API, tokens or data.
 
 ## Design
 
@@ -31,24 +31,20 @@ everything that differs between products is configuration.
 - CloudEvents through a transactional outbox.
 - Messages whose secrets are resolved only at send time.
 
-## Running the prototype
+## Building
 
-The prototype needs Go, PostgreSQL, Redis and RabbitMQ.
+Go 1.27 or later.
 
 ```bash
-./scripts/generate_keys.sh
+make build
 ```
 
 ```bash
-cp config.example.yaml config.yaml
+./bin/auth1 version
 ```
 
-```bash
-docker compose up -d
-```
-
-[QUICK_START.md](QUICK_START.md) and [DOCKER_SETUP.md](DOCKER_SETUP.md) describe the prototype's
-setup in more detail. `CLAUDE.md` describes its code layout. None of it describes 1.0.
+`make test` and `make lint` run the tests and the linters. Nothing else runs yet; the work packages
+in the roadmap add the service step by step.
 
 ## License
 

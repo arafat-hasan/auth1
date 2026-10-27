@@ -1,7 +1,7 @@
 # Architecture
 
-auth1 is being redesigned for its 1.0 release. The design is the source of truth; the code in this
-repository is a pre-1.0 prototype that 1.0 replaces (no data or API compatibility is kept, since
+auth1 is being redesigned for its 1.0 release. The design is the source of truth; the pre-1.0
+prototype was removed and is kept in git history only (no data or API compatibility is kept, since
 nothing runs in production).
 
 ## Where the design lives
@@ -43,12 +43,10 @@ flowchart LR
 - **Events and messages.** A transactional outbox publishes CloudEvents ordered per account. Secrets in messages are references resolved at send time.
 - **Structure.** Ports and adapters: domain and use cases know no transport, database or provider (design.md §6.3).
 
-## The prototype in this repository
+## The prototype
 
-What runs today: a Chi HTTP service with email/password and OTP sign-in, optional TOTP, JWT
-access and refresh tokens with Redis blacklists, an admin user API protected by a role, an
-introspection endpoint protected by static API keys, and an email outbox relayed to RabbitMQ.
-`CLAUDE.md` describes its layout. design.md §17 lists what 1.0 keeps from it (the Chi router, the
-Redis sliding-window limiter, the outbox pattern, RS256 with a `kid`, the JWKS endpoint, the health
-probes) and what it rewrites (everything else). The full gap analysis is in the history of
-design.md (version 0.2, §14).
+The pre-1.0 prototype (a Chi service with JWTs, Redis blacklists, static API keys and an email
+outbox) was deleted in WP-00 and remains in git history. design.md §17 lists what 1.0 keeps from it;
+of its code only the Redis sliding-window limiter survives, in `internal/ratelimit` until WP-50
+moves it to `internal/adapters/redis`. The full gap analysis is in the history of design.md
+(version 0.2, §14).
