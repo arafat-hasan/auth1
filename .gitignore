@@ -247,8 +247,8 @@ $RECYCLE.BIN/
 /bin/
 
 # Configuration files with sensitive data
-config.yaml
-config.yml
+/config.yaml
+/config.yml
 .env
 .env.staging
 .env.prod
@@ -259,8 +259,9 @@ config.yml
 *.log
 logs/
 
-# Key material
+# Key material (test fixtures under testdata/ are kept)
 *.pem
+!**/testdata/**/*.pem
 
 # Docker volumes
 postgres_data/
