@@ -168,8 +168,9 @@ func TestDefault(t *testing.T) {
 		"retention.published_outbox":      168 * time.Hour,
 		"retention.audit_client_details":  2160 * time.Hour,
 
-		"telemetry.otlp_endpoint": "",
-		"telemetry.service_name":  "auth1",
+		"telemetry.otlp_endpoint":  "",
+		"telemetry.service_name":   "auth1",
+		"telemetry.metrics_listen": ":9090",
 	}
 
 	got := flatten(Default())

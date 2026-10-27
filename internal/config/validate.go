@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"slices"
 	"strconv"
@@ -26,6 +27,7 @@ func (c *Config) Validate() error {
 	v.clients()
 	v.identifiers()
 	v.smsBudget()
+	v.telemetry()
 	return joinProblems(v.problems)
 }
 
@@ -344,6 +346,40 @@ func (v *validator) smsBudget() {
 	if v.c.RateLimits.SMSBudgetPerHour <= 0 && v.c.usesSMS() {
 		v.add("rate_limits.sms_budget_per_hour", "must be above 0 when an SMS method is configured")
 	}
+}
+
+// telemetry checks the telemetry section, in every environment.
+func (v *validator) telemetry() {
+	t := v.c.Telemetry
+	if !validListen(t.MetricsListen) {
+		v.add("telemetry.metrics_listen", "%q is not host:port with a port from 1 to 65535", t.MetricsListen)
+	} else if t.MetricsListen == v.c.HTTP.Listen {
+		v.add("telemetry.metrics_listen", "must differ from http.listen, so metrics stay off the public listener")
+	}
+	if t.OTLPEndpoint != "" {
+		u, err := url.Parse(t.OTLPEndpoint)
+		switch {
+		case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
+			v.add("telemetry.otlp_endpoint", "%q is not an absolute http or https URL", t.OTLPEndpoint)
+		case u.RawQuery != "" || u.Fragment != "" || u.ForceQuery:
+			// The exporter appends /v1/traces to the URL, which a query or fragment would swallow.
+			v.add("telemetry.otlp_endpoint", "%q has a query or fragment; give the collector's base URL", t.OTLPEndpoint)
+		}
+	}
+	if t.ServiceName == "" {
+		v.add("telemetry.service_name", "required")
+	}
+}
+
+// validListen reports whether addr is host:port, the host possibly empty, with a numeric port
+// from 1 to 65535.
+func validListen(addr string) bool {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535
 }
 
 // usesSMS reports whether any SMS method is configured: an identifier verified by SMS, OTP sign-in

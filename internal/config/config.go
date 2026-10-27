@@ -338,6 +338,7 @@ type Retention struct {
 
 // Telemetry is the telemetry section.
 type Telemetry struct {
-	OTLPEndpoint string `koanf:"otlp_endpoint"` // empty: metrics on /metrics only, no trace export
-	ServiceName  string `koanf:"service_name"`
+	OTLPEndpoint  string `koanf:"otlp_endpoint"` // collector base URL, spans to /v1/traces; empty: no trace export
+	ServiceName   string `koanf:"service_name"`
+	MetricsListen string `koanf:"metrics_listen"` // internal listener for /metrics
 }

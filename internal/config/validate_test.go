@@ -433,6 +433,39 @@ func TestValidateRules(t *testing.T) {
 		{name: "mesh only without an audience", change: func(c *Config) {
 			c.ServiceAuth.ClientCredentials.Audience = ""
 		}},
+
+		// Telemetry, in every environment.
+		{name: "metrics listen without a colon", change: func(c *Config) { c.Telemetry.MetricsListen = "9090" },
+			want: []string{"telemetry.metrics_listen"}},
+		{name: "metrics listen with a named port", change: func(c *Config) { c.Telemetry.MetricsListen = ":x" },
+			want: []string{"telemetry.metrics_listen"}},
+		{name: "metrics listen on port 0", change: func(c *Config) { c.Telemetry.MetricsListen = ":0" },
+			want: []string{"telemetry.metrics_listen"}},
+		{name: "metrics listen above the port range", change: func(c *Config) { c.Telemetry.MetricsListen = ":65536" },
+			want: []string{"telemetry.metrics_listen"}},
+		{name: "empty metrics listen", change: func(c *Config) { c.Telemetry.MetricsListen = "" },
+			want: []string{"telemetry.metrics_listen"}},
+		{name: "metrics listen on the http listener", change: func(c *Config) { c.Telemetry.MetricsListen = c.HTTP.Listen },
+			want: []string{"telemetry.metrics_listen"}},
+		{name: "metrics listen with an IPv4 host", change: func(c *Config) { c.Telemetry.MetricsListen = "127.0.0.1:9090" }},
+		{name: "metrics listen with an IPv6 host", change: func(c *Config) { c.Telemetry.MetricsListen = "[::1]:9090" }},
+		{name: "otlp endpoint without a scheme", change: func(c *Config) { c.Telemetry.OTLPEndpoint = "collector:4318" },
+			want: []string{"telemetry.otlp_endpoint"}},
+		{name: "otlp endpoint with another scheme", change: func(c *Config) { c.Telemetry.OTLPEndpoint = "ftp://c:4318" },
+			want: []string{"telemetry.otlp_endpoint"}},
+		{name: "relative otlp endpoint", change: func(c *Config) { c.Telemetry.OTLPEndpoint = "/v1/traces" },
+			want: []string{"telemetry.otlp_endpoint"}},
+		{name: "otlp endpoint with a query", change: func(c *Config) { c.Telemetry.OTLPEndpoint = "http://c:4318?x=1" },
+			want: []string{"telemetry.otlp_endpoint"}},
+		{name: "otlp endpoint with an empty query", change: func(c *Config) { c.Telemetry.OTLPEndpoint = "http://c:4318?" },
+			want: []string{"telemetry.otlp_endpoint"}},
+		{name: "otlp endpoint with a fragment", change: func(c *Config) { c.Telemetry.OTLPEndpoint = "http://c:4318#f" },
+			want: []string{"telemetry.otlp_endpoint"}},
+		{name: "otlp endpoint with a path", change: func(c *Config) { c.Telemetry.OTLPEndpoint = "http://c:4318/otel/" }},
+		{name: "http otlp endpoint", change: func(c *Config) { c.Telemetry.OTLPEndpoint = "http://collector:4318" }},
+		{name: "https otlp endpoint", change: func(c *Config) { c.Telemetry.OTLPEndpoint = "https://c.example.test:4318" }},
+		{name: "empty service name", change: func(c *Config) { c.Telemetry.ServiceName = "" },
+			want: []string{"telemetry.service_name"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

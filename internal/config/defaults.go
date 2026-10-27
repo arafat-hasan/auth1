@@ -130,6 +130,6 @@ func Default() Config {
 			PublishedOutbox:      168 * time.Hour,
 			AuditClientDetails:   2160 * time.Hour,
 		},
-		Telemetry: Telemetry{ServiceName: "auth1"},
+		Telemetry: Telemetry{ServiceName: "auth1", MetricsListen: ":9090"},
 	}
 }

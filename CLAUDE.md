@@ -52,7 +52,10 @@ The binary is `cmd/auth1` (cobra; `newRootCmd` in `root.go` is where subcommands
 `test/guard` holds the layering check (`TestLayering`), run by `make test` and in CI: from
 `go list -deps` (plus files left out by build constraints), `internal/domain` imports nothing
 internal, `internal/app` imports only `internal/domain` and `internal/app`, and
-`internal/adapters` and `internal/http` do not import each other.
+`internal/adapters` and `internal/http` do not import each other, and `internal/telemetry` imports
+only `internal/config`. `TestMetricNames` fails on any `auth1_…` string literal that is not in the
+TDD-08 §5.2 catalogue (`telemetry.InstrumentNames()`); create instruments through
+`telemetry.Metrics`.
 
 `internal/config` loads YAML over the defaults in `Default()`, then `AUTH1_<PATH>` overrides
 (resolved against the schema's scalar key paths); `Validate()` applies TDD-08 §3.1. Adding a key
