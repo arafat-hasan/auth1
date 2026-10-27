@@ -48,7 +48,11 @@ internal/
   http/
     gen/                   generated server and types
     handlers/              thin: decode → use case → encode
-    middleware/            request id, trace, client IP, origin, CORS, auth, scope, rate limit, problems
+    middleware/            trace, access log, recover, body limit, client IP, origin, CORS, auth, scope, rate limit
+    requestid/             request id: generated, returned in X-Request-Id, kept in the context
+    problem/               domain.Error → problem details; the code → status table
+    health/                /livez, /readyz and their checks
+    server/                router, server timeouts, graceful shutdown
   worker/                  relay, jobs, leader election
   ops/                     operator commands
 test/e2e/                  end-to-end suites
