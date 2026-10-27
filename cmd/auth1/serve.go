@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel"
 
+	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
 	"github.com/arafat-hasan/auth1/internal/http/health"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/server"
@@ -27,6 +28,9 @@ const (
 	shutdownTimeout  = server.WriteTimeout
 	telemetryTimeout = 5 * time.Second
 )
+
+// pingTimeout bounds the PostgreSQL readiness check.
+const pingTimeout = time.Second
 
 // errDraining is the draining check's error once shutdown has begun.
 var errDraining = errors.New("shutting down")
@@ -91,6 +95,18 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	slog.SetDefault(logger)
 	otel.SetTextMapPropagator(tel.Propagator())
 
+	// The pool connects on first use, so serve starts while PostgreSQL is down; /readyz reports it.
+	// It closes after the servers have shut down (deferred after telemetry, so it runs first).
+	db, err := postgres.Open(cfg.Database, cfg.App.Environment)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := db.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close database pool: %w", cerr))
+		}
+	}()
+
 	duration, err := telemetry.NewMetrics(tel.MeterProvider()).Histogram("http.server.request.duration")
 	if err != nil {
 		return err
@@ -103,6 +119,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		}
 		return nil
 	}, true)
+	checks.Register("postgres", postgres.Ping(db, pingTimeout), true)
 
 	listeners, err := bind(deps.listen, cfg.HTTP.Listen, cfg.Telemetry.MetricsListen)
 	if err != nil {
