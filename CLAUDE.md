@@ -39,6 +39,7 @@ make lint                  # go vet + golangci-lint v2 (.golangci.yml)
 make vuln                  # govulncheck ./...
 make generate              # go generate ./...
 ./bin/auth1 version        # version, commit, Go version
+./bin/auth1 config check --config config.example.yaml   # load and validate a configuration
 ```
 
 `make migrate` needs the `migrate` command, which WP-05 adds.
@@ -52,6 +53,12 @@ The binary is `cmd/auth1` (cobra; `newRootCmd` in `root.go` is where subcommands
 `go list -deps` (plus files left out by build constraints), `internal/domain` imports nothing
 internal, `internal/app` imports only `internal/domain` and `internal/app`, and
 `internal/adapters` and `internal/http` do not import each other.
+
+`internal/config` loads YAML over the defaults in `Default()`, then `AUTH1_<PATH>` overrides
+(resolved against the schema's scalar key paths); `Validate()` applies TDD-08 §3.1. Adding a key
+means a field with a `koanf` tag, its default, and a line in `config.example.yaml` (tests check
+the example lists every key with its default). The example's secret files are empty placeholders
+under `testdata/example/`.
 
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
