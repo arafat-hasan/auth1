@@ -218,7 +218,7 @@ retention:
   published_outbox: 168h
   audit_client_details: 2160h
 telemetry:
-  otlp_endpoint: ""                    # empty: no trace export
+  otlp_endpoint: ""                    # OTLP/HTTP collector base URL; empty: no trace export
   service_name: auth1
   metrics_listen: ":9090"              # internal listener for /metrics; never behind the public edge
 ```

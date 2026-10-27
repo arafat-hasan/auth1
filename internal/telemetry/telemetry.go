@@ -1,0 +1,74 @@
+package telemetry
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/arafat-hasan/auth1/internal/config"
+)
+
+// Telemetry holds the logger and the tracer provider of one process. It sets no global state:
+// the caller decides whether to install them as defaults.
+type Telemetry struct {
+	logger *slog.Logger
+	tp     *sdktrace.TracerProvider
+}
+
+// settings are the outputs New would otherwise choose: stdout for logs, and the span exporter.
+// Tests replace them.
+type settings struct {
+	stdout       io.Writer
+	spanExporter sdktrace.SpanExporter // nil: spans are not exported
+}
+
+// New builds the logger (JSON on stdout), and the tracer provider, which exports over OTLP/HTTP
+// when cfg.OTLPEndpoint is set. Shutdown flushes and stops it.
+func New(ctx context.Context, cfg config.Telemetry, info BuildInfo) (*Telemetry, error) {
+	s := settings{stdout: os.Stdout}
+	if cfg.OTLPEndpoint != "" {
+		exp, err := newOTLPExporter(ctx, cfg.OTLPEndpoint)
+		if err != nil {
+			return nil, err
+		}
+		s.spanExporter = exp
+	}
+	return newTelemetry(cfg, info, s)
+}
+
+func newTelemetry(cfg config.Telemetry, info BuildInfo, s settings) (*Telemetry, error) {
+	if cfg.ServiceName == "" {
+		return nil, fmt.Errorf("telemetry: empty service name")
+	}
+	res := newResource(cfg.ServiceName, info.Version)
+	return &Telemetry{
+		logger: slog.New(NewHandler(s.stdout, cfg.ServiceName, info.Version)),
+		tp:     newTracerProvider(res, s.spanExporter),
+	}, nil
+}
+
+// Logger returns the redacting JSON logger.
+func (t *Telemetry) Logger() *slog.Logger { return t.logger }
+
+// TracerProvider returns the tracer provider.
+func (t *Telemetry) TracerProvider() trace.TracerProvider { return t.tp }
+
+// Propagator returns the W3C trace context propagator, which reads and writes traceparent.
+func (t *Telemetry) Propagator() propagation.TextMapPropagator { return propagation.TraceContext{} }
+
+// Shutdown flushes pending spans and stops the providers. It returns when ctx is done at the
+// latest, with every error joined.
+func (t *Telemetry) Shutdown(ctx context.Context) error {
+	var errs []error
+	if err := t.tp.Shutdown(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("tracer provider: %w", err))
+	}
+	return errors.Join(errs...)
+}
