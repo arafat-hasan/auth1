@@ -11,7 +11,7 @@ Nothing runs in production, so no migration path is needed.
 
 | Document | Role |
 |---|---|
-| `docs/design.md` | SDD: needs, decisions D-1…D-19, state models, invariants I-1…I-21, threat model, acceptance tests T-1…T-36 |
+| `docs/design.md` | SDD: needs, decisions D-1…D-19, state models, invariants I-1…I-21, threat model, acceptance tests T-1…T-38 |
 | `docs/tdd/TDD-01` … `TDD-08` | TDDs: how each area is built (schema, flows, MFA, tokens, service access, events, abuse, operations) |
 | `api/openapi.yaml`, `api/asyncapi.yaml` | Contracts. Wire shapes are final here |
 | GitHub issues: roadmap #69 → milestone issues #60–#68 → work packages `WP-NN` (label `work-package`) | The implementation plan. Read a work package with `gh issue view <n>`; its step plan goes in the issue under `## Steps` when work starts. Branch `wp-NN-<slug>`, one PR per work package with `Closes #<n>`. See `docs/plan/README.md` |
