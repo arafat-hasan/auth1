@@ -36,7 +36,7 @@ flowchart LR
 
 - **Product-agnostic.** One deployment per product; every product difference is configuration.
 - **Accounts and identifiers.** Several identifiers per account, each verified on its own, unique only once verified. UUIDv7 ids. Identifier values and display names encrypted per field, found by blind indexes.
-- **Credentials.** Every account has a password (Argon2id with a pepper) and **mandatory TOTP**, with recovery codes. Enrolment happens at the first sign-in.
+- **Credentials.** Every account has a password (Argon2id with a pepper). **TOTP is optional**, with recovery codes: any account may enable it, a client may require it (`mfa: required`), and an account that has it is always asked for it.
 - **Flows.** Registration, resume, sign-in, recovery, identifier changes and invitations are flows with challenges, stored in PostgreSQL.
 - **Sessions and tokens.** Short-lived signed access tokens (a keyring with `next`/`active`/`retired` keys, JWKS), opaque refresh tokens rotated with reuse detection. Suspended or banned accounts get restricted sessions whose tokens only auth1 accepts.
 - **Services.** Authenticated by workload identity or client credentials, with scopes. No static API keys.

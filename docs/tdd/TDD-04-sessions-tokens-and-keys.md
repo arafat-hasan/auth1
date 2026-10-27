@@ -5,7 +5,7 @@
 | Status | Draft |
 | Version | 0.1 |
 | Date | 2026-10-26 |
-| SDD | [design.md](../design.md) 0.3: D-5, D-6, D-12, I-3, I-6, I-13, I-14 |
+| SDD | [design.md](../design.md) 0.4: D-5, D-6, D-12, I-3, I-6, I-13, I-14 |
 | Owner | Arafat Hasan |
 
 Access tokens, sessions, refresh rotation, browser transport, the signing keyring, the JWKS,

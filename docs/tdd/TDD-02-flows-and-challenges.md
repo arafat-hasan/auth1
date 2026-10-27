@@ -3,9 +3,9 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Version | 0.1 |
-| Date | 2026-10-26 |
-| SDD | [design.md](../design.md) 0.3: D-3, D-4, D-5, D-6, D-10, D-11, §8, §9 |
+| Version | 0.2 |
+| Date | 2026-10-27 |
+| SDD | [design.md](../design.md) 0.4: D-3, D-4, D-5, D-6, D-10, D-11, §8, §9 |
 | Owner | Arafat Hasan |
 
 How every multi-step interaction is built: the flow and challenge machinery, then each flow. The
@@ -28,7 +28,7 @@ here match `api/openapi.yaml`, which is the final word on shapes.
 | `registration` | 24 h | `pending_types` |
 | `invitation` | 72 h | `roles`, `accepted`, `pending_types` |
 | `sign_in` | 10 min | `first_factor` (`pwd`, `sms`, `email`), `step` (`first_factor`, `second_factor`, `enrolment`), `device_id` |
-| `password_reset` | 30 min | `started`, `second_factor` (`totp`, `none`) |
+| `password_reset` | 30 min | `started`, `proof` (`totp`, `sms`, `none`) |
 | `email_change` | 24 h | `confirm_old` (`required`, `notify`, `support`), `old_confirmed`, `new_confirmed` |
 | `phone_change` | 15 min | — |
 | `totp_replacement` | 10 min | — (the pending secret is in `flows.pending_secret`, encrypted) |
@@ -65,6 +65,7 @@ A **link token** is found by `secret_mac = sha256(token)` through the unique ind
 | `invitation` | `email_link` | the invited email | invitation |
 | `sign_in` | `sms_otp` or `email_code` | the sign-in identifier | OTP sign-in (§5.2) |
 | `reset_link` | `email_link` (or the `recovery.via` type's link/code method) | the recovery identifier | reset request |
+| `reset_step_up` | `sms_otp` | the account's verified phone | reset start, when the proof is `sms` (§6) |
 | `email_change_old` | `email_link` | the current email | email change, `confirm_old: required` |
 | `email_change_new` | `email_link` | the new value (`target_value`) | email change |
 | `phone_change` | `sms_otp` | the new value (`target_value`) | phone change |
@@ -127,8 +128,9 @@ On success, `[tx]`:
 
 **Complete:** `POST /v1/registrations/{flowId}/complete` (`handle`):
 - if `pending_types` is not empty, answer `VERIFICATION_INCOMPLETE`;
-- otherwise `[tx]`: set the account `active`, grant the client's `default_roles`, complete the registration flow, open a `sign_in` flow with `first_factor = pwd` and `step = enrolment`, and emit `account.registered`;
-- answer `202 MFA_ENROLMENT_REQUIRED` with the sign-in flow's handle. Enrolment follows TDD-03 §4.
+- otherwise `[tx]`: set the account `active`, grant the client's `default_roles`, complete the registration flow, and emit `account.registered`. Then, by the client's `mfa`:
+  - `required`: open a `sign_in` flow with `first_factor = pwd` and `step = enrolment`, and answer `202 MFA_ENROLMENT_REQUIRED` with its handle. Enrolment follows TDD-03 §4;
+  - `optional`: complete the sign-in in the same transaction (§5.3, `amr` `["pwd"]`) and answer `200` with the tokens.
 
 ## 4. Resume
 
@@ -164,7 +166,10 @@ On success, `[tx]`:
    - `suspended` or `banned` with `restricted_sign_in: false`: answer `ACCOUNT_RESTRICTED`.
 7. Check that roles ∩ client roles is not empty, else `ROLE_NOT_PERMITTED`.
 8. `[tx]` Reset the bucket, rehash if the parameters are old (TDD-03 §1), and open a `sign_in` flow with `first_factor = pwd`.
-9. Answer `202 MFA_REQUIRED`, or `202 MFA_ENROLMENT_REQUIRED` if there is no confirmed TOTP.
+9. Decide the second step (TDD-03 §3.4):
+   - the account has a confirmed TOTP: answer `202 MFA_REQUIRED`;
+   - it has none and the client has `mfa: required`: answer `202 MFA_ENROLMENT_REQUIRED`;
+   - otherwise complete the sign-in in this transaction (§5.3) and answer `200` with the tokens.
 
 ### 5.2 OTP as the first factor
 
@@ -173,14 +178,15 @@ Only for clients with `otp` in `first_factors`, and identifier types with `sign_
 1. `POST /v1/sessions/otp` (`client_id`, `identifier`). Always `202` with a `handle`.
    - If a verified, current identifier matches an account that may sign in, `[tx]`: open a `sign_in` flow (`first_factor` = `sms` or `email`, `step = first_factor`) with one `sign_in` challenge, sent.
    - Otherwise the handle is random and matches nothing.
-2. `POST /v1/sessions/otp/verify` (`handle`, `code`). A handle that matches nothing answers `CODE_INVALID` without `attempts_left`, and so does a wrong code. On success the flow moves to `second_factor` or `enrolment`, as in §5.1 step 9.
+2. `POST /v1/sessions/otp/verify` (`handle`, `code`). A handle that matches nothing answers `CODE_INVALID` without `attempts_left`, and so does a wrong code. On success the second step is decided as in §5.1 step 9: `202 MFA_REQUIRED`, `202 MFA_ENROLMENT_REQUIRED`, or `200` with the tokens.
 
 Enumeration through this path is no worse than through registration, which already reveals verified
 identifiers. The per-IP and per-value limits bound it.
 
 ### 5.3 Second factor and completion
 
-Specified in TDD-03 §3 and §4. Completing a `sign_in` flow `[tx]`:
+The second step, when there is one, is specified in TDD-03 §3 and §4. Completing a sign-in `[tx]`, whether
+after the first factor alone or after the second:
 - re-reads the status;
 - creates a full or restricted session (TDD-04 §2);
 - completes the flow;
@@ -192,9 +198,14 @@ Specified in TDD-03 §3 and §4. Completing a `sign_in` flow `[tx]`:
 1. **Request.** `POST /v1/password-resets` (`client_id`, `value` of type `recovery.via`). Always `202`.
    - If a verified, current identifier matches an account that is `active`, `suspended` or `banned`, `[tx]`: open a `password_reset` flow with a `reset_link` challenge, sent. The per-account reset limit (3/h) and the per-value send limits apply.
    - The link is `<client.link_base_url>/reset#token=<token>`. Using a fragment keeps the token out of server logs and `Referer` headers.
-2. **Start.** `POST /v1/password-resets/start` (`token`). Find the challenge, open and of purpose `reset_link`. Answer `200` with `flow_id` and `second_factor` (`totp`, or `none` when the account has no confirmed TOTP). Mark `started`.
-3. **Complete.** `POST /v1/password-resets/{flowId}/complete` (`token`, `second_factor` unless `none`, `new_password`):
-   1. Verify the second factor (TDD-03 §3). Failures count, and 5 close the flow.
+2. **Start.** `POST /v1/password-resets/start` (`token`). Find the challenge, open and of purpose `reset_link`. Choose the proof and mark `started`:
+   - `totp` when the account has a confirmed TOTP (a TOTP code or a recovery code);
+   - otherwise `sms` when `recovery.sms_step_up` is on and the account has a verified, current phone. `[tx]` open a `reset_step_up` challenge to that phone and send it (`password_reset_code`; the per-value send limits apply);
+   - otherwise `none`.
+
+   Answer `200` with `flow_id`, `proof` and, for `sms`, `masked_phone` (the last 4 digits).
+3. **Complete.** `POST /v1/password-resets/{flowId}/complete` (`token`, `new_password`, and `second_factor` for `totp` or `code` for `sms`):
+   1. Verify the proof: the second factor (TDD-03 §3), or the SMS code (§2.2). Failures count, and 5 close the flow.
    2. Check the policy, then hash.
    3. `[tx]`:
       - store the hash;
@@ -209,7 +220,7 @@ Specified in TDD-03 §3 and §4. Completing a `sign_in` flow `[tx]`:
 
 ### 7.1 Email, by the account
 
-`POST /v1/me/email-changes` (`current_password`, `second_factor`, `new_email`), with a full session:
+`POST /v1/me/email-changes` (`current_password`, `second_factor` when the account has TOTP, `new_email`), with a full session:
 
 1. Reauthenticate (TDD-03 §5).
 2. Normalise. The new value must differ from the current email and must not be another account's verified email (`IDENTIFIER_TAKEN`).
@@ -236,7 +247,7 @@ applies. The audit records the caller and the actor.
 
 ### 7.3 Phone
 
-1. `POST /v1/me/phone-changes` (`current_password`, `second_factor`, `new_phone`):
+1. `POST /v1/me/phone-changes` (`current_password`, `second_factor` when the account has TOTP, `new_phone`):
    - reauthenticate and normalise; the new value must not be another account's verified phone;
    - `[tx]`: open a `phone_change` flow with a `phone_change` challenge to the new number, sent;
    - answer `202` with `flow_id` and `handle`.
@@ -264,7 +275,7 @@ on a page the product shows.
       - insert the other identifiers, unverified, with one `verify_identifier` challenge each, sent;
       - set `accepted`, replace the handle, and consume the invitation challenge.
    4. Answer `200` with `flow_id`, `handle` and `pending_types`.
-3. **Verify and complete.** The flow continues on the registration endpoints (`/v1/registrations/{flowId}/verify`, `/resend`, `/complete`), which accept `invitation` flows. `complete` grants the invited roles instead of the client's defaults, emits `account.registered` with `via: invitation`, and returns `202 MFA_ENROLMENT_REQUIRED`.
+3. **Verify and complete.** The flow continues on the registration endpoints (`/v1/registrations/{flowId}/verify`, `/resend`, `/complete`), which accept `invitation` flows. `complete` grants the invited roles instead of the client's defaults, emits `account.registered` with `client_id: invitation`, and continues by the invitation client's `mfa`, as for a registration (§3): `202 MFA_ENROLMENT_REQUIRED` or `200` with the tokens.
 
 ### 8.1 Bootstrap
 

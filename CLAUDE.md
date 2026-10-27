@@ -22,7 +22,7 @@ Rules for design and implementation work:
 - Key 1.0 choices that differ from the prototype:
   - UUIDv7 ids;
   - Argon2id with a pepper (not bcrypt);
-  - **mandatory TOTP MFA** with recovery codes;
+  - **optional TOTP MFA** with recovery codes: per account, and a client may require it (`mfa: required`);
   - every account has a password;
   - opaque rotated refresh tokens in PostgreSQL (no Redis blacklists);
   - restricted tokens use auth1's own audience;

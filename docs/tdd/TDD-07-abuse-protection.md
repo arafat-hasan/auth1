@@ -5,7 +5,7 @@
 | Status | Draft |
 | Version | 0.1 |
 | Date | 2026-10-26 |
-| SDD | [design.md](../design.md) 0.3: D-7, D-17, I-21, §12 |
+| SDD | [design.md](../design.md) 0.4: D-7, D-17, I-21, §12 |
 | Owner | Arafat Hasan |
 
 Rate limits, the client IP, sign-in throttling with device cookies, second-factor failure limits,

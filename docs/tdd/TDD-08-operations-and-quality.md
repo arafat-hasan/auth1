@@ -3,9 +3,9 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Version | 0.1 |
-| Date | 2026-10-26 |
-| SDD | [design.md](../design.md) 0.3: D-1, D-18, D-19, §6, §13, §14, §15 |
+| Version | 0.2 |
+| Date | 2026-10-27 |
+| SDD | [design.md](../design.md) 0.4: D-1, D-18, D-19, §6, §13, §14, §15 |
 | Owner | Arafat Hasan |
 
 The binary and its commands, code layout, configuration, secrets, jobs, observability, runbooks,
@@ -91,6 +91,7 @@ clients:
     allowed_roles: [user]
     default_roles: [user]
     first_factors: [password]          # [password] | [password, otp]
+    mfa: optional                      # optional | required (SDD D-8)
     otp_channel: sms                   # when otp is allowed: sms | email
     self_registration: true
     refresh_transport: cookie          # cookie | body
@@ -100,7 +101,7 @@ identifiers:
   email: { required: true, verify: email_link, sign_in: true }
   phone: { required: false, verify: sms_otp, sign_in: false, calling_codes: [] }
 passwords:
-  min_length: 8                        # floor 8
+  min_length: 12                       # floor 8; 15 for strict NIST SP 800-63B-4 conformance (SDD D-7)
   max_length: 128                      # at least 64
   deny_list_file: /config/common-passwords.txt
   pepper_keyring_file: /secrets/pepper/keyring.yaml
@@ -133,6 +134,7 @@ flows:
   pending_registration_ttl: 24h
 recovery:
   via: email
+  sms_step_up: false                   # SMS code for accounts without TOTP that have a verified phone (SDD D-10)
 identifier_changes:
   confirm_old_email: required          # required | notify
 roles:

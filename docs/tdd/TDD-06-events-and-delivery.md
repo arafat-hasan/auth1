@@ -3,9 +3,9 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Version | 0.1 |
-| Date | 2026-10-26 |
-| SDD | [design.md](../design.md) 0.3: D-15, D-16, I-7, I-8, I-15 |
+| Version | 0.2 |
+| Date | 2026-10-27 |
+| SDD | [design.md](../design.md) 0.4: D-15, D-16, I-7, I-8, I-15 |
 | Owner | Arafat Hasan |
 
 The outbox, the relay, the CloudEvents mapping, the delivery port and its adapters, the resolver
@@ -122,8 +122,9 @@ on_behalf_of}`.
 | `account.identifier_changed` | `identifier_type`, `identifier_id`, `previous_identifier_id` |
 | `account.profile_updated` | `changed`: list of `display_name`, `locale` |
 | `account.password_changed` | — |
-| `account.password_reset` | `second_factor` (`totp`, `recovery_code`, `none`) |
-| `account.mfa_enrolled` | — |
+| `account.password_reset` | `second_factor` (`totp`, `recovery_code`, `sms`, `none`) |
+| `account.mfa_enrolled` | `via` (`self_service`, `sign_in`) |
+| `account.mfa_removed` | — |
 | `account.mfa_reset` | — |
 | `account.status_changed` | `status`, `previous_status`, `reason_code`, `until`, `sessions_revoked` |
 | `account.roles_changed` | `roles`, `previous_roles`, `added`, `removed` |
@@ -188,6 +189,7 @@ is harmless. Each call is audited (request id, number resolved, number omitted) 
 | Resume | `auth.registration_resume` | the identifier's | `code` or `link` | Yes |
 | Sign-in code | `auth.sign_in_code` | SMS or email | `code` | Yes |
 | Reset link | `auth.password_reset_link` | Email | `link` | Yes |
+| Reset step-up (accounts without TOTP, `recovery.sms_step_up`) | `auth.password_reset_code` | SMS | `code` | Yes |
 | Email change, old address | `auth.email_change_confirm_old` | Email | `link` | Yes |
 | Email change, new address | `auth.email_change_confirm_new` | Email | `link` | Yes |
 | Phone change | `auth.phone_change_code` | SMS | `code` | Yes |
@@ -195,7 +197,7 @@ is harmless. Each call is audited (request id, number resolved, number omitted) 
 | Notice: password changed / reset | `auth.notice_password_changed` | Email | `occurred_at`, `how` | No |
 | Notice: email change requested | `auth.notice_email_change_requested` | Email (old address) | `occurred_at` | No |
 | Notice: identifier changed | `auth.notice_identifier_changed` | Email (old address, or the account's email) | `type`, `occurred_at` | No |
-| Notice: MFA enrolled / replaced / reset | `auth.notice_mfa_changed` | Email | `change`, `occurred_at` | No |
+| Notice: MFA enrolled / replaced / removed / reset | `auth.notice_mfa_changed` | Email | `change`, `occurred_at` | No |
 | Notice: recovery codes regenerated / one used | `auth.notice_recovery_codes` | Email | `change`, `remaining_codes` | No |
 | Notice: sessions revoked | `auth.notice_sessions_revoked` | Email | `reason`, `occurred_at` | No |
 | Notice: new sign-in *(off by default)* | `auth.notice_new_sign_in` | Email | `client_id`, `user_agent`, `occurred_at` | No |

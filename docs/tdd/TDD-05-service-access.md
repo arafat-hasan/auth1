@@ -5,7 +5,7 @@
 | Status | Draft |
 | Version | 0.1 |
 | Date | 2026-10-26 |
-| SDD | [design.md](../design.md) 0.3: D-13, D-14, I-9 |
+| SDD | [design.md](../design.md) 0.4: D-13, D-14, I-9 |
 | Owner | Arafat Hasan |
 
 How backend services authenticate to auth1, how scopes are enforced, how idempotency works, and the

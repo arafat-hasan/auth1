@@ -4,11 +4,11 @@
 |---|---|
 | Document | Software Design Description (SDD). High level: *what* auth1 is and *why* it is built this way |
 | Status | Draft |
-| Version | 0.3 (design of auth1 1.0) |
-| Date | 2026-10-26 |
+| Version | 0.4 (design of auth1 1.0) |
+| Date | 2026-10-27 |
 | Owner | Arafat Hasan |
 | Detailed designs | [`docs/tdd/`](tdd/): TDD-01 … TDD-08 (§16) |
-| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.3 |
+| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.4 |
 | Depends on | PostgreSQL 18, Redis, an AMQP 0-9-1 broker, a workload-identity source (a service mesh, or client credentials), a message-delivery service or provider |
 
 auth1 is an identity service: accounts, credentials, second factors, identifier verification,
@@ -64,7 +64,7 @@ on a wire shape, the contract wins and the TDD is corrected.
 
 | Term | Meaning |
 |---|---|
-| Account | A person known to auth1. Has a status, roles, identifiers, a password and a second factor |
+| Account | A person known to auth1. Has a status, roles, identifiers, a password and, optionally, a second factor |
 | Identifier | A value a person is known by (email, phone, …). Has a type, may be verified, may be current or retired |
 | Blind index | An HMAC of a normalised value, used to find and de-duplicate encrypted values without decrypting them |
 | Client | A first-party application that people sign in to (a web app, a console, a mobile app) |
@@ -76,7 +76,7 @@ on a wire shape, the contract wins and the TDD is corrected.
 | Session | The result of a complete sign-in, per client. Holds a chain of refresh tokens |
 | Restricted session | A session of a suspended or banned account. Its tokens are for auth1 only |
 | Second factor | TOTP, or one of the account's recovery codes |
-| Enrolment | Registering the first TOTP factor. Required before the first full session |
+| Enrolment | Registering a TOTP factor: by the person at any time, or during sign-in on a client that requires MFA |
 | Outbox | A table written in the same transaction as a change, relayed afterwards to the broker or the notification service |
 | Resolver hook | The endpoint a notification service calls at send time to turn auth1's references into an address and a secret |
 | Keyring | The set of signing keys, each `next`, `active` or `retired` |
@@ -95,7 +95,7 @@ stated here so that this document stands on its own.
 | N-2 | An identifier is **unique only once verified**. A configurable policy for formats and allowed country calling codes |
 | N-3 | **Every account has a password**, stored as an adaptive hash, with a policy that includes "must not contain an identifier" |
 | N-4 | First-factor sign-in methods chosen per client: password, or an OTP to a sign-in identifier. Verifying an identifier by OTP is separate from signing in by OTP |
-| N-5 | Recovery of a forgotten password by a link to a verified identifier, **with the second factor** |
+| N-5 | Recovery of a forgotten password by a link to a verified identifier, **with the second factor when the account has one**, and a configurable SMS step-up otherwise |
 | N-6 | Changing an identifier safely: an email change confirmed by both addresses (or, by policy, notified to the old one); a phone change verified on the new number; uniqueness checked |
 | N-7 | **Account states** (pending, active, suspended until a date, banned, deleted) with reason codes, honoured by every flow, visible in tokens and introspection, with a **restricted session** so a client can explain the state |
 | N-8 | **Lifecycle events**, at least once, ordered per account, with stable ids, through an outbox to the service's own exchange, with no secrets or identifier values |
@@ -109,7 +109,7 @@ stated here so that this document stands on its own.
 | N-16 | Staff administration through the product's services: inviting accounts, granting and revoking roles, changing state, closing accounts, resetting a lost second factor |
 | N-17 | Runs as part of the product's system: its database, broker, mesh and observability; HA; 99.9% for sign-in, refresh and JWKS |
 | N-18 | Nothing product-specific in code |
-| N-19 | **Multi-factor authentication is mandatory.** Every account enrols TOTP before its first full session; recovery codes cover a lost device; a service-driven reset covers losing both |
+| N-19 | **Optional multi-factor authentication.** Any account may enrol TOTP, with recovery codes for a lost device; a client may require it; a service-driven reset covers losing both |
 | N-20 | **Security notifications** to the account's own addresses when its password, identifiers, second factor or sessions change |
 
 ### 2.1 Traceability
@@ -293,8 +293,8 @@ Each decision gives what is decided, why, and what was rejected. Detail is in th
 | The service callers and their scopes; client-credentials clients | Scope enforcement |
 | The event exchange and `source` | Outbox and relay |
 
-**Not configurable:** that MFA is required, that every account has a password, and the security
-floors (C-3).
+**Not configurable:** that every account has a password, that an account with TOTP is always asked
+for it, and the security floors (C-3).
 
 **A guard in CI.** A test scans the code, the default configuration and the migrations for a
 configured list of product words, and fails on any match. Each product keeps its configuration in
@@ -375,7 +375,7 @@ States: `pending`, `active`, `suspended`, `banned`, `deleted`. `suspended` and `
 `reason_code` from the configured list; `suspended` may carry `until`. The state machine and the
 behaviour of every flow in every state are in §8.1.
 
-- **Restricted session.** A suspended or banned account that signs in, with both factors, gets a restricted session. Its access tokens have **auth1's own audience** (`tokens.self_audience`), never a client's, so every relying service refuses them through its normal audience check: a forgotten status check fails closed. auth1 accepts them only on `GET /v1/me`, the session list and sign-out. The token response carries `account_status` and `status_until`, so the client can explain the state. Whether a sanctioned account may sign in at all is configuration (`statuses.restricted_sign_in`); if not, it gets `ACCOUNT_RESTRICTED`.
+- **Restricted session.** A suspended or banned account that signs in, with every factor its sign-in requires, gets a restricted session. Its access tokens have **auth1's own audience** (`tokens.self_audience`), never a client's, so every relying service refuses them through its normal audience check: a forgotten status check fails closed. auth1 accepts them only on `GET /v1/me`, the session list and sign-out. The token response carries `account_status` and `status_until`, so the client can explain the state. Whether a sanctioned account may sign in at all is configuration (`statuses.restricted_sign_in`); if not, it gets `ACCOUNT_RESTRICTED`.
 - **A status change leaves sessions alone by default.** Every refresh reads the account's current status and roles (one primary-key read), so the first refresh after a change carries it. The caller may ask for `revoke_sessions: true`, for example on a ban for account takeover.
 - **`until` is information only.** auth1 never changes a status on a timer. A product that wants automatic reinstatement runs it where it decides sanctions.
 - **Deletion** revokes every session, erases the password hash, the TOTP factor and the recovery codes, and releases the identifiers. The account row and identifiers remain, encrypted, for audit (D-19).
@@ -405,7 +405,8 @@ A **client** is configured per deployment:
 | `audience` | The `aud` of full tokens issued to it |
 | `allowed_roles` | Token roles = account roles ∩ allowed roles. An empty intersection refuses sign-in with `ROLE_NOT_PERMITTED` |
 | `default_roles` | Given to accounts that register through it |
-| `first_factors` | `[password]` or `[password, otp]`. The second factor is always TOTP (D-8) |
+| `first_factors` | `[password]` or `[password, otp]`. The second factor, when used, is TOTP (D-8) |
+| `mfa` | `optional` (default) or `required`. On a `required` client, an account without TOTP must enrol before it gets a session (D-8) |
 | `self_registration` | Whether it may start registrations. Otherwise accounts arrive by invitation |
 | `refresh_transport` | `cookie` (browser) or `body` (native app) |
 | `origins`, `link_base_url` | Allowed origins (also the CORS allow-list); the base URL of emailed links |
@@ -432,7 +433,8 @@ role is removed, the account's sessions are revoked *(cfg: `roles.revoke_session
 ### D-7. Passwords
 
 - **Every account that is not `pending` or `deleted` has a password** (I-17). There is no passwordless account.
-- **Policy.** Length 8 to 128 characters *(cfg; floor 8, maximum at least 64)*. No composition rules. Refused if it equals or contains, case-insensitively, any identifier of the account (an email, its local part, a phone in E.164 or national form), or appears in the deny-list. The 8-character floor follows NIST SP 800-63B-4 for a password that is always used with a second factor, which N-19 guarantees.
+- **Policy.** Length 12 to 128 characters by default *(cfg; floor 8, maximum at least 64)*. No composition rules. Refused if it equals or contains, case-insensitively, any identifier of the account (an email, its local part, a phone in E.164 or national form), or appears in the deny-list.
+- **Length and NIST.** NIST SP 800-63B-4 asks for 15 characters when a password is the only factor, and allows 8 alongside a second factor. Since MFA is optional (D-8), many accounts sign in with a password alone. The default of 12 is a **conscious deviation** for usability, offset by the deny-list, the identifier check, throttling (D-17) and breached-password screening at the deny-list's size. A deployment that wants strict conformance sets `min_length: 15`.
 - **Hash: Argon2id** (RFC 9106), stored as a PHC string with its parameters. Defaults: 64 MiB memory, 2 iterations, parallelism 1 *(cfg)*. Floors: 19 MiB, 2 iterations (the OWASP minimum profile). The parameters are tuned so one hash takes about 100–250 ms on the target CPU (O-3).
 - **Pepper.** The password is HMAC-SHA256'd under a secret pepper key before hashing. A database dump alone cannot be attacked offline. The pepper's key id is stored beside the hash, so the pepper can be rotated by rehashing at sign-in.
 - **Bounded memory.** A semaphore per replica bounds concurrent hashes (`max_concurrent` × memory is the peak). A request that cannot get a slot within a short wait gets `503 UNAVAILABLE` with `Retry-After`. Hashing never runs inside a database transaction.
@@ -450,32 +452,49 @@ role is removed, the account's sessions are revoked *(cfg: `roles.revoke_session
 
 ### D-8. Multi-factor authentication
 
-MFA is **mandatory**: there is no full session without a second factor (I-16).
+MFA is **optional for each account**, and **a client may require it**. An account that has a second
+factor is always asked for it (I-16).
 
 - **Factors.** TOTP (RFC 6238: 6 digits, 30-second step, ±1 step of drift *(cfg)*, HMAC-SHA1 for authenticator-app compatibility), and **recovery codes**: 10 single-use codes of about 50 bits each, shown once, stored as MACs.
 - **One TOTP factor per account** in 1.0. Its secret is encrypted per field. The last accepted step is recorded, so a code is never accepted twice (I-19).
-- **Enrolment is part of the first sign-in.** After the first factor, an account with no confirmed TOTP gets `202 MFA_ENROLMENT_REQUIRED` and a flow handle, never a session. The client asks for a secret and an `otpauth://` URI, the person confirms with a first code, the recovery codes are returned once, and only then are tokens issued. Registration and invitation end the same way.
-- **Every sign-in asks for the second factor** after the first: `202 MFA_REQUIRED` with a flow handle, then a TOTP code or a recovery code. The sign-in flow allows 5 second-factor attempts *(cfg)* and lives 10 minutes *(cfg)*.
-- **Replacing the factor** (a new phone) needs reauthentication (D-9), then a new secret confirmed by a code. The old factor is removed only when the new one is confirmed. MFA cannot be turned off.
+- **Client policy.** Each client has `mfa: optional` (default) or `required` (D-6). A product requires MFA where it matters, for example on a staff console, and leaves it optional elsewhere.
+- **Sign-in.** After the first factor:
+  - an account with a confirmed TOTP gets `202 MFA_REQUIRED` and a flow handle, on **every** client, then gives a TOTP code or a recovery code;
+  - an account without one, on a `required` client, gets `202 MFA_ENROLMENT_REQUIRED` and must enrol before any session is issued;
+  - otherwise it gets its tokens at once (`200`).
+
+  The sign-in flow allows 5 second-factor attempts *(cfg)* and lives 10 minutes *(cfg)*.
+- **Enrolment** has two entry points:
+  - **Self-service:** a signed-in person enables TOTP from `/v1/me/totp` with reauthentication (D-9).
+  - **Forced:** inside sign-in on a `required` client.
+
+  Either way the person confirms a first code, the recovery codes are returned once, and `account.mfa_enrolled` is emitted. Registration and invitation completion lead to forced enrolment only on a `required` client; otherwise they sign in at once.
+- **Removing MFA.** A person may turn TOTP off with reauthentication (D-9). That erases the factor and the recovery codes, sends a notice, and emits `account.mfa_removed`. The account's next sign-in on a `required` client enrols again.
+- **Replacing the factor** (a new phone) needs reauthentication, then a new secret confirmed by a code. The old factor stays in use until the new one is confirmed.
 - **Recovery codes** can be regenerated with reauthentication; that replaces all of them. `GET /v1/me` shows how many remain. Using one sends a notice.
-- **Losing both the device and the recovery codes.** A product service with `accounts:mfa:reset`, after its own identity proofing, calls `POST /v1/accounts/{id}/mfa/reset`. This erases the factor and the codes, revokes every session, sends a notice, and emits `account.mfa_reset`. The next sign-in enrols again.
-- **`amr`.** The first factor (`pwd`, `sms` for an SMS code, `email` for an email code) plus the second (`otp` for TOTP, `rcode` for a recovery code), plus `mfa`. `email` and `rcode` are auth1 values outside the RFC 8176 registry.
-- **Restricted sessions** need both factors too. The status is applied after the second factor.
+- **Losing both the device and the recovery codes.** A product service with `accounts:mfa:reset`, after its own identity proofing, calls `POST /v1/accounts/{id}/mfa/reset`. This erases the factor and the codes, revokes every session, sends a notice, and emits `account.mfa_reset`.
+- **`amr`.** The first factor (`pwd`, `sms` for an SMS code, `email` for an email code), plus, when a second factor was given, `otp` for TOTP or `rcode` for a recovery code, and `mfa`. `email` and `rcode` are auth1 values outside the RFC 8176 registry. A relying service that wants MFA for an operation checks that `amr` contains `mfa`.
+- **Restricted sessions** follow the same rules. The status is applied after the factors.
 
 | Option | Verdict |
 |---|---|
-| MFA optional per client (0.2) | Rejected. A product decision: MFA is required |
+| MFA mandatory for every account (0.3) | Rejected. A product decision: MFA stays optional, and a client can require it where it matters |
+| MFA purely an account choice, with no client policy | Rejected. There would be no way to require MFA for staff or administrative access |
+| Client policy only, with no self-service enrolment (0.2) | Rejected. People could not protect their own accounts on optional clients |
 | SMS or email code as the second factor | Rejected. SMS is open to SIM swap and costs money per attempt (NIST calls it "restricted"). Email is also the recovery channel, so an email factor plus an email reset would be one factor |
-| **TOTP + recovery codes, enrolment forced at first sign-in, a service-driven reset** | **Chosen** |
+| **Optional TOTP + recovery codes per account; `mfa: required` per client; self-service enrolment and removal; a service-driven reset** | **Chosen** |
 | WebAuthn / passkeys | Planned after 1.0 as a second TOTP-equivalent factor, and the phishing-resistant one (O-5) |
 
-*Detail: TDD-03 §3–§6.*
+*Detail: TDD-03 §3–§7.*
 
 ### D-9. Reauthentication for sensitive operations
 
-A **sensitive operation** needs, in the same request, the current password **and** a second-factor
-code (TOTP or recovery code): changing the password, changing an email or phone, replacing the TOTP
-factor, regenerating recovery codes.
+A **sensitive operation** needs, in the same request, the current password **and**, when the account
+has TOTP, a second-factor code (TOTP or recovery code). The sensitive operations are:
+- changing the password;
+- changing an email or phone;
+- enabling, replacing or removing the TOTP factor;
+- regenerating recovery codes.
 
 - A wrong or missing value answers `403 REAUTHENTICATION_REQUIRED`, and counts as a failed sign-in and a failed factor verification for the account (D-17).
 - Restricted sessions cannot perform sensitive operations (`ACCOUNT_RESTRICTED`).
@@ -484,23 +503,27 @@ factor, regenerating recovery codes.
 | Option | Verdict |
 |---|---|
 | A freshness window on `auth_time` (sudo mode) | Rejected for 1.0. It needs state and a re-sign-in path, and a stolen access token would carry the freshness with it |
-| Password only (0.2) | Rejected. A stolen password alone would be enough to take over the account's email |
-| **Password and second factor in the request** | **Chosen.** Stateless, and the same proof as a sign-in |
+| Password only, even for accounts with TOTP (0.2) | Rejected. A stolen password alone would be enough to take over the account's email |
+| **Password, plus the second factor when the account has one, in the request** | **Chosen.** Stateless, and the same proof as a sign-in |
 
 ### D-10. Recovery
 
 1. `POST /v1/password-resets` with an identifier of type `recovery.via` *(cfg, default `email`)*. Always 202. If a current, verified identifier matches an account that is not `deleted` or `pending`, auth1 opens a reset flow and sends `password_reset_link`.
-2. The link opens the client's page, which calls `POST /v1/password-resets/start` with the token. auth1 answers which second factor is required: TOTP or a recovery code, or none if the account never completed enrolment.
-3. `POST /v1/password-resets/{flowId}/complete` with the token, the second-factor code and the new password. auth1 checks the policy, stores the new hash, revokes every session, leaves the status and the TOTP factor unchanged, sends a notice and emits `account.password_reset`.
+2. The link opens the client's page, which calls `POST /v1/password-resets/start` with the token. auth1 answers which proof completing the reset needs:
+   - `totp` (a TOTP code or a recovery code) when the account has TOTP;
+   - otherwise `sms` when `recovery.sms_step_up` *(cfg, default off)* is on and the account has a verified phone, in which case auth1 sends a code (`password_reset_code`) and returns the masked phone;
+   - otherwise `none`.
+3. `POST /v1/password-resets/{flowId}/complete` with the token, the proof `start` asked for, and the new password. auth1 checks the policy, stores the new hash, revokes every session, leaves the status and the TOTP factor unchanged, sends a notice and emits `account.password_reset`.
 
-- **Possession of the mailbox alone never resets an enrolled account.** That would let whoever holds the email bypass MFA.
-- An account that **never completed enrolment** (it closed the browser at enrolment) can reset with the link alone. It never had a full session, so nothing is lost, and its next sign-in enrols.
+- **Possession of the mailbox alone never resets an account with TOTP.** That would let whoever holds the email bypass MFA.
+- **An account without TOTP** resets with the link alone, unless the SMS step-up applies. For such an account the mailbox is the recovery factor: the residual risk is in §12, and a person who wants more protection enables TOTP.
 - A person who lost **both the password and the second factor** goes through the product's support and `POST /v1/accounts/{id}/mfa/reset` (D-8), then resets.
 
 | Option | Verdict |
 |---|---|
-| SMS step-up by policy (0.2) | Rejected. Mandatory TOTP supersedes it, and SMS is the weaker factor |
-| Reset by link alone, then MFA at the next sign-in | Rejected. The email owner would get the password, and the second factor would be all that stands in the way |
+| Reset by link alone for every account | Rejected. For an account with TOTP, the email owner would bypass the second factor |
+| SMS step-up always required when a phone exists | Rejected as the default. SIM swap and cost make it a weak, expensive factor; it is available by configuration |
+| **The account's TOTP when it has one; otherwise the link, plus SMS when configured** | **Chosen** |
 
 *Detail: TDD-02 §6.*
 
@@ -512,7 +535,7 @@ factor, regenerating recovery codes.
 - **When the old mailbox is lost** and the policy is `required`, the product's support, after its own identity proofing, starts the change through account control (`POST /v1/accounts/{id}/identifier-changes`, `accounts:identifiers:write`). Only the new address confirms; the account's other addresses get a notice.
 - **Phone change.** Reauthentication. An OTP goes to the new number; on success the unique index settles uniqueness and the swap applies. The account's email receives a notice.
 - **Invitation.** A service with `accounts:invite` invites an email with a display name, a client and roles. An email that is another account's verified email gets `409 IDENTIFIER_TAKEN`. Otherwise auth1 creates a `pending` account, opens an `invitation` flow and sends `invitation_link`.
-- **Accepting an invitation** takes the link token (which verifies the email), a password, and a value for every other identifier the policy requires. The flow then continues exactly like a registration: one challenge per remaining identifier, then `complete`, then MFA enrolment (D-8). An invited account is held to the same identifier policy as a registered one.
+- **Accepting an invitation** takes the link token (which verifies the email), a password, and a value for every other identifier the policy requires. The flow then continues exactly like a registration: one challenge per remaining identifier, then `complete`, then, on a client that requires MFA, enrolment (D-8). An invited account is held to the same identifier policy as a registered one.
 - Invitations expire after 72 h *(cfg)*; an expired invitation retires its identifiers (D-3).
 - **Bootstrap.** If no account holds a role in `bootstrap.roles`, auth1 invites each email in `bootstrap.emails_file` with that role at start-up. It does nothing once one exists.
 
@@ -544,7 +567,7 @@ rotates the token.
 
 **Revocation.**
 - Sign-out revokes the session.
-- A password change, password reset, MFA reset or deletion revokes all of them.
+- A password change (all but the current one), password reset, MFA reset or deletion revokes all of them.
 - A status or role change takes effect at the next refresh, or at once with `revoke_sessions` (D-5).
 - **Accepted residual risk:** an access token stays valid at relying services for up to 15 minutes after its session is revoked. A relying service that needs immediacy introspects.
 
@@ -641,7 +664,7 @@ outbox row's UUIDv7; `subject` is the account id; the extension `accountversion`
 **Types.**
 - `account.registered`, `account.identifier_verified`, `account.identifier_changed`
 - `account.profile_updated`, `account.password_changed`, `account.password_reset`
-- `account.mfa_enrolled`, `account.mfa_reset`
+- `account.mfa_enrolled`, `account.mfa_removed`, `account.mfa_reset`
 - `account.status_changed`, `account.roles_changed`, `account.sessions_revoked`
 - `account.registration_expired`, `account.deleted`
 
@@ -688,7 +711,7 @@ A **`MessageDelivery` port** with three adapters, chosen by `delivery.adapter`:
 
 **Secret-bearing messages:**
 - verifying a phone or an email
-- the reset link
+- the reset link and the reset step-up code
 - email-change confirmations
 - the phone-change code
 - the invitation
@@ -698,7 +721,7 @@ A **`MessageDelivery` port** with three adapters, chosen by `delivery.adapter`:
 **Security notices** carry no secret, only a recipient reference and non-secret variables:
 - the password was changed or reset
 - an email or phone change was requested or applied
-- MFA was enrolled or reset
+- MFA was enrolled, replaced, removed or reset
 - recovery codes were regenerated
 - a recovery code was used
 - the sessions were revoked
@@ -802,9 +825,9 @@ A refused transition is `409 STATUS_TRANSITION_INVALID`.
 
 | Flow | `pending` | `active` | `suspended`, `banned` | `deleted` |
 |---|---|---|---|---|
-| Sign in | `REGISTRATION_INCOMPLETE` if the sign-in identifier is verified and the password correct; otherwise `INVALID_CREDENTIALS` | Both factors → full session | Both factors → restricted session *(cfg: or `ACCOUNT_RESTRICTED`)* | `INVALID_CREDENTIALS` |
+| Sign in | `REGISTRATION_INCOMPLETE` if the sign-in identifier is verified and the password correct; otherwise `INVALID_CREDENTIALS` | Required factors (D-8) → full session | Required factors → restricted session *(cfg: or `ACCOUNT_RESTRICTED`)* | `INVALID_CREDENTIALS` |
 | Refresh | — | Full tokens | Restricted tokens | Refused; sessions revoked |
-| Password reset | Nothing sent; 202 | Allowed, with the second factor | Allowed; status unchanged | Nothing sent; 202 |
+| Password reset | Nothing sent; 202 | Allowed, with the proof of D-10 | Allowed; status unchanged | Nothing sent; 202 |
 | Sensitive operations (D-9) | — | Allowed | `ACCOUNT_RESTRICTED` | — |
 | Resume | Allowed | — | — | — |
 | Introspection | — | Active, `status: active` | Active, `status` as stored | Inactive |
@@ -839,18 +862,19 @@ restricted at each refresh, from the account's status at that moment.
 
 | Flow | Started by | Proofs needed | Ends with | TDD |
 |---|---|---|---|---|
-| Registration | Browser, on a client with `self_registration` | Each required identifier verified by its method; a password | MFA enrolment, then a session | TDD-02 §3 |
+| Registration | Browser, on a client with `self_registration` | Each required identifier verified by its method; a password | A session (after enrolment, on a `required` client) | TDD-02 §3 |
 | Resume | Browser | Possession of an identifier of the pending account | A new handle | TDD-02 §4 |
-| Invitation | Service (`accounts:invite`), then browser | The link (email); the other required identifiers; a password | MFA enrolment, then a session | TDD-02 §8 |
-| Sign-in | Browser | First factor (password, or OTP where allowed), then TOTP or a recovery code | A session (full or restricted) | TDD-02 §5, TDD-03 |
-| Enrolment | Inside sign-in, registration, invitation | First factor already passed; a first TOTP code | Recovery codes, a session | TDD-03 §4 |
+| Invitation | Service (`accounts:invite`), then browser | The link (email); the other required identifiers; a password | A session (after enrolment, on a `required` client) | TDD-02 §8 |
+| Sign-in | Browser | First factor (password, or OTP where allowed); then TOTP or a recovery code if the account has TOTP | A session (full or restricted) | TDD-02 §5, TDD-03 |
+| Enrolment, forced | Inside sign-in on a `required` client | First factor already passed; a first TOTP code | Recovery codes, a session | TDD-03 §4 |
+| Enrolment, self-service | Signed-in person | Reauthentication; a first TOTP code | Recovery codes | TDD-03 §4 |
 | Refresh | Browser or native client | The current refresh token | New tokens | TDD-04 §3 |
-| Password reset | Browser | The link; the second factor | All sessions revoked | TDD-02 §6 |
-| Password change | Signed-in person | Password and second factor | Other sessions revoked | TDD-03 §2 |
-| Email change | Signed-in person | Password and second factor; the new address (and the old, by policy) | Identifier replaced | TDD-02 §7 |
-| Phone change | Signed-in person | Password and second factor; the new number | Identifier replaced | TDD-02 §7 |
+| Password reset | Browser | The link; TOTP or a recovery code if enrolled, else an SMS code if configured | All sessions revoked | TDD-02 §6 |
+| Password change | Signed-in person | Reauthentication (D-9) | Other sessions revoked | TDD-03 §2 |
+| Email change | Signed-in person | Reauthentication (D-9); the new address (and the old, by policy) | Identifier replaced | TDD-02 §7 |
+| Phone change | Signed-in person | Reauthentication (D-9); the new number | Identifier replaced | TDD-02 §7 |
 | Support identifier change | Service (`accounts:identifiers:write`) | The new address | Identifier replaced | TDD-02 §7 |
-| MFA replace, recovery-code regeneration | Signed-in person | Password and second factor | New factor or codes | TDD-03 §5 |
+| MFA replace, removal, recovery-code regeneration | Signed-in person | Reauthentication (D-9) | New factor, no factor, or new codes | TDD-03 §5 |
 | MFA reset | Service (`accounts:mfa:reset`) | The product's identity proofing | Factor erased, sessions revoked | TDD-03 §6 |
 | Status change, role change, closing | Service | Scope and idempotency key | §8.1 | TDD-05 §5 |
 
@@ -866,12 +890,14 @@ sequenceDiagram
   A->>A: Argon2id verify (outside any transaction)
   A->>A: On failure: count per account and device, audit [tx]. 401 INVALID_CREDENTIALS
   A->>A: On success: sign_in flow, first factor recorded [tx]
-  alt TOTP confirmed
+  alt Account has TOTP
     A-->>B: 202 MFA_REQUIRED: flow handle
     B->>A: POST /v1/sessions/mfa: handle, TOTP or recovery code
-  else No TOTP yet
+  else No TOTP, client requires MFA
     A-->>B: 202 MFA_ENROLMENT_REQUIRED: flow handle
     B->>A: Enrolment (TDD-03 §4)
+  else No TOTP, MFA optional
+    Note over A: No second step
   end
   A->>A: Status check, roles ∩ client roles. Session, refresh token, flow completed, audit [tx]
   A-->>B: 200: access token, account status, status until. Set-Cookie: refresh token
@@ -896,8 +922,13 @@ sequenceDiagram
   A->>A: Identifier verified, secret erased, account.identifier_verified [tx]
   B->>A: POST /v1/registrations/{flowId}/complete: handle
   A->>A: All required verified: status active, default roles, account.registered [tx]
-  A-->>B: 202 MFA_ENROLMENT_REQUIRED: handle
-  B->>A: Enrolment, then tokens (TDD-03 §4)
+  alt Client requires MFA
+    A-->>B: 202 MFA_ENROLMENT_REQUIRED: handle
+    B->>A: Enrolment, then tokens (TDD-03 §4)
+  else MFA optional
+    A->>A: Session, refresh token [tx]
+    A-->>B: 200: access token. Set-Cookie: refresh token
+  end
 ```
 
 ### 9.3 Refresh and reuse detection
@@ -973,10 +1004,11 @@ The other flows are in TDD-02 and TDD-03.
 | `ACCOUNT_RESTRICTED` | 403 | Not available to a suspended or banned account | No |
 | `SESSION_INVALID` | 401 | The refresh token is unknown, expired, rotated or its session revoked | No. Sign in again |
 | `TOKEN_INVALID` | 401 | A bearer token on an auth1 endpoint is invalid | No |
-| `REAUTHENTICATION_REQUIRED` | 403 | The password or second factor is missing or wrong on a sensitive operation | No |
+| `REAUTHENTICATION_REQUIRED` | 403 | The password, or the second factor of an account with TOTP, is missing or wrong on a sensitive operation | No |
 | `CALLER_NOT_ALLOWED` | 403 | The workload identity or client lacks the scope | No |
 | `IDEMPOTENCY_KEY_REUSED` | 422 | The key was used for a different request | No |
 | `STATUS_TRANSITION_INVALID` | 409 | For example, suspending a `pending` or `deleted` account | No |
+| `MFA_STATE_INVALID` | 409 | The operation does not fit the account's MFA state: enabling TOTP when it is on, replacing it or regenerating codes when it is off | No |
 | `ROLE_UNKNOWN` | 422 | A role outside the catalog | No |
 | `NOT_FOUND` | 404 | The account or flow does not exist | No |
 | `RATE_LIMITED` | 429 | A limit of D-17; `retry_after` | Yes |
@@ -1007,7 +1039,7 @@ enforced is in the TDD named.
 | I-13 | A refresh successor's raw value exists only inside the grace window | TDD-04 |
 | I-14 | A key signs only after it has been published for `min_publish_before_use` | TDD-04 |
 | I-15 | Resolving a delivery changes no counter | TDD-06 |
-| I-16 | A full session exists only for an account with a confirmed TOTP factor, and its `amr` contains `mfa` | TDD-03 |
+| I-16 | A session of an account with a confirmed TOTP factor, or on a client with `mfa: required`, has `amr` containing `mfa` | TDD-03 |
 | I-17 | Every account that is not `pending` or `deleted` has a password | TDD-01 |
 | I-18 | A recovery code is accepted at most once | TDD-03 |
 | I-19 | A TOTP time step is accepted at most once per account | TDD-03 |
@@ -1021,11 +1053,11 @@ account state, the service APIs. Residual risks are accepted by this design.
 
 | Threat (STRIDE) | Mitigation | Residual |
 |---|---|---|
-| Credential stuffing, password spraying (S) | Per-IP windows; per-account and per-device delays; deny-list; mandatory TOTP | Distributed slow attacks find valid passwords, which still need the second factor |
+| Credential stuffing, password spraying (S) | Per-IP windows; per-account and per-device delays; deny-list; identifier check; optional TOTP, required on `required` clients | Distributed slow attacks find valid passwords; accounts without TOTP are then taken over. Products encourage enrolment and require it on sensitive clients |
 | Brute-forcing an OTP, TOTP or recovery code (S) | 3 attempts per code; 5 per sign-in flow; 10 second-factor failures per account per hour; MACs compared in constant time | — |
 | Real-time phishing of password and TOTP (S) | Origin checks; notices of new sign-ins *(cfg)* | TOTP is phishable. WebAuthn after 1.0 (O-5) |
-| SIM swap (S) | SMS is never a second factor; an SMS sign-in OTP still needs TOTP | — |
-| Account takeover through the mailbox (S) | Reset needs the second factor (D-10); email change needs password, second factor and, by default, the old address | Support-driven changes depend on the product's identity proofing |
+| SIM swap (S) | SMS is never a second factor; an SMS sign-in OTP needs TOTP when the account has it; the SMS reset step-up is off by default | For an account without TOTP, SMS sign-in or the SMS step-up rests on the phone line alone |
+| Account takeover through the mailbox (S) | Reset needs TOTP when enrolled (D-10); email change needs reauthentication and, by default, the old address | For an account without TOTP (and without the SMS step-up), the mailbox alone resets the password. Support-driven changes depend on the product's identity proofing |
 | Refresh-token theft (S, I) | `HttpOnly` cookie; rotation with reuse detection; idle and absolute expiry | A thief who refreshes first wins until the owner's next refresh revokes the session |
 | Access-token theft (I) | 15-minute lifetime; no personal data; kept in memory by clients | Valid until expiry unless the relying service introspects |
 | CSRF (T) | `SameSite=Strict`; JSON only; `Origin` check | — |
@@ -1106,7 +1138,7 @@ Every alert has a runbook.
 | T-2 | A phone outside the calling-code list is refused | N-2 |
 | T-3 | A password containing the account's phone in national form is refused | N-3 |
 | T-4 | OTP sign-in disabled for a client while phone verification works | N-4 |
-| T-5 | A reset of an enrolled account fails without the second factor and succeeds with it; it leaves a suspended status and the TOTP factor unchanged | N-5, N-7 |
+| T-5 | A reset of an account with TOTP fails without the second factor and succeeds with it; it leaves a suspended status and the TOTP factor unchanged | N-5, N-7 |
 | T-6 | With `confirm_old_email: required`, an email change applies only after both confirmations; with `notify`, after the new one, and the old address gets a notice | N-6, N-20 |
 | T-7 | Each state × flow cell of §8.1 | N-7 |
 | T-8 | A banned account's refresh returns tokens with the self audience; a relying-service audience check refuses them; introspection reports `status: banned` | N-7, N-14 |
@@ -1122,7 +1154,7 @@ Every alert has a runbook.
 | T-18 | An abandoned registration's identifiers are retired at expiry, and a new registration with the same values succeeds | N-2 |
 | T-19 | Resume sends a message to the given address for each open pending flow holding it, verifies the identifier, and replaces the handle; the old handle is refused | N-1 |
 | T-20 | Ten pending accounts with one email share one send budget | N-15 |
-| T-21 | An invitation under a policy that requires a phone stays `pending` until the phone is verified, then requires enrolment | N-16, N-19 |
+| T-21 | An invitation under a policy that requires a phone stays `pending` until the phone is verified; on a `required` client it then requires enrolment, on an `optional` one it signs in | N-16, N-19 |
 | T-22 | The eleventh failed second-factor verification in an hour, across codes and kinds, is refused | N-15 |
 | T-23 | The resolver called twice for one request returns the same values and moves no counter | N-11 |
 | T-24 | Introspecting as a service that is not the token's audience answers `active: true`; a token whose `aud` is no client and not the self audience answers `active: false` | N-14 |
@@ -1131,13 +1163,15 @@ Every alert has a runbook.
 | T-27 | A closed account: sessions revoked, sign-in `INVALID_CREDENTIALS`, identifiers free | N-16 |
 | T-28 | A restricted token is accepted on `GET /v1/me`, the session list and sign-out, and refused elsewhere | N-7 |
 | T-29 | With two relay replicas and concurrent changes, one account's events are published in `accountversion` order; a parked row holds back only its own account | N-8 |
-| T-30 | A sign-in without a confirmed TOTP never yields a session; enrolment yields recovery codes and then a session whose `amr` contains `mfa` | N-19 |
+| T-30 | On a `required` client, a sign-in without a confirmed TOTP never yields a session, and enrolment yields recovery codes and then a session whose `amr` contains `mfa`. On an `optional` client, an account without TOTP gets tokens after the password (`amr` `["pwd"]`), and an account with TOTP must still give it | N-19 |
 | T-31 | A TOTP code is refused the second time within its step; a recovery code is refused the second time | N-19 |
-| T-32 | A sensitive operation without the second factor gets `REAUTHENTICATION_REQUIRED` | N-19 |
-| T-33 | An MFA reset erases the factor and codes, revokes sessions, sends a notice, and the next sign-in enrols | N-16, N-19 |
+| T-32 | For an account with TOTP, a sensitive operation without the second factor gets `REAUTHENTICATION_REQUIRED`; for one without, the password alone suffices | N-19 |
+| T-33 | An MFA reset erases the factor and codes, revokes sessions and sends a notice; the next sign-in on a `required` client enrols | N-16, N-19 |
 | T-34 | Failures from an unknown device delay that device's sign-ins but not those from the owner's known device | N-15 |
 | T-35 | A ciphertext copied to another row fails to decrypt | §12 |
 | T-36 | With the hashing semaphore full, sign-in answers 503 with `Retry-After` and memory stays bounded | N-17 |
+| T-37 | A signed-in person enables TOTP from `/v1/me/totp` (recovery codes returned once) and removes it with reauthentication; removal erases the codes, sends a notice and emits `account.mfa_removed` | N-19, N-20 |
+| T-38 | With `recovery.sms_step_up` on, a reset of an account without TOTP but with a verified phone needs the SMS code; with it off, or without a phone, the link suffices | N-5 |
 
 ## 16. Technical design documents
 
@@ -1145,7 +1179,7 @@ Every alert has a runbook.
 |---|---|---|
 | [TDD-01 Identity model and data](tdd/TDD-01-identity-and-data.md) | Ids, identifier types and normalisation, field encryption and blind indexes, the schema, retention | D-2, D-3, D-18 |
 | [TDD-02 Flows and challenges](tdd/TDD-02-flows-and-challenges.md) | Registration, resume, sign-in, recovery, identifier changes, invitations, bootstrap, expiry | D-4, D-6, D-10, D-11 |
-| [TDD-03 Credentials and MFA](tdd/TDD-03-credentials-and-mfa.md) | Argon2id, password policy, TOTP, recovery codes, enrolment, reauthentication, MFA reset | D-7, D-8, D-9 |
+| [TDD-03 Credentials and MFA](tdd/TDD-03-credentials-and-mfa.md) | Argon2id, password policy, TOTP, recovery codes, enrolment, removal, reauthentication, MFA reset | D-7, D-8, D-9 |
 | [TDD-04 Sessions, tokens and keys](tdd/TDD-04-sessions-tokens-and-keys.md) | Claims, sessions, refresh rotation, transport, the keyring, JWKS, introspection | D-5, D-12 |
 | [TDD-05 Service access](tdd/TDD-05-service-access.md) | Workload identity, client credentials, scopes, idempotency, directory, account control | D-13, D-14 |
 | [TDD-06 Events and delivery](tdd/TDD-06-events-and-delivery.md) | Outbox, relay, CloudEvents, the delivery port, resolver, notices | D-15, D-16 |
@@ -1160,12 +1194,12 @@ The full gap analysis against today's code is in this file's history (version 0.
 
 | Today | 1.0 |
 |---|---|
-| Chi router | **Keep**; delete the leftover Gin middleware |
-| Redis sliding-window rate limiter | **Keep** for per-IP windows |
-| Outbox table and relay | **Keep the pattern**; rewrite (two destinations, CloudEvents, per-account order) |
-| RS256 signing with a `kid` | **Keep**; add the keyring |
-| JWKS endpoint, health probes | **Keep**, adjusted |
-| TOTP encryption | **Keep the idea**; move to the field keyring with bound associated data |
+| Chi router | **Keep the choice**; code rewritten, Gin leftovers deleted |
+| Redis sliding-window rate limiter | **Keep the code**, ported to `internal/adapters/redis` for per-IP windows. The only code carried over |
+| Outbox table and relay | **Keep the pattern**; code rewritten (two destinations, CloudEvents, per-account order) |
+| RS256 signing with a `kid` | **Keep the approach**; code rewritten around the keyring |
+| JWKS endpoint, health probes | **Keep the endpoints**; code rewritten |
+| TOTP encryption | **Keep the idea**; code rewritten on the field keyring with bound associated data |
 | Everything else: schema, registration, tokens, revocation, lockout, admin API, API keys, feature flags, bcrypt, Swagger 2.0, Go migrations, Logrus | **Rewrite** to this design |
 
 The build order is part of the implementation plan, written after the TDDs are agreed.
@@ -1179,7 +1213,7 @@ The build order is part of the implementation plan, written after the TDDs are a
 | O-3 | Final Argon2id parameters and replica sizing | Set from the load test (§15) on the target hardware | auth1 owner |
 | O-4 | OpenID Connect, third-party and cross-site clients | Authorization code + PKCE on the same sessions and keys; resource-scoped audiences | auth1 owner |
 | O-5 | WebAuthn / passkeys | A second-factor type beside TOTP after 1.0; later a first factor | auth1 owner |
-| O-6 | Contract tooling: the OpenAPI code generator's support for 3.1, and contract linting in CI | Decide with the first implementation step (TDD-08 §11). The contracts were aligned with 0.3 by hand and checked for references, scopes and example validity | auth1 owner |
+| O-6 | Contract tooling: the OpenAPI code generator's support for 3.1, and contract linting in CI | Decide with the first implementation step (TDD-08 §11). The contracts were aligned with 0.4 by hand and checked for references, scopes and example validity | auth1 owner |
 | O-7 | A cap on concurrent sessions per account | None in 1.0; revisit if a product asks | auth1 owner |
 | O-8 | Bot defence on registration and sign-in | A port with no adapter in 1.0; a product may plug a CAPTCHA or risk service later | auth1 owner |
 
@@ -1190,3 +1224,4 @@ The build order is part of the implementation plan, written after the TDDs are a
 | 0.1 | 2026-10-16 | First draft of the 1.0 design, needs first, with the gap analysis against both copies of today's code |
 | 0.2 | 2026-10-19 | After review: stored refresh successor in the grace window; expiry retires identifiers; key publication times in `signing_keys`; sends counted at request; failed-OTP limits; invitation acceptance verifies every required identifier; the notification contract as a proposal; transition table; tests T-18–T-30 |
 | 0.3 | 2026-10-26 | Restructured as the SDD, with detail moved to TDD-01…08. Added assumptions, quality attributes, architecture views, state models, a flow catalogue and a threat model. **Decisions:** UUIDv7 for ids (D-2); every account has a password (D-7); Argon2id with a pepper and bounded concurrency replaces bcrypt (D-7, closes 0.2's O-3); mandatory MFA with TOTP, recovery codes, forced enrolment and a service-driven reset (D-8); reauthentication by password and second factor (D-9); recovery needs the second factor, and the SMS step-up and `recovery_step_up` attribute are removed (D-10); restricted tokens use auth1's own audience (D-5); optional session revocation on a status change (D-5); a first-party API, stated as a decision (D-6); security notices (D-16); split directory scope, plus `accounts:identifiers:write` and `accounts:mfa:reset` (D-13). **Defects fixed:** resume works by possession instead of by sign-in (D-4); send limits per target value instead of per row (D-4, D-17); events ordered by `accountversion`, not outbox id (D-15); events and deliveries ordered apart, with parked-row handling (D-15); device-aware sign-in delays so they cannot lock out the owner (D-17); `amr` values corrected (D-8); trusted proxies and IPv6 /64 keys designed (D-17, closes 0.2's O-4); field ciphertext bound to its row (D-18); backup-restore runbook (D-19). Decision numbers changed; the 0.2 → 0.3 map: D-2→D-3, D-3→D-4, D-4→D-5, D-5→D-6, D-6→D-7, D-7→D-10, D-8→D-11, D-9→D-12, D-10→D-13, D-11→D-14, D-12→D-15, D-13→D-16, D-14→D-17, D-15→D-19. `api/openapi.yaml` and `api/asyncapi.yaml` aligned with 0.3 |
+| 0.4 | 2026-10-27 | **MFA is optional** (D-8): each account may enrol TOTP, self-service or forced; each client has `mfa: optional \| required`; an account with TOTP is always asked for it; self-service removal with `account.mfa_removed`. Reauthentication needs the second factor only when the account has one (D-9). Recovery: TOTP when enrolled, otherwise the link plus an optional SMS step-up (`recovery.sms_step_up`, D-10). Password default length 12, floor 8, as a documented deviation from NIST SP 800-63B-4 for single-factor passwords (D-7). I-16, the state × flow table, the flow catalogue, the threat model and T-5, T-21, T-30, T-32, T-33 updated; T-37, T-38 added. §17 states that only the rate limiter's code is carried over |

@@ -1,6 +1,6 @@
 # auth1
 
-A product-agnostic identity service in Go: accounts, identifiers, passwords, mandatory multi-factor
+A product-agnostic identity service in Go: accounts, identifiers, passwords, optional multi-factor
 authentication, sessions, tokens, account state and roles. One deployment serves one product;
 everything that differs between products is configuration.
 
@@ -21,7 +21,8 @@ everything that differs between products is configuration.
 
 **auth1 1.0 in brief:**
 - Several identifiers per account, each verified on its own, unique once verified.
-- Every account has a password (Argon2id) and TOTP with recovery codes.
+- Every account has a password (Argon2id).
+- Optional TOTP with recovery codes, which any account may enable and a client may require.
 - Opaque, rotated refresh tokens with reuse detection.
 - Signed access tokens from a rotating keyring, with a JWKS.
 - Restricted sessions for suspended or banned accounts.

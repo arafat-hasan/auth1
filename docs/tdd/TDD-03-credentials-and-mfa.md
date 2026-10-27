@@ -3,13 +3,14 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Version | 0.1 |
-| Date | 2026-10-26 |
-| SDD | [design.md](../design.md) 0.3: D-7, D-8, D-9, D-10, I-16 … I-19 |
+| Version | 0.2 |
+| Date | 2026-10-27 |
+| SDD | [design.md](../design.md) 0.4: D-7, D-8, D-9, D-10, I-16 … I-19 |
 | Owner | Arafat Hasan |
 
-Passwords, the TOTP factor, recovery codes, enrolment, reauthentication and the service-driven
-MFA reset.
+Passwords, the optional TOTP factor, recovery codes, enrolment (forced and self-service), removal,
+reauthentication and the service-driven MFA reset. MFA is optional per account, and a client may
+require it (SDD D-8).
 
 ## 1. Password hashing
 
@@ -51,7 +52,7 @@ CPU, with `max_concurrent × memory` within the pod's memory limit plus headroom
 
 ### 1.5 Changing the password
 
-`POST /v1/me/password` (`current_password`, `second_factor`, `new_password`), with a full session:
+`POST /v1/me/password` (`current_password`, `second_factor` when the account has TOTP, `new_password`), with a full session:
 
 1. Reauthenticate (§5.1).
 2. Check the policy (§2), then hash.
@@ -68,7 +69,7 @@ Checks, in order. Each failure adds a reason to `PASSWORD_REJECTED.reasons`.
 
 | Reason | Rule |
 |---|---|
-| `too_short` | Fewer than `min_length` code points (default 8, floor 8) |
+| `too_short` | Fewer than `min_length` code points (default 12, floor 8; SDD D-7 records the deviation from NIST's 15 for single-factor passwords) |
 | `too_long` | More than `max_length` code points (default 128, at least 64) |
 | `contains_identifier` | The case-folded password contains any `Variants()` (TDD-01 §2) of the account's identifiers, ignoring variants shorter than 4 characters |
 | `common` | The case-folded password is in the deny-list |
@@ -108,18 +109,29 @@ One component verifies a `second_factor` value for an account. Sign-in (TDD-02 �
 - Every wrong code also counts in `accounts.factor_failures` (TDD-07 §3). While that is at its limit, verification is refused with `RATE_LIMITED` before any code is checked.
 - A correct code never resets `factor_failures`. The counter's window does that.
 
-### 3.4 Completing the second step of sign-in
+### 3.4 The second step of sign-in
 
-`POST /v1/sessions/mfa` (`handle`, `second_factor`). The flow must be a `sign_in` at step
-`second_factor`. Verify (§3.1, §3.2), then complete the sign-in (TDD-02 §5.3). The session's
-`amr` is set by §7.
+**Deciding it.** After the first factor (TDD-02 §5.1 step 9, §5.2), and after registration or
+invitation completion (TDD-02 §3, §8), in this order:
+
+| The account | The client's `mfa` | Answer |
+|---|---|---|
+| Has a confirmed TOTP | any | `202 MFA_REQUIRED`; the `sign_in` flow moves to step `second_factor` |
+| Has none | `required` | `202 MFA_ENROLMENT_REQUIRED`; the flow moves to step `enrolment` (§4.1) |
+| Has none | `optional` | Complete the sign-in at once (TDD-02 §5.3); `200` with the tokens |
+
+**Completing it.** `POST /v1/sessions/mfa` (`handle`, `second_factor`). The flow must be a
+`sign_in` at step `second_factor`. Verify (§3.1, §3.2), then complete the sign-in (TDD-02 §5.3).
+The session's `amr` is set by §7.
 
 ## 4. Enrolment
 
-Enrolment happens inside a `sign_in` flow at step `enrolment`. Registration, invitation and sign-in
-lead there.
+Enrolment has two entry points, which share the secret handling and the confirmation: **forced**
+(§4.1), inside a sign-in on a `required` client; and **self-service** (§4.2), by a signed-in person.
 
-1. **Start.** `POST /v1/sessions/mfa/enrolment` (`handle`):
+### 4.1 Forced, inside sign-in
+
+1. **Start.** `POST /v1/sessions/mfa/enrolment` (`handle`), for a `sign_in` flow at step `enrolment`:
    - draw a 20-byte secret (160 bits);
    - `[tx]` upsert the `totp_factors` row with `confirmed_at = null`, replacing an earlier unconfirmed secret;
    - answer `200` with `secret` (base32) and `otpauth_uri`: `otpauth://totp/<issuer>:<label>?secret=…&issuer=<issuer>&algorithm=SHA1&digits=6&period=30`. `<issuer>` is `mfa.totp.issuer` *(cfg)*. `<label>` follows `mfa.totp.label`: `email`, `display_name` or `none`.
@@ -134,24 +146,42 @@ lead there.
       - complete the sign-in (TDD-02 §5.3).
    3. Answer `200` with the tokens and `recovery_codes`. The response carries `Cache-Control: no-store`. The codes are never shown again.
 
-**I-16 holds by construction.** The only paths that create a full session are §3.4 and §4.2, and
-both require a verified second factor.
+### 4.2 Self-service
+
+1. **Start.** `POST /v1/me/totp` (`current_password`), with a full session:
+   - reauthenticate with the password (§5.1);
+   - refuse with `409 MFA_STATE_INVALID` if the account already has a confirmed TOTP (replacement is §5.2);
+   - draw a secret and `[tx]` upsert the unconfirmed `totp_factors` row, as in §4.1;
+   - answer `200` with `secret` and `otpauth_uri`.
+2. **Confirm.** `POST /v1/me/totp/confirm` (`code`):
+   - verify the code against the unconfirmed secret;
+   - `[tx]`: set `confirmed_at` and `last_step`, create a batch of recovery codes, send the `mfa_enrolled` notice, and emit `account.mfa_enrolled`;
+   - answer `200` with `recovery_codes` and `Cache-Control: no-store`.
+
+The current session is unchanged: its `amr` still records how it signed in. From the next sign-in
+on, every client asks for the second factor.
+
+**I-16 holds by construction.** Every path that issues a session passes the decision of §3.4. It
+issues one without a second factor only for an account with no confirmed TOTP on an `optional`
+client; every other path requires a verified second factor (§3.4, §4.1).
 
 ## 5. Reauthentication and sensitive operations
 
 ### 5.1 Reauthentication
 
-Every sensitive operation's request carries `current_password` and `second_factor`. Checks:
+Every sensitive operation's request carries `current_password`, and `second_factor` when the account
+has a confirmed TOTP. Checks:
 
 1. Refuse if the session is restricted (`ACCOUNT_RESTRICTED`).
 2. Refuse while the sign-in throttle bucket for this account and device is delayed (`SIGN_IN_DELAYED`).
 3. Verify the password (§1.4). A failure counts in the throttle bucket.
-4. Verify the second factor (§3). A failure counts in `factor_failures`.
+4. If the account has a confirmed TOTP, verify the second factor (§3); a missing one is a failure. A failure counts in `factor_failures`. For an account without TOTP, a `second_factor` in the request is ignored.
 5. Any failure answers `REAUTHENTICATION_REQUIRED`, without saying which part failed.
 
 ### 5.2 Replacing the TOTP factor
 
 1. `POST /v1/me/totp/replacement` (`current_password`, `second_factor`):
+   - refuse with `409 MFA_STATE_INVALID` if the account has no confirmed TOTP (enabling is §4.2);
    - reauthenticate;
    - draw a secret, and `[tx]` open a `totp_replacement` flow with `pending_secret` set;
    - answer `200` with `flow_id`, `handle`, `secret` and `otpauth_uri`.
@@ -166,9 +196,26 @@ increments (TDD-06 §2).
 ### 5.3 Regenerating recovery codes
 
 `POST /v1/me/recovery-codes` (`current_password`, `second_factor`):
-1. Reauthenticate.
+1. Refuse with `409 MFA_STATE_INVALID` if the account has no confirmed TOTP. Reauthenticate.
 2. `[tx]`: delete the old batch, insert a new one, and send the `recovery_codes_regenerated` notice.
 3. Answer `200` with the codes and `Cache-Control: no-store`.
+
+### 5.4 Removing MFA
+
+`DELETE /v1/me/totp` (`current_password`, `second_factor`):
+1. If the account has no confirmed TOTP, answer `204`: removal is idempotent.
+2. Reauthenticate.
+3. `[tx]`:
+   - delete the `totp_factors` row and every recovery code;
+   - cancel open `totp_replacement` flows;
+   - revoke every session except the current one;
+   - send the `mfa_removed` notice;
+   - emit `account.mfa_removed`.
+4. Answer `204`.
+
+Sessions are revoked because removing the factor lowers the account's protection: an attacker who had
+reached the account should not keep a session the owner does not see. The next sign-in on a
+`required` client enrols again.
 
 ## 6. MFA reset by a service
 
@@ -182,12 +229,15 @@ account must not be `pending` or `deleted`. `[tx]`:
 - emit `account.mfa_reset`;
 - audit with the caller and the actor.
 
-Answer `204`. The next sign-in leads to enrolment.
+Answer `204`. The next sign-in on a `required` client leads to enrolment; on an `optional` client the account signs in with its password and may enable TOTP again (§4.2).
 
 ## 7. `amr`
 
 | First factor | Second factor | `amr` |
 |---|---|---|
+| Password | — (no TOTP, `optional` client) | `["pwd"]` |
+| SMS code | — | `["sms"]` |
+| Email code | — | `["email"]` |
 | Password | TOTP | `["pwd","otp","mfa"]` |
 | Password | Recovery code | `["pwd","rcode","mfa"]` |
 | SMS code | TOTP | `["sms","otp","mfa"]` |

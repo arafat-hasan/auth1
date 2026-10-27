@@ -142,10 +142,29 @@ channels:
   account_mfa_enrolled:
     address: account.mfa_enrolled
     title: account.mfa_enrolled
-    description: The account confirmed its first TOTP factor. Its first full session follows.
+    description: 'The account confirmed a TOTP factor: by itself from /v1/me/totp, or during a sign-in
+      on a client that requires MFA. From now on every sign-in asks for it.'
     messages:
       account_mfa_enrolled_v1:
         $ref: '#/components/messages/account_mfa_enrolled_v1'
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: auth1.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  account_mfa_removed:
+    address: account.mfa_removed
+    title: account.mfa_removed
+    description: The account holder turned TOTP off. The factor and recovery codes were erased and every
+      other session revoked.
+    messages:
+      account_mfa_removed_v1:
+        $ref: '#/components/messages/account_mfa_removed_v1'
     bindings:
       amqp:
         is: routingKey
@@ -366,11 +385,29 @@ operations:
   publish_account_mfa_enrolled:
     action: send
     title: Publish account.mfa_enrolled
-    summary: The account confirmed its first TOTP factor. Its first full session follows.
+    summary: 'The account confirmed a TOTP factor: by itself from /v1/me/totp, or during a sign-in on
+      a client that requires MFA. From now on every sign-in asks for it.'
     channel:
       $ref: '#/channels/account_mfa_enrolled'
     messages:
     - $ref: '#/channels/account_mfa_enrolled/messages/account_mfa_enrolled_v1'
+    bindings:
+      amqp:
+        deliveryMode: 2
+        mandatory: false
+        ack: true
+        bindingVersion: 0.3.0
+    description: Written to the outbox in the transaction that made the change, then published by the
+      relay with publisher confirms. At least once, in `accountversion` order per account.
+  publish_account_mfa_removed:
+    action: send
+    title: Publish account.mfa_removed
+    summary: The account holder turned TOTP off. The factor and recovery codes were erased and every other
+      session revoked.
+    channel:
+      $ref: '#/channels/account_mfa_removed'
+    messages:
+    - $ref: '#/channels/account_mfa_removed/messages/account_mfa_removed_v1'
     bindings:
       amqp:
         deliveryMode: 2
@@ -890,9 +927,11 @@ components:
                   enum:
                   - totp
                   - recovery_code
+                  - sms
                   - none
-                  description: What completed the reset. `none` only for an account that never completed
-                    enrolment
+                  description: 'The proof that completed the reset besides the link: `totp` or `recovery_code`
+                    for an account with TOTP, `sms` for the configured SMS step-up, `none` for the link
+                    alone'
                 actor:
                   $ref: '#/components/schemas/Actor'
       examples:
@@ -917,7 +956,8 @@ components:
     account_mfa_enrolled_v1:
       name: account.mfa_enrolled
       title: account.mfa_enrolled v1
-      summary: The account confirmed its first TOTP factor. Its first full session follows.
+      summary: 'The account confirmed a TOTP factor: by itself from /v1/me/totp, or during a sign-in on
+        a client that requires MFA. From now on every sign-in asks for it.'
       traits:
       - $ref: '#/components/messageTraits/cloudEvent'
       payload:
@@ -927,6 +967,59 @@ components:
           properties:
             type:
               const: account.mfa_enrolled
+            dataversion:
+              const: 1
+            data:
+              type: object
+              additionalProperties: false
+              required:
+              - account_id
+              - via
+              - actor
+              properties:
+                account_id:
+                  $ref: '#/components/schemas/AccountId'
+                via:
+                  type: string
+                  enum:
+                  - self_service
+                  - sign_in
+                  description: Where enrolment happened
+                actor:
+                  $ref: '#/components/schemas/Actor'
+      examples:
+      - name: example
+        payload:
+          specversion: '1.0'
+          id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
+          source: /auth1
+          type: account.mfa_enrolled
+          subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+          time: '2026-10-26T09:30:00.000Z'
+          datacontenttype: application/json
+          dataversion: 1
+          accountversion: 7
+          traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+          data:
+            account_id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+            via: self_service
+            actor:
+              kind: account
+              id: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
+    account_mfa_removed_v1:
+      name: account.mfa_removed
+      title: account.mfa_removed v1
+      summary: The account holder turned TOTP off. The factor and recovery codes were erased and every
+        other session revoked.
+      traits:
+      - $ref: '#/components/messageTraits/cloudEvent'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          properties:
+            type:
+              const: account.mfa_removed
             dataversion:
               const: 1
             data:
@@ -946,7 +1039,7 @@ components:
           specversion: '1.0'
           id: 0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b
           source: /auth1
-          type: account.mfa_enrolled
+          type: account.mfa_removed
           subject: 6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b
           time: '2026-10-26T09:30:00.000Z'
           datacontenttype: application/json

@@ -12,9 +12,10 @@ info:
 
     Errors are RFC 9457 problem details with a stable `code` (docs/design.md §10).
 
-    **Multi-factor authentication is mandatory.** A sign-in never returns tokens from its first
-    step. It answers `202` with `MFA_REQUIRED` or `MFA_ENROLMENT_REQUIRED` and a flow handle; the
-    second step returns the tokens (docs/design.md D-8).
+    **Multi-factor authentication is optional per account, and a client may require it.** After the
+    first factor, a sign-in answers `202 MFA_REQUIRED` when the account has TOTP (on every client),
+    `202 MFA_ENROLMENT_REQUIRED` when it has none and the client requires MFA, and otherwise `200`
+    with the tokens. The second step, when there is one, returns the tokens (docs/design.md D-8).
 
     Service-facing operations authenticate the caller by workload identity (through the mesh) or,
     where a deployment enables it, by a client-credentials token. Each such operation names its
@@ -41,7 +42,7 @@ tags:
   - name: Registration
     description: Creating an account, verifying its identifiers, resuming a lost flow
   - name: Sessions
-    description: Sign-in (both factors), enrolment, refresh and sign-out
+    description: Sign-in (and its second step, when there is one), forced enrolment, refresh and sign-out
   - name: Me
     description: The signed-in account's own settings and sensitive operations
   - name: Recovery
@@ -219,11 +220,12 @@ paths:
     post:
       tags: [Registration]
       operationId: completeRegistration
-      summary: Activate the account and continue to MFA enrolment
+      summary: Activate the account and sign in
       description: |
         Succeeds when every required identifier is verified. Activates the account (with the
-        client's default roles, or the invited roles) and answers `202 MFA_ENROLMENT_REQUIRED`
-        with a sign-in flow handle. Tokens are issued when enrolment is confirmed.
+        client's default roles, or the invited roles). On a client with `mfa: required` it answers
+        `202 MFA_ENROLMENT_REQUIRED` with a sign-in flow handle, and tokens are issued when
+        enrolment is confirmed; otherwise it answers `200` with the tokens.
       security: []
       parameters:
         - $ref: '#/components/parameters/FlowId'
@@ -233,8 +235,9 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/FlowHandle' }
       responses:
+        '200': { $ref: '#/components/responses/Tokens' }
         '202':
-          description: Enrolment required
+          description: Enrolment required (the client requires MFA)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MfaStep' }
@@ -267,14 +270,15 @@ paths:
     post:
       tags: [Sessions]
       operationId: signIn
-      summary: Sign in, first factor, with an identifier and a password
+      summary: Sign in with an identifier and a password
       description: |
-        Never returns tokens. On a correct password it answers `202` with `MFA_REQUIRED` (the
-        account has TOTP) or `MFA_ENROLMENT_REQUIRED` (it has none yet), and a sign-in flow handle.
+        On a correct password: `202 MFA_REQUIRED` when the account has TOTP; `202
+        MFA_ENROLMENT_REQUIRED` when it has none and the client has `mfa: required`; otherwise
+        `200` with the tokens (`amr` `["pwd"]`).
 
         A `pending` account whose sign-in identifier is verified, with the correct password, gets
         `403 REGISTRATION_INCOMPLETE`; the client offers resume. A suspended or banned account
-        continues to the second factor and then receives a restricted session, unless the
+        continues through the same steps and then receives a restricted session, unless the
         deployment refuses it with `ACCOUNT_RESTRICTED`. A wrong password, an unknown identifier
         and a deleted account all get `INVALID_CREDENTIALS`.
       security: []
@@ -284,8 +288,9 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/SignInRequest' }
       responses:
+        '200': { $ref: '#/components/responses/Tokens' }
         '202':
-          description: The second step
+          description: 'A second step, MFA_REQUIRED or MFA_ENROLMENT_REQUIRED'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MfaStep' }
@@ -330,8 +335,9 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/HandleAndCode' }
       responses:
+        '200': { $ref: '#/components/responses/Tokens' }
         '202':
-          description: The second step
+          description: A second step, decided as for a password sign-in
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MfaStep' }
@@ -344,7 +350,7 @@ paths:
     post:
       tags: [Sessions]
       operationId: completeSignIn
-      summary: Sign in, second factor, with a TOTP code or a recovery code
+      summary: Second step of a sign-in, with a TOTP code or a recovery code
       description: 'For a flow at `MFA_REQUIRED`. Five wrong codes close the flow. Returns a full session, or a restricted one for a suspended or banned account.'
       security: []
       requestBody:
@@ -363,7 +369,7 @@ paths:
     post:
       tags: [Sessions]
       operationId: startEnrolment
-      summary: Start TOTP enrolment
+      summary: Start forced TOTP enrolment (a client that requires MFA)
       description: 'For a flow at `MFA_ENROLMENT_REQUIRED`. Returns a new secret; calling again before confirming replaces it.'
       security: []
       requestBody:
@@ -532,7 +538,7 @@ paths:
       tags: [Me]
       operationId: changePassword
       summary: Change the password
-      description: 'Sensitive: needs the current password and a second factor. Revokes every other session and sends a notice.'
+      description: 'Sensitive: needs the current password and, when the account has TOTP, a second factor. Revokes every other session and sends a notice.'
       security:
         - bearer: []
       requestBody:
@@ -554,7 +560,7 @@ paths:
       operationId: startEmailChange
       summary: Start an email change
       description: |
-        Sensitive: needs the current password and a second factor. Sends a confirmation link to
+        Sensitive: needs the current password and, when the account has TOTP, a second factor. Sends a confirmation link to
         the new address. By `identifier_changes.confirm_old_email`, the current address either must
         confirm too (`required`) or receives a notice (`notify`). Applies when the policy's
         confirmations are done.
@@ -582,7 +588,7 @@ paths:
       tags: [Me]
       operationId: startPhoneChange
       summary: Start a phone change
-      description: 'Sensitive: needs the current password and a second factor. Sends a code to the new number.'
+      description: 'Sensitive: needs the current password and, when the account has TOTP, a second factor. Sends a code to the new number.'
       security:
         - bearer: []
       requestBody:
@@ -644,12 +650,84 @@ paths:
         '410': { $ref: '#/components/responses/Gone' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /v1/me/totp:
+    post:
+      tags: [Me]
+      operationId: startTotpEnrolment
+      summary: Enable TOTP (self-service), step one
+      description: 'Sensitive: needs the current password. Returns a new secret; the factor is enabled when `/v1/me/totp/confirm` accepts a first code. `409 MFA_STATE_INVALID` if TOTP is already on (replace it with `/v1/me/totp/replacement`).'
+      security:
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reauthentication' }
+      responses:
+        '200':
+          description: The secret, to enrol in an authenticator
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TotpSetup' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    delete:
+      tags: [Me]
+      operationId: removeTotp
+      summary: Turn TOTP off
+      description: 'Sensitive: needs the current password and a second factor. Erases the factor and the recovery codes, revokes every other session, sends a notice and emits `account.mfa_removed`. Idempotent: `204` when TOTP is already off. A client that requires MFA asks for enrolment at the next sign-in.'
+      security:
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reauthentication' }
+      responses:
+        '204': { description: TOTP is off }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/me/totp/confirm:
+    post:
+      tags: [Me]
+      operationId: confirmTotpEnrolment
+      summary: Enable TOTP (self-service), step two
+      description: 'Confirms the secret from `POST /v1/me/totp` with a first code, enables the factor and creates the recovery codes, which are in this response only. The current session is unchanged; from the next sign-in on, every client asks for the second factor.'
+      security:
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TotpCodeRequest' }
+      responses:
+        '200':
+          description: Enabled. The recovery codes
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryCodes' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /v1/me/totp/replacement:
     post:
       tags: [Me]
       operationId: startTotpReplacement
       summary: Start replacing the TOTP factor (for example, a new phone)
-      description: 'Sensitive: needs the current password and a second factor. The current factor stays in use until the new one is confirmed. MFA cannot be turned off.'
+      description: 'Sensitive: needs the current password and a second factor. The current factor stays in use until the new one is confirmed. `409 MFA_STATE_INVALID` if the account has no TOTP (enable it with `/v1/me/totp`).'
       security:
         - bearer: []
       requestBody:
@@ -668,6 +746,7 @@ paths:
               schema: { $ref: '#/components/schemas/TotpReplacementStarted' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/totp/replacement/{flowId}/confirm:
@@ -696,7 +775,7 @@ paths:
       tags: [Me]
       operationId: regenerateRecoveryCodes
       summary: Replace every recovery code
-      description: 'Sensitive: needs the current password and a second factor. The old codes stop working. The new codes are in this response only.'
+      description: 'Sensitive: needs the current password and a second factor. The old codes stop working. The new codes are in this response only. `409 MFA_STATE_INVALID` if the account has no TOTP.'
       security:
         - bearer: []
       requestBody:
@@ -715,6 +794,7 @@ paths:
               schema: { $ref: '#/components/schemas/RecoveryCodes' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/password-resets:
@@ -739,7 +819,7 @@ paths:
       tags: [Recovery]
       operationId: startPasswordReset
       summary: Open a reset link
-      description: 'Says which second factor completing the reset needs: `totp` (a TOTP code or a recovery code), or `none` for an account that never completed enrolment.'
+      description: 'Says which proof completing the reset needs: `totp` (a TOTP code or a recovery code) when the account has TOTP; otherwise `sms` when the deployment''s `recovery.sms_step_up` is on and the account has a verified phone (a code is sent, and the masked phone returned); otherwise `none`.'
       security: []
       requestBody:
         required: true
@@ -760,7 +840,7 @@ paths:
       tags: [Recovery]
       operationId: completePasswordReset
       summary: Set the new password
-      description: 'Needs the second factor unless `start` said `none`. Revokes every session and sends a notice. Never changes the account''s status or its TOTP factor.'
+      description: 'Needs the proof `start` named: `second_factor` for `totp`, `code` for `sms`, nothing for `none`. Revokes every session and sends a notice. Never changes the account''s status or its TOTP factor.'
       security: []
       parameters:
         - $ref: '#/components/parameters/FlowId'
@@ -786,7 +866,8 @@ paths:
         Verifies the invited email, stores the password and opens one challenge for each other
         identifier the policy requires, whose values the request supplies. The browser then
         verifies them and calls `complete` through the registration flow endpoints, which
-        activates the account with the invited roles and continues to MFA enrolment.
+        activates the account with the invited roles and signs in (after enrolment, when the
+        invitation's client requires MFA).
       security: []
       requestBody:
         required: true
@@ -1323,7 +1404,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Conflict:
-      description: '`IDENTIFIER_TAKEN`, `VERIFICATION_INCOMPLETE`, `STATUS_TRANSITION_INVALID`'
+      description: '`IDENTIFIER_TAKEN`, `VERIFICATION_INCOMPLETE`, `STATUS_TRANSITION_INVALID`, `MFA_STATE_INVALID`'
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -1368,7 +1449,7 @@ components:
                  INVALID_CREDENTIALS, SIGN_IN_DELAYED, REGISTRATION_INCOMPLETE, ROLE_NOT_PERMITTED,
                  ACCOUNT_RESTRICTED, SESSION_INVALID, TOKEN_INVALID, REAUTHENTICATION_REQUIRED,
                  CALLER_NOT_ALLOWED, IDEMPOTENCY_KEY_REUSED, STATUS_TRANSITION_INVALID,
-                 ROLE_UNKNOWN, NOT_FOUND, RATE_LIMITED, UNAVAILABLE]
+                 MFA_STATE_INVALID, ROLE_UNKNOWN, NOT_FOUND, RATE_LIMITED, UNAVAILABLE]
         detail: { type: string }
         instance: { type: string }
         retry_after: { type: integer, minimum: 1 }
@@ -1718,11 +1799,17 @@ components:
 
     Reauthentication:
       type: object
-      description: 'The proof every sensitive operation needs (docs/design.md D-9)'
-      required: [current_password, second_factor]
+      description: 'The proof every sensitive operation needs (docs/design.md D-9): the current password, and `second_factor` when the account has TOTP. A `second_factor` sent for an account without TOTP is ignored'
+      required: [current_password]
       properties:
         current_password: { $ref: '#/components/schemas/Password' }
         second_factor: { $ref: '#/components/schemas/SecondFactor' }
+
+    TotpCodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code: { $ref: '#/components/schemas/TotpCode' }
 
     PasswordChange:
       allOf:
@@ -1762,10 +1849,11 @@ components:
 
     ResetStarted:
       type: object
-      required: [flow_id, second_factor]
+      required: [flow_id, proof]
       properties:
         flow_id: { type: string, format: uuid }
-        second_factor: { type: string, enum: [totp, none], description: '`totp` accepts a TOTP code or a recovery code' }
+        proof: { type: string, enum: [totp, sms, none], description: '`totp` accepts a TOTP code or a recovery code; `sms` a code sent to the masked phone' }
+        masked_phone: { type: string, description: 'For `sms`, for example •••••••0100' }
 
     ResetComplete:
       type: object
@@ -1773,6 +1861,7 @@ components:
       properties:
         token: { type: string }
         second_factor: { $ref: '#/components/schemas/SecondFactor' }
+        code: { $ref: '#/components/schemas/OtpCode' }
         new_password: { $ref: '#/components/schemas/Password' }
 
     InvitationAccept:
