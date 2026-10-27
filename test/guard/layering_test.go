@@ -71,6 +71,38 @@ func TestCheckLayeringRules(t *testing.T) {
 			name: "domain name prefix is not domain",
 			deps: map[string][]string{mod + "/internal/domainx": {mod + "/internal/adapters/redis"}},
 		},
+		{
+			name: "app imports telemetry",
+			deps: map[string][]string{mod + "/internal/app/x": {mod + "/internal/telemetry"}},
+			want: []string{"internal/app/x imports internal/telemetry"},
+		},
+		{
+			name: "domain imports telemetry",
+			deps: map[string][]string{mod + "/internal/domain": {mod + "/internal/telemetry"}},
+			want: []string{"internal/domain imports internal/telemetry"},
+		},
+		{
+			name: "telemetry imports config",
+			deps: map[string][]string{mod + "/internal/telemetry": {mod + "/internal/config"}},
+		},
+		{
+			name: "telemetry imports app",
+			deps: map[string][]string{mod + "/internal/telemetry": {mod + "/internal/app"}},
+			want: []string{"internal/telemetry imports internal/app"},
+		},
+		{
+			name: "telemetry imports http",
+			deps: map[string][]string{mod + "/internal/telemetry": {mod + "/internal/http/middleware"}},
+			want: []string{"internal/telemetry imports internal/http/middleware"},
+		},
+		{
+			name: "edges and workers import telemetry",
+			deps: map[string][]string{
+				mod + "/internal/http/middleware":   {mod + "/internal/telemetry"},
+				mod + "/internal/adapters/postgres": {mod + "/internal/telemetry"},
+				mod + "/internal/worker":            {mod + "/internal/telemetry"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

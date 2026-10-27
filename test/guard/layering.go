@@ -33,6 +33,9 @@ var layerRules = []struct {
 	// Adapters and HTTP meet only through app (TDD-08 §2).
 	{layer: "internal/adapters", denied: []string{"internal/http"}},
 	{layer: "internal/http", denied: []string{"internal/adapters"}},
+	// Telemetry is a leaf for the edges, adapters and workers. Domain and app never import it (their
+	// allowed lists keep it out); they receive a *slog.Logger and the OpenTelemetry API interfaces.
+	{layer: "internal/telemetry", allowed: []string{"internal/telemetry", "internal/config"}},
 }
 
 // CheckLayering reports every dependency that breaks the layering rules. deps maps each package
