@@ -6,7 +6,7 @@ The plan lives in **GitHub issues**, not in this repository:
 |---|---|
 | Roadmap | [#69 auth1 1.0 roadmap](https://github.com/arafat-hasan/auth1/issues/69) (pinned): goal, global constraints G-1 … G-9, Go practices, milestones, review focus |
 | Milestones | Issues [#60](https://github.com/arafat-hasan/auth1/issues/60) … [#68](https://github.com/arafat-hasan/auth1/issues/68), and GitHub milestones `M0` … `M8` |
-| Work packages | 57 issues labelled `work-package`, `WP-00` … `WP-93`, each with scope, references, *done when* checklist and *blocked by* links |
+| Work packages | 58 issues labelled `work-package`, `WP-00` … `WP-93`, each with scope, references, *done when* checklist and *blocked by* links |
 
 Conventions:
 - **Sub-issues:** each milestone issue is a sub-issue of the roadmap, and each work package is a sub-issue of its milestone.
