@@ -296,10 +296,6 @@ Each decision gives what is decided, why, and what was rejected. Detail is in th
 **Not configurable:** that every account has a password, that an account with TOTP is always asked
 for it, and the security floors (C-3).
 
-**A design rule, not a check.** No product name appears in the code, the default configuration or
-the migrations. Any product deploys auth1 in its own cluster and keeps its configuration in its own
-repository. Reviews keep the rule; nothing in CI scans for product words.
-
 ### D-2. Identifiers of records: UUIDv7
 
 **Decision.** Every primary key that is an id is a **UUIDv7** (RFC 9562), generated in the
