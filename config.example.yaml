@@ -182,5 +182,6 @@ retention:
   audit_client_details: 2160h             # client details in audit rows are cleared after this
 
 telemetry:
-  otlp_endpoint: ""                       # empty: metrics on /metrics only, no trace export
+  otlp_endpoint: ""                       # empty: no trace export
   service_name: auth1                     # service name in telemetry
+  metrics_listen: ":9090"                 # internal listener for /metrics; keep it off the public edge

@@ -218,8 +218,9 @@ retention:
   published_outbox: 168h
   audit_client_details: 2160h
 telemetry:
-  otlp_endpoint: ""                    # empty: metrics on /metrics only, no trace export
+  otlp_endpoint: ""                    # empty: no trace export
   service_name: auth1
+  metrics_listen: ":9090"              # internal listener for /metrics; never behind the public edge
 ```
 
 ### 3.1 Validation
@@ -252,7 +253,10 @@ telemetry:
   `development`; a service client's `jwks_uri` that is not an absolute URL, or not `https`
   outside `development`;
 - an SMS method configured with `sms_budget_per_hour: 0`;
-- a keyring with zero or several `active` keys.
+- a keyring with zero or several `active` keys;
+- a `telemetry.metrics_listen` that is not `host:port` with a port from 1 to 65535, or that equals
+  `http.listen`; a `telemetry.otlp_endpoint` that is not an absolute `http` or `https` URL; an empty
+  `telemetry.service_name`. These apply in every environment.
 
 ## 4. Secrets
 
