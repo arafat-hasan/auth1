@@ -297,6 +297,43 @@ func TestValidateRules(t *testing.T) {
 			c.Clients[0].Origins = []string{"https://a.example.test", "http://b.example.test"}
 		}, want: []string{"clients[0].origins[1]"}, devRelaxed: true},
 
+		// Origins and JWKS URIs: http only in development.
+		{name: "origin with a path", change: func(c *Config) { c.Clients[0].Origins = []string{"https://a.example.test/login"} },
+			want: []string{"clients[0].origins[0]"}},
+		{name: "origin with a trailing slash", change: func(c *Config) { c.Clients[0].Origins = []string{"https://a.example.test/"} },
+			want: []string{"clients[0].origins[0]"}},
+		{name: "origin with a query", change: func(c *Config) { c.Clients[0].Origins = []string{"https://a.example.test?x=1"} },
+			want: []string{"clients[0].origins[0]"}},
+		{name: "origin without a scheme", change: func(c *Config) { c.Clients[0].Origins = []string{"a.example.test"} },
+			want: []string{"clients[0].origins[0]"}},
+		{name: "origin with a port", change: func(c *Config) { c.Clients[0].Origins = []string{"https://a.example.test:8443"} }},
+		{name: "plain http jwks uri", change: func(c *Config) {
+			c.ServiceAuth.ClientCredentials.Clients = []ServiceClient{{ID: "svc", JWKSURI: "http://svc.example.test/jwks"}}
+		}, want: []string{"service_auth.client_credentials.clients[0].jwks_uri"}, devRelaxed: true},
+		{name: "relative jwks uri", change: func(c *Config) {
+			c.ServiceAuth.ClientCredentials.Clients = []ServiceClient{{ID: "svc", JWKSURI: "jwks.json"}}
+		}, want: []string{"service_auth.client_credentials.clients[0].jwks_uri"}},
+
+		// Ranges, in every environment.
+		{name: "negative duration under a floor", change: func(c *Config) { c.Tokens.AccessTTL = -time.Hour },
+			want: []string{"tokens.access_ttl"}},
+		{name: "negative duration without a floor", change: func(c *Config) { c.RateLimits.GlobalIP.Window = -time.Second },
+			want: []string{"rate_limits.global_ip.window"}},
+		{name: "negative count", change: func(c *Config) { c.OTP.MaxAttempts = -3 },
+			want: []string{"otp.max_attempts"}},
+		{name: "negative size", change: func(c *Config) { c.Passwords.Argon2.Memory = -MiB },
+			want: []string{"passwords.argon2.memory"}},
+		{name: "negative length", change: func(c *Config) { c.Passwords.MinLength = -1 },
+			want: []string{"passwords.min_length"}},
+		{name: "zero access ttl", change: func(c *Config) { c.Tokens.AccessTTL = 0 },
+			want: []string{"tokens.access_ttl"}},
+		{name: "zero reset ttl", change: func(c *Config) { c.Links.ResetTTL = 0 },
+			want: []string{"links.reset_ttl"}},
+		{name: "zero service token ttl", change: func(c *Config) { c.ServiceAuth.ClientCredentials.TokenTTL = 0 },
+			want: []string{"service_auth.client_credentials.token_ttl"}},
+		{name: "zero otp attempts", change: func(c *Config) { c.OTP.MaxAttempts = 0 },
+			want: []string{"otp.max_attempts"}},
+
 		// Roles.
 		{name: "allowed role outside the catalog", change: func(c *Config) {
 			c.Clients[0].AllowedRoles = []string{"user", "ghost"}
@@ -331,6 +368,8 @@ func TestValidateRules(t *testing.T) {
 			c.Clients[0].FirstFactors = []Factor{FactorPassword, FactorOTP}
 			c.Clients[0].OTPChannel = "pigeon"
 		}, want: []string{"clients[0].otp_channel"}},
+		{name: "unknown channel without otp", change: func(c *Config) { c.Clients[0].OTPChannel = "smss" },
+			want: []string{"clients[0].otp_channel"}},
 		{name: "otp by email", change: func(c *Config) {
 			c.Clients[0].FirstFactors = []Factor{FactorOTP, FactorPassword}
 			c.Clients[0].OTPChannel = OTPChannelEmail

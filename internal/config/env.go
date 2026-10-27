@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // envPrefix starts every environment override. AUTH1_TOKENS_REFRESH_IDLE_TTL sets
@@ -78,11 +79,19 @@ func resolveEnv(environ []string, paths map[string]reflect.Type) (map[string]any
 	return values, problems
 }
 
-// envValue converts a variable's text to what decoding expects for t. Text-typed values
-// (durations, sizes, files, enums) stay strings and are parsed by the decode hooks.
+// envValue converts a variable's text to what decoding expects for t, so that a bad value is
+// reported against the variable rather than only its key. Files and enums stay strings.
 func envValue(value string, t reflect.Type) (any, error) {
 	switch {
-	case t == durationType || t == byteSizeType || t == secretFileType || t.Kind() == reflect.String:
+	case t == durationType:
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a duration: use Go duration syntax, such as 15m or 1h30m", value)
+		}
+		return d, nil
+	case t == byteSizeType:
+		return ParseByteSize(value)
+	case t == secretFileType || t.Kind() == reflect.String:
 		return value, nil
 	case t.Kind() == reflect.Bool:
 		b, err := strconv.ParseBool(value)

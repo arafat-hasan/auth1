@@ -52,6 +52,10 @@ func TestEnvRefused(t *testing.T) {
 		{name: "a section", variable: "AUTH1_TOKENS=x", wantPath: "AUTH1_TOKENS"},
 		{name: "not an integer", variable: "AUTH1_OTP_LENGTH=six", wantPath: "otp.length"},
 		{name: "not a boolean", variable: "AUTH1_RECOVERY_SMS_STEP_UP=maybe", wantPath: "recovery.sms_step_up"},
+		{name: "not a duration", variable: "AUTH1_TOKENS_ACCESS_TTL=15 m", wantPath: "tokens.access_ttl"},
+		{name: "an empty duration", variable: "AUTH1_TOKENS_ACCESS_TTL=", wantPath: "tokens.access_ttl"},
+		{name: "a bare integer duration", variable: "AUTH1_TOKENS_ACCESS_TTL=900", wantPath: "tokens.access_ttl"},
+		{name: "not a size", variable: "AUTH1_PASSWORDS_ARGON2_MEMORY=64mib", wantPath: "passwords.argon2.memory"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

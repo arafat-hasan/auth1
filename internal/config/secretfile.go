@@ -38,9 +38,6 @@ func (f *SecretFile) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// check reports whether the file is a readable regular file. It reads nothing.
-func (f SecretFile) check() error { return checkFile(f.path) }
-
 // checkFile reports whether path is a readable regular file, following symlinks. It opens the
 // file to prove it can be read, but reads nothing.
 func checkFile(path string) error {

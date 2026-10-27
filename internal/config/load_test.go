@@ -70,6 +70,64 @@ identifiers:
 	}
 }
 
+// TestLoadMapEntryKeepsDefaults: an entry the file names gets that entry's defaults under the
+// values it sets; a default entry the file does not name is dropped.
+func TestLoadMapEntryKeepsDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		yaml string
+		want map[string]IdentifierPolicy
+	}{
+		{name: "one field set", yaml: "identifiers:\n  email: { verify: email_code }\n",
+			want: map[string]IdentifierPolicy{"email": {Required: true, Verify: VerifyEmailCode, SignIn: true}}},
+		{name: "entry without a value", yaml: "identifiers:\n  email:\n",
+			want: map[string]IdentifierPolicy{"email": Default().Identifiers["email"]}},
+		{name: "map without a value", yaml: "identifiers:\n", want: Default().Identifiers},
+		{name: "new entry", yaml: "identifiers:\n  username: { verify: email_link }\n",
+			want: map[string]IdentifierPolicy{"username": {Verify: VerifyEmailLink}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := mustLoad(t, tt.yaml)
+			if diff := cmp.Diff(tt.want, cfg.Identifiers, cmpConfig...); diff != "" {
+				t.Errorf("identifiers (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestLoadKeyWithoutValueKeepsDefaults: a section or key left empty, for example with its lines
+// commented out, keeps its defaults rather than becoming zero.
+func TestLoadKeyWithoutValueKeepsDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := mustLoad(t, "tokens:\nrate_limits:\n  global_ip:\npasswords:\n  min_length:\n")
+	if diff := cmp.Diff(Default(), *cfg, cmpConfig...); diff != "" {
+		t.Errorf("Load mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestLoadReportsEveryProblem: a decoding error does not hide unknown keys or refused variables.
+func TestLoadReportsEveryProblem(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Load(writeConfig(t, "tokens:\n  acess_ttl: 1m\n  access_ttl: 900\n"), []string{"AUTH1_NOPE=1"})
+	if cfg != nil {
+		t.Error("Load returned a configuration with a decoding error")
+	}
+	var paths []string
+	for _, p := range Problems(err) {
+		paths = append(paths, p.Path)
+	}
+	want := []string{"AUTH1_NOPE", "tokens.access_ttl", "tokens.acess_ttl"}
+	if diff := cmp.Diff(want, paths); diff != "" {
+		t.Errorf("problem paths (-want +got):\n%s", diff)
+	}
+}
+
 func TestLoadUnknownKeys(t *testing.T) {
 	t.Parallel()
 

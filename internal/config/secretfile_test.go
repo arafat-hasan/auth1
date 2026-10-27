@@ -48,15 +48,15 @@ func TestSecretFileCheck(t *testing.T) {
 			if tt.root && os.Geteuid() == 0 {
 				t.Skip("root can read a mode 000 file")
 			}
-			err := NewSecretFile(tt.path).check()
+			err := checkFile(tt.path)
 			if !tt.wantErr {
 				if err != nil {
-					t.Fatalf("check(%s): %v", tt.path, err)
+					t.Fatalf("checkFile(%s): %v", tt.path, err)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("check(%s): want an error", tt.path)
+				t.Fatalf("checkFile(%s): want an error", tt.path)
 			}
 			if strings.Contains(err.Error(), secretContent) {
 				t.Errorf("error %q contains the file's contents", err)

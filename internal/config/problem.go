@@ -18,21 +18,28 @@ func (p *Problem) Error() string { return p.Path + ": " + p.Message }
 // Problems returns every *Problem in err, which may be joined with errors.Join.
 func Problems(err error) []*Problem {
 	var out []*Problem
-	var walk func(error)
-	walk = func(err error) {
-		if joined, ok := err.(interface{ Unwrap() []error }); ok {
-			for _, e := range joined.Unwrap() {
-				walk(e)
-			}
-			return
-		}
+	for _, e := range leafErrors(err) {
 		var p *Problem
-		if errors.As(err, &p) {
+		if errors.As(e, &p) {
 			out = append(out, p)
 		}
 	}
-	if err != nil {
-		walk(err)
+	return out
+}
+
+// leafErrors returns the errors joined in err, recursively: err itself when it joins none, and
+// nothing for a nil err.
+func leafErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return []error{err}
+	}
+	var out []error
+	for _, e := range joined.Unwrap() {
+		out = append(out, leafErrors(e)...)
 	}
 	return out
 }

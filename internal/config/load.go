@@ -17,9 +17,11 @@ import (
 // Load reads the YAML file at path over the defaults, then applies the AUTH1_ variables in environ
 // (entries of the form KEY=value, as from os.Environ).
 //
+// A key with no value (such as a section whose keys are all commented out) keeps its default.
+//
 // Unknown keys are problems, returned together with the decoded configuration so that a caller
 // can also Validate it and report everything at once. A file that cannot be read, parsed or
-// decoded gives a nil configuration. Load does not validate.
+// decoded gives a nil configuration, with every problem found. Load does not validate.
 func Load(path string, environ []string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // the operator names the configuration file
 	if err != nil {
@@ -33,9 +35,11 @@ func Load(path string, environ []string) (*Config, error) {
 		raw = map[string]any{}
 	}
 	problems := unknownKeys(raw)
+	defaults := defaultsFor(raw)
+	dropNulls(raw)
 
 	k := koanf.New(".")
-	if err := k.Load(confmap.Provider(defaultsFor(raw), "."), nil); err != nil {
+	if err := k.Load(confmap.Provider(defaults, "."), nil); err != nil {
 		return nil, fmt.Errorf("load defaults: %w", err)
 	}
 	if err := k.Load(confmap.Provider(raw, ""), nil); err != nil {
@@ -61,7 +65,7 @@ func Load(path string, environ []string) (*Config, error) {
 			TagName: tagName,
 		},
 	}); err != nil {
-		return nil, joinProblems(decodeProblems(err))
+		return nil, joinProblems(append(problems, decodeProblems(err)...))
 	}
 	for i := range cfg.Clients {
 		if cfg.Clients[i].MFA == "" {
@@ -71,8 +75,9 @@ func Load(path string, environ []string) (*Config, error) {
 	return &cfg, joinProblems(problems)
 }
 
-// defaultsFor returns the defaults as a flat map, without the default entries of any map of
-// sections that raw sets: such a map in the file replaces the defaults instead of merging.
+// defaultsFor returns the defaults as a flat map. When raw sets a map of sections, its entries
+// replace the default entries: an entry the file names keeps that entry's defaults under the
+// values it sets, and a default entry the file does not name is dropped.
 func defaultsFor(raw map[string]any) map[string]any {
 	defaults := flatten(Default())
 	for key, v := range defaults {
@@ -81,16 +86,36 @@ func defaultsFor(raw map[string]any) map[string]any {
 		}
 	}
 	for _, mapPath := range sectionMapPaths() {
-		if _, set := lookup(raw, mapPath); !set {
+		set, ok := lookup(raw, mapPath)
+		if !ok || set == nil {
 			continue
 		}
+		entries, _ := set.(map[string]any)
 		for key := range defaults {
-			if strings.HasPrefix(key, mapPath+".") {
+			rest, under := strings.CutPrefix(key, mapPath+".")
+			if !under {
+				continue
+			}
+			name, _, _ := strings.Cut(rest, ".")
+			if _, named := entries[name]; !named {
 				delete(defaults, key)
 			}
 		}
 	}
 	return defaults
+}
+
+// dropNulls removes the keys without a value from the nested maps of m, so that they keep their
+// defaults when m is merged over them. Lists are left alone.
+func dropNulls(m map[string]any) {
+	for key, v := range m {
+		switch v := v.(type) {
+		case nil:
+			delete(m, key)
+		case map[string]any:
+			dropNulls(v)
+		}
+	}
 }
 
 // lookup finds a dotted path in a nested map.
@@ -110,23 +135,22 @@ func lookup(m map[string]any, path string) (any, bool) {
 
 // decodeProblems turns mapstructure's errors into one problem per key path.
 func decodeProblems(err error) []*Problem {
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		var out []*Problem
-		for _, e := range joined.Unwrap() {
-			out = append(out, decodeProblems(e)...)
+	var out []*Problem
+	for _, e := range leafErrors(err) {
+		var de *mapstructure.DecodeError
+		if !errors.As(e, &de) {
+			out = append(out, &Problem{Path: "(configuration)", Message: e.Error()})
+			continue
 		}
-		return out
+		inner := de.Unwrap()
+		var nested *mapstructure.DecodeError
+		if _, joined := inner.(interface{ Unwrap() []error }); joined || errors.As(inner, &nested) {
+			out = append(out, decodeProblems(inner)...)
+			continue
+		}
+		out = append(out, &Problem{Path: de.Name(), Message: inner.Error()})
 	}
-	var de *mapstructure.DecodeError
-	if !errors.As(err, &de) {
-		return []*Problem{{Path: "(configuration)", Message: err.Error()}}
-	}
-	inner := de.Unwrap()
-	var nested *mapstructure.DecodeError
-	if _, joined := inner.(interface{ Unwrap() []error }); joined || errors.As(inner, &nested) {
-		return decodeProblems(inner)
-	}
-	return []*Problem{{Path: de.Name(), Message: inner.Error()}}
+	return out
 }
 
 var (

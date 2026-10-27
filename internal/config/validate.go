@@ -19,6 +19,7 @@ func (c *Config) Validate() error {
 	v := &validator{c: c, dev: c.App.Environment == EnvDevelopment}
 	v.required()
 	v.files()
+	v.ranges()
 	v.floors()
 	v.productionOnly()
 	v.enums()
@@ -79,7 +80,25 @@ func (v *validator) required() {
 		if (sc.JWKSFile == "") == (sc.JWKSURI == "") {
 			v.add(p, "set exactly one of jwks_file and jwks_uri")
 		}
+		if sc.JWKSURI != "" {
+			u, ok := webURL(sc.JWKSURI)
+			switch {
+			case !ok:
+				v.add(p+".jwks_uri", "%q is not an absolute http or https URL", sc.JWKSURI)
+			case u.Scheme != "https" && !v.dev:
+				v.add(p+".jwks_uri", "%q is not an https URL", sc.JWKSURI)
+			}
+		}
 	}
+}
+
+// webURL parses raw as an absolute http or https URL with a host and no user information.
+func webURL(raw string) (*url.URL, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return nil, false
+	}
+	return u, true
 }
 
 // files checks that every configured file exists and can be read.
@@ -137,6 +156,39 @@ func (v *validator) optionalFile(path, file string) {
 	}
 }
 
+// ranges refuses a negative number anywhere, and zero for the settings whose floor is only an
+// upper bound, where zero would mean an unusable lifetime or no attempts at all. These apply in
+// every environment.
+func (v *validator) ranges() {
+	for path, val := range flatten(*v.c) {
+		var negative bool
+		switch n := val.(type) {
+		case time.Duration:
+			negative = n < 0
+		case ByteSize:
+			negative = n < 0
+		case int:
+			negative = n < 0
+		}
+		if negative {
+			v.add(path, "%v must not be negative", val)
+		}
+	}
+	c := v.c
+	for path, d := range map[string]time.Duration{
+		"tokens.access_ttl":                         c.Tokens.AccessTTL,
+		"links.reset_ttl":                           c.Links.ResetTTL,
+		"service_auth.client_credentials.token_ttl": c.ServiceAuth.ClientCredentials.TokenTTL,
+	} {
+		if d == 0 {
+			v.add(path, "must be above 0")
+		}
+	}
+	if c.OTP.MaxAttempts == 0 {
+		v.add("otp.max_attempts", "must be above 0")
+	}
+}
+
 // floors applies the security floors of TDD-08 §3.1 outside development.
 func (v *validator) floors() {
 	if v.dev {
@@ -148,8 +200,9 @@ func (v *validator) floors() {
 			v.add(path, "%s is above the floor of at most %s", got, limit)
 		}
 	}
+	// A negative value is the range check's to report.
 	atLeast := func(path string, got, limit int) {
-		if got < limit {
+		if got >= 0 && got < limit {
 			v.add(path, "%d is below the floor of at least %d", got, limit)
 		}
 	}
@@ -157,7 +210,7 @@ func (v *validator) floors() {
 	atMost("tokens.refresh_reuse_grace", c.Tokens.RefreshReuseGrace, 60*time.Second)
 	atLeast("passwords.min_length", c.Passwords.MinLength, 8)
 	atLeast("passwords.max_length", c.Passwords.MaxLength, 64)
-	if c.Passwords.Argon2.Memory < 19*MiB {
+	if m := c.Passwords.Argon2.Memory; m >= 0 && m < 19*MiB {
 		v.add("passwords.argon2.memory", "%s is below the floor of at least %s", c.Passwords.Argon2.Memory, 19*MiB)
 	}
 	atLeast("passwords.argon2.iterations", c.Passwords.Argon2.Iterations, 2)
@@ -172,7 +225,8 @@ func (v *validator) floors() {
 	atMost("service_auth.client_credentials.token_ttl", c.ServiceAuth.ClientCredentials.TokenTTL, 15*time.Minute)
 }
 
-// productionOnly applies the rules that development relaxes, other than the floors.
+// productionOnly applies the rules that development relaxes, other than the floors and the
+// http origins and JWKS URIs it also allows.
 func (v *validator) productionOnly() {
 	if v.dev {
 		return
@@ -183,13 +237,6 @@ func (v *validator) productionOnly() {
 	}
 	if c.ServiceAuth.Mode == "" {
 		v.add("service_auth.mode", "required outside development")
-	}
-	for i, cl := range c.Clients {
-		for j, origin := range cl.Origins {
-			if u, err := url.Parse(origin); err != nil || u.Scheme != "https" || u.Host == "" {
-				v.add(index(index("clients", i)+".origins", j), "%q is not an https origin", origin)
-			}
-		}
 	}
 }
 
@@ -232,12 +279,27 @@ func (v *validator) clients() {
 
 		factors := slices.Clone(cl.FirstFactors)
 		slices.Sort(factors)
+		withOTP := false
 		switch {
 		case slices.Equal(factors, []Factor{FactorPassword}):
 		case slices.Equal(factors, []Factor{FactorOTP, FactorPassword}):
-			oneOf(v, p+".otp_channel", cl.OTPChannel, false, OTPChannelSMS, OTPChannelEmail)
+			withOTP = true
 		default:
 			v.add(p+".first_factors", "%v is not [password] or [password, otp]", cl.FirstFactors)
+		}
+		// Required with OTP sign-in, and checked whenever it is set.
+		oneOf(v, p+".otp_channel", cl.OTPChannel, !withOTP, OTPChannelSMS, OTPChannelEmail)
+
+		// An origin is exactly a scheme and host; http is allowed only in development.
+		for j, origin := range cl.Origins {
+			op := index(p+".origins", j)
+			u, ok := webURL(origin)
+			switch {
+			case !ok || origin != u.Scheme+"://"+u.Host:
+				v.add(op, "%q is not an origin: a scheme and host, with no path", origin)
+			case u.Scheme != "https" && !v.dev:
+				v.add(op, "%q is not an https origin", origin)
+			}
 		}
 
 		for j, role := range cl.AllowedRoles {
