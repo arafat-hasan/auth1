@@ -3,6 +3,7 @@ module github.com/arafat-hasan/auth1
 go 1.27
 
 require (
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/google/go-cmp v0.7.0
 	github.com/knadh/koanf/parsers/yaml v1.1.1
