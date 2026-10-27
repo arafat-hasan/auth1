@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+      # The product-word list never lives in this repository (SDD D-1).
+      - name: Product-word list
+        env:
+          WORDS: ${{ vars.AUTH1_PRODUCT_WORDS || secrets.AUTH1_PRODUCT_WORDS }}
+        run: |
+          if [ -z "$WORDS" ]; then
+            echo "::error::Set the AUTH1_PRODUCT_WORDS repository variable or secret (one word per line)."
+            exit 1
+          fi
+          printf '%s\n' "$WORDS" > "$RUNNER_TEMP/product-words.txt"
+          echo "AUTH1_PRODUCT_WORDS_FILE=$RUNNER_TEMP/product-words.txt" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
