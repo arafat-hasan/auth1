@@ -4,7 +4,6 @@ CMakeCache.txt
 CMakeFiles
 CMakeScripts
 Testing
-Makefile
 cmake_install.cmake
 install_manifest.txt
 compile_commands.json
@@ -242,13 +241,14 @@ $RECYCLE.BIN/
 *.lnk
 
 # Binaries for programs and plugins
-auth-service
-auth1
-migrate
+/auth-service
+/auth1
+/migrate
+/bin/
 
 # Configuration files with sensitive data
-config.yaml
-config.yml
+/config.yaml
+/config.yml
 .env
 .env.staging
 .env.prod
@@ -259,9 +259,9 @@ config.yml
 *.log
 logs/
 
-# Assets that might contain secrets (keep example keys only)
-assets/private_key.pem
-assets/public_key.pem
+# Key material (test fixtures under testdata/ are kept)
+*.pem
+!**/testdata/**/*.pem
 
 # Docker volumes
 postgres_data/
@@ -269,9 +269,7 @@ redis_data/
 redis_insight_data/
 
 # Backups
-backups/
-*.sql
-*.sql.gz
+/backups/
 *.aof
 *.rdb
 
