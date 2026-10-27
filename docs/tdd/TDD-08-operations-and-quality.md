@@ -261,6 +261,9 @@ telemetry:
 - an `http.listen` that is not `host:port` with a port from 1 to 65535; an `http.base_path` that is
   not empty and not `/segment[/segment…]`, each segment of letters, digits, `-`, `.`, `_` or `~`
   and not `.` or `..`. These apply in every environment.
+- outside `development`, a `database.dsn_file` DSN that allows a connection without TLS: `sslmode`
+  `disable`, `allow` or `prefer`, or no `sslmode` (which means `prefer`). `serve` and `migrate`
+  check this when they open the pool; the DSN itself never appears in an error or a log line.
 - a `telemetry.metrics_listen` that is not `host:port` with a port from 1 to 65535, or that equals
   `http.listen`; a `telemetry.otlp_endpoint` that is not an absolute `http` or `https` URL, or that
   has a query or fragment; an empty `telemetry.service_name`. These apply in every environment.
