@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/arafat-hasan/auth1/internal/http/server"
 )
 
 // testDeps binds every listener on 127.0.0.1:0 and reports each bound address on addrs, keyed by
@@ -28,8 +30,47 @@ func testDeps(addrs chan<- [2]string) serveDeps {
 			}
 			return ln, err
 		},
-		drainDelay:      300 * time.Millisecond,
-		shutdownTimeout: 5 * time.Second,
+		drainDelay:       300 * time.Millisecond,
+		shutdownTimeout:  5 * time.Second,
+		telemetryTimeout: 5 * time.Second,
+	}
+}
+
+// waitDraining polls url until it answers 503, since the drain begins on the server's goroutine
+// shortly after the context is cancelled.
+func waitDraining(t *testing.T, url string) {
+	t.Helper()
+	deadline := time.Now().Add(200 * time.Millisecond) // within testDeps' drain delay
+	for {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", url, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET %s: still %d after the drain began", url, resp.StatusCode)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestStopFitsGracePeriod(t *testing.T) {
+	t.Parallel()
+
+	// Kubernetes' default terminationGracePeriodSeconds; SIGKILL follows it.
+	const grace = 30 * time.Second
+	if total := drainDelay + shutdownTimeout + telemetryTimeout; total >= grace {
+		t.Errorf("stop sequence takes up to %v, want under %v", total, grace)
+	}
+	if shutdownTimeout < server.WriteTimeout {
+		t.Errorf("shutdownTimeout %v is shorter than the write timeout %v", shutdownTimeout, server.WriteTimeout)
 	}
 }
 
@@ -97,7 +138,7 @@ func TestServeBindFailure(t *testing.T) {
 				opened = append(opened, ln)
 				return ln, err
 			},
-			drainDelay: time.Millisecond, shutdownTimeout: time.Second,
+			drainDelay: time.Millisecond, shutdownTimeout: time.Second, telemetryTimeout: time.Second,
 		}
 		err := newTestServeCmd(deps, &bytes.Buffer{}, "--config", "config.example.yaml")(context.Background())
 		if err == nil || !strings.Contains(err.Error(), tt.wantKey) || !strings.Contains(err.Error(), "address already in use") {
@@ -165,7 +206,8 @@ func TestServeRuns(t *testing.T) {
 	expect(metrics+"/metrics", 200, "", "http_server_request_duration_seconds_bucket")
 
 	cancel()
-	// Within the drain delay the API still answers, and /readyz fails.
+	// Within the drain delay the API still answers, and /readyz fails once the drain has begun.
+	waitDraining(t, api+"/readyz")
 	body := expect(api+"/readyz", 503, "application/json", "")
 	var ready struct {
 		Checks []struct{ Name, Status string } `json:"checks"`

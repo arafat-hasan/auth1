@@ -19,10 +19,13 @@ import (
 )
 
 // The stop sequence on SIGTERM: /readyz fails for drainDelay, so load balancers stop sending
-// requests, then the servers get shutdownTimeout to finish the requests in flight.
+// requests, then the servers get shutdownTimeout to finish the requests in flight (the write
+// timeout, which no response outlives), then telemetry gets telemetryTimeout to flush. The total,
+// 25s, stays within Kubernetes' default 30s grace period (TDD-08 §8).
 const (
-	drainDelay      = 5 * time.Second
-	shutdownTimeout = 20 * time.Second
+	drainDelay       = 5 * time.Second
+	shutdownTimeout  = server.WriteTimeout
+	telemetryTimeout = 5 * time.Second
 )
 
 // errDraining is the draining check's error once shutdown has begun.
@@ -30,13 +33,17 @@ var errDraining = errors.New("shutting down")
 
 // serveDeps are what serve would otherwise take from the operating system. Tests replace them.
 type serveDeps struct {
-	listen          func(network, addr string) (net.Listener, error)
-	drainDelay      time.Duration
-	shutdownTimeout time.Duration
+	listen           func(network, addr string) (net.Listener, error)
+	drainDelay       time.Duration
+	shutdownTimeout  time.Duration
+	telemetryTimeout time.Duration
 }
 
 func defaultServeDeps() serveDeps {
-	return serveDeps{listen: net.Listen, drainDelay: drainDelay, shutdownTimeout: shutdownTimeout}
+	return serveDeps{
+		listen: net.Listen, drainDelay: drainDelay,
+		shutdownTimeout: shutdownTimeout, telemetryTimeout: telemetryTimeout,
+	}
 }
 
 // newServeCmd builds "auth1 serve". environ supplies the AUTH1_ overrides (os.Environ in main).
@@ -47,7 +54,7 @@ func newServeCmd(environ func() []string, info buildInfo, deps serveDeps) *cobra
 		Short: "Serve the HTTP API until SIGINT or SIGTERM",
 		Long: "Load and validate the configuration, then serve the HTTP API on http.listen and the " +
 			"metrics on telemetry.metrics_listen. On SIGINT or SIGTERM, /readyz fails for 5s, then " +
-			"requests in flight get 20s to finish.",
+			"requests in flight get 15s to finish and telemetry 5s to flush.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return serve(cmd, path, environ(), info, deps)
@@ -74,7 +81,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		return err
 	}
 	defer func() {
-		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deps.shutdownTimeout)
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deps.telemetryTimeout)
 		defer cancel()
 		if serr := tel.Shutdown(sctx); serr != nil {
 			err = errors.Join(err, fmt.Errorf("telemetry: %w", serr))

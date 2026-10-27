@@ -383,6 +383,7 @@ Each is a short procedure kept in `docs/runbooks/`. To be written with the imple
 - **Replicas and scheduling:** at least 2 replicas, anti-affinity across nodes, a `PodDisruptionBudget` of `maxUnavailable: 1`.
 - **Resources:** CPU request 1, limit 2. Memory: 256 MiB + `max_concurrent × argon2.memory` + 25%.
 - **Probes:** `/livez` (liveness), `/readyz` (readiness).
+- **Stopping:** on SIGTERM, `/readyz` fails for 5 s, requests in flight get 15 s (the write timeout of TDD-07 §7), then telemetry gets 5 s to flush. At most 25 s, within the default `terminationGracePeriodSeconds` of 30 s.
 - **Migrations:** a pre-deploy job runs `auth1 migrate up`, and `auth1 config check` runs before it.
 - **Image:** distroless, non-root, read-only root filesystem. Secrets are mounted read-only.
 
