@@ -25,12 +25,14 @@ func NewHandler(w io.Writer, service, version string) slog.Handler {
 	return &handler{base: inner, plain: inner}
 }
 
-// replaceAttr renames slog's time key to ts.
+// replaceAttr renames slog's time key to ts and redacts secret and personal values (TDD-08 §5.1).
+// slog calls it for every attribute that is not a group, at any depth, after resolving LogValuers.
 func replaceAttr(groups []string, a slog.Attr) slog.Attr {
 	if len(groups) == 0 && a.Key == slog.TimeKey {
 		a.Key = "ts"
+		return a
 	}
-	return a
+	return redact(groups, a)
 }
 
 // handler adds the trace ids ahead of the logger's own groups and attributes. It records each
