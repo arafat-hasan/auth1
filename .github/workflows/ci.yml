@@ -17,6 +17,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Tidy
+        run: go mod tidy -diff
+
+      - name: Build
+        run: make build && ./bin/auth1 version
+
       - name: Vet
         run: go vet ./...
 
