@@ -19,8 +19,7 @@ import (
 )
 
 // Telemetry holds the logger, the tracer and meter providers, and the metrics handler of one
-// process. It sets no global state:
-// the caller decides whether to install them as defaults.
+// process. It sets no global state: the caller decides whether to install them as defaults.
 type Telemetry struct {
 	logger  *slog.Logger
 	tp      *sdktrace.TracerProvider
@@ -47,17 +46,27 @@ func New(ctx context.Context, cfg config.Telemetry, info BuildInfo) (*Telemetry,
 		}
 		s.spanExporter = exp
 	}
-	return newTelemetry(cfg, info, s)
+	return newTelemetry(ctx, cfg, info, s)
 }
 
-func newTelemetry(cfg config.Telemetry, info BuildInfo, s settings) (*Telemetry, error) {
+// newTelemetry builds the Telemetry from s. When it fails, it shuts s.spanExporter down, since no
+// tracer provider owns it yet.
+func newTelemetry(ctx context.Context, cfg config.Telemetry, info BuildInfo, s settings) (*Telemetry, error) {
+	fail := func(err error) (*Telemetry, error) {
+		if s.spanExporter != nil {
+			if serr := s.spanExporter.Shutdown(ctx); serr != nil {
+				err = errors.Join(err, fmt.Errorf("span exporter: %w", serr))
+			}
+		}
+		return nil, err
+	}
 	if cfg.ServiceName == "" {
-		return nil, fmt.Errorf("telemetry: empty service name")
+		return fail(fmt.Errorf("telemetry: empty service name"))
 	}
 	res := newResource(cfg.ServiceName, info.Version)
 	mp, metrics, err := newMeterProvider(res)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	return &Telemetry{
 		logger:  slog.New(NewHandler(s.stdout, cfg.ServiceName, info.Version)),

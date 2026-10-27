@@ -26,7 +26,7 @@ func newTest(t *testing.T, stdout *bytes.Buffer, exporter *tracetest.InMemoryExp
 	if exporter != nil {
 		s.spanExporter = exporter
 	}
-	tel, err := newTelemetry(cfg, BuildInfo{Version: "v-test"}, s)
+	tel, err := newTelemetry(context.Background(), cfg, BuildInfo{Version: "v-test"}, s)
 	if err != nil {
 		t.Fatalf("newTelemetry: %v", err)
 	}
@@ -186,5 +186,31 @@ func TestShutdownBounded(t *testing.T) {
 	_ = tel.Shutdown(ctx) // an export error is expected
 	if d := time.Since(start); d > 3*time.Second {
 		t.Errorf("Shutdown took %v, want at most the context's 2s and some slack", d)
+	}
+}
+
+// shutdownRecorder is a span exporter that records whether it was shut down.
+type shutdownRecorder struct {
+	*tracetest.InMemoryExporter
+	shutDown bool
+}
+
+func (e *shutdownRecorder) Shutdown(ctx context.Context) error {
+	e.shutDown = true
+	return e.InMemoryExporter.Shutdown(ctx)
+}
+
+// TestFailedNewShutsExporterDown checks that the exporter New built is not left open when New
+// fails after building it.
+func TestFailedNewShutsExporterDown(t *testing.T) {
+	t.Parallel()
+
+	exp := &shutdownRecorder{InMemoryExporter: tracetest.NewInMemoryExporter()}
+	_, err := newTelemetry(context.Background(), config.Telemetry{}, BuildInfo{}, settings{stdout: &bytes.Buffer{}, spanExporter: exp})
+	if err == nil {
+		t.Fatal("newTelemetry with an empty service name succeeded")
+	}
+	if !exp.shutDown {
+		t.Error("span exporter was not shut down")
 	}
 }
