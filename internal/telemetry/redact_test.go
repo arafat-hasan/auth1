@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -43,6 +44,9 @@ var redactedKeys = []string{
 	"value", "handle", "recovery_code", "db_password", "refresh_token", "client_secret",
 }
 
+// namedMap is a map type of its own, which the handler must still see into.
+type namedMap map[string]string
+
 type withSecret struct {
 	Name string
 	Key  Secret
@@ -66,11 +70,15 @@ func TestRedaction(t *testing.T) {
 	strMap := map[string]string{}
 	listMap := map[string][]string{}
 	anyMap := map[string]any{}
+	query := url.Values{}
+	named := namedMap{}
 	for _, k := range redactedKeys {
 		header.Set(k, sentinel())
 		strMap[k] = sentinel()
 		listMap[k] = []string{sentinel()}
 		anyMap[k] = sentinel()
+		query.Set(k, sentinel())
+		named[k] = sentinel()
 	}
 	strMap["kept"] = "keep-me"
 
@@ -84,7 +92,8 @@ func TestRedaction(t *testing.T) {
 	l.WithGroup("g").With(attrs()...).InfoContext(ctx, "group with")
 	l.InfoContext(ctx, "maps",
 		slog.Any("header", header), slog.Any("strings", strMap),
-		slog.Any("lists", listMap), slog.Any("any", anyMap))
+		slog.Any("lists", listMap), slog.Any("any", anyMap),
+		slog.Any("query", query), slog.Any("named", named))
 	l.InfoContext(ctx, "group key", slog.Group("password", slog.String("inner", "sentinel-x")))
 	l.InfoContext(ctx, "secret type", slog.Any("k", Secret("sentinel-s")),
 		slog.Any("struct", withSecret{Name: "keep-me", Key: Secret("sentinel-t")}))
@@ -96,7 +105,7 @@ func TestRedaction(t *testing.T) {
 	if !strings.Contains(out, "keep-me") {
 		t.Errorf("output lost a harmless value:\n%s", out)
 	}
-	if got, want := strings.Count(out, Redacted), 5*len(redactedKeys)+len(redactedKeys)*4+1+2; got < want {
+	if got, want := strings.Count(out, Redacted), 5*len(redactedKeys)+len(redactedKeys)*6+1+2; got < want {
 		t.Errorf("output has %d %s markers, want at least %d:\n%s", got, Redacted, want, out)
 	}
 }

@@ -2,7 +2,7 @@ package telemetry
 
 import (
 	"log/slog"
-	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -35,7 +35,8 @@ func redactedKey(key string) bool {
 }
 
 // redact replaces a's value when its key, or the key of any group around it, is redacted. A map
-// of strings (http.Header included) becomes a group, so that the handler checks its keys too.
+// with string keys, of any type (http.Header and url.Values included), becomes a group, so that
+// the handler checks its keys too.
 func redact(groups []string, a slog.Attr) slog.Attr {
 	if redactedKey(a.Key) || slices.ContainsFunc(groups, redactedKey) {
 		return slog.String(a.Key, Redacted)
@@ -43,25 +44,23 @@ func redact(groups []string, a slog.Attr) slog.Attr {
 	if a.Value.Kind() != slog.KindAny {
 		return a
 	}
-	switch m := a.Value.Any().(type) {
-	case http.Header:
-		return slog.Attr{Key: a.Key, Value: mapGroup(m)}
-	case map[string][]string:
-		return slog.Attr{Key: a.Key, Value: mapGroup(m)}
-	case map[string]string:
-		return slog.Attr{Key: a.Key, Value: mapGroup(m)}
-	case map[string]any:
-		return slog.Attr{Key: a.Key, Value: mapGroup(m)}
+	if g, ok := mapGroup(a.Value.Any()); ok {
+		return slog.Attr{Key: a.Key, Value: g}
 	}
 	return a
 }
 
-// mapGroup turns m into a group value with its entries sorted by key.
-func mapGroup[V any](m map[string]V) slog.Value {
-	attrs := make([]slog.Attr, 0, len(m))
-	for k, v := range m {
-		attrs = append(attrs, slog.Any(k, v))
+// mapGroup turns v, when it is a map whose key type has the underlying type string, into a group
+// value with its entries sorted by key. It reports false for any other value.
+func mapGroup(v any) (slog.Value, bool) {
+	m := reflect.ValueOf(v)
+	if m.Kind() != reflect.Map || m.Type().Key().Kind() != reflect.String {
+		return slog.Value{}, false
+	}
+	attrs := make([]slog.Attr, 0, m.Len())
+	for it := m.MapRange(); it.Next(); {
+		attrs = append(attrs, slog.Any(it.Key().String(), it.Value().Interface()))
 	}
 	slices.SortFunc(attrs, func(a, b slog.Attr) int { return strings.Compare(a.Key, b.Key) })
-	return slog.GroupValue(attrs...)
+	return slog.GroupValue(attrs...), true
 }
