@@ -74,16 +74,7 @@ func (c *Checker) Ready() http.Handler {
 		checks := slices.Clone(c.checks)
 		c.mu.Unlock()
 
-		errs := make([]error, len(checks))
-		var wg sync.WaitGroup
-		for i, ch := range checks {
-			wg.Go(func() {
-				ctx, cancel := context.WithTimeout(r.Context(), c.timeout)
-				defer cancel()
-				errs[i] = ch.fn(ctx)
-			})
-		}
-		wg.Wait()
+		errs := c.run(r.Context(), checks)
 
 		body := readyBody{Status: "ready", Checks: make([]checkResult, len(checks))}
 		for i, ch := range checks {
@@ -105,6 +96,21 @@ func (c *Checker) Ready() http.Handler {
 		}
 		writeJSON(w, code, body)
 	})
+}
+
+// run runs checks concurrently, each bounded by the check timeout, and returns their errors in order.
+func (c *Checker) run(ctx context.Context, checks []check) []error {
+	errs := make([]error, len(checks))
+	var wg sync.WaitGroup
+	for i, ch := range checks {
+		wg.Go(func() {
+			cctx, cancel := context.WithTimeout(ctx, c.timeout)
+			defer cancel()
+			errs[i] = ch.fn(cctx)
+		})
+	}
+	wg.Wait()
+	return errs
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

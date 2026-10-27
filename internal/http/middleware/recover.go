@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"runtime/debug"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
+
 	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/requestid"
@@ -24,24 +26,27 @@ func Recover(logger *slog.Logger, pw *problem.Writer) func(http.Handler) http.Ha
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ww := wrap(w, r)
-			defer func() {
-				v := recover()
-				if v == nil {
-					return
-				}
-				if v == http.ErrAbortHandler { //nolint:errorlint // net/http panics with the sentinel itself
-					panic(v)
-				}
-				logger.LogAttrs(r.Context(), slog.LevelError, "handler panicked",
-					slog.String("panic", panicValue(v)),
-					slog.String("stack", string(debug.Stack())),
-					telemetry.RequestID(requestid.From(r.Context())))
-				if ww.Status() == 0 {
-					pw.Write(ww, r, &domain.Error{Code: domain.CodeUnavailable, Detail: panicDetail})
-				}
-			}()
+			defer recovered(logger, pw, ww, r)
 			next.ServeHTTP(ww, r)
 		})
+	}
+}
+
+// recovered is Recover's deferred function: it stops a panic, logs it and answers the problem.
+func recovered(logger *slog.Logger, pw *problem.Writer, ww chimw.WrapResponseWriter, r *http.Request) {
+	v := recover()
+	if v == nil {
+		return
+	}
+	if v == http.ErrAbortHandler { //nolint:errorlint // net/http panics with the sentinel itself
+		panic(v)
+	}
+	logger.LogAttrs(r.Context(), slog.LevelError, "handler panicked",
+		slog.String("panic", panicValue(v)),
+		slog.String("stack", string(debug.Stack())),
+		telemetry.RequestID(requestid.From(r.Context())))
+	if ww.Status() == 0 {
+		pw.Write(ww, r, &domain.Error{Code: domain.CodeUnavailable, Detail: panicDetail})
 	}
 }
 

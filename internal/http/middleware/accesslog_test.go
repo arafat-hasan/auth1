@@ -140,7 +140,7 @@ func TestRequestDurationMetric(t *testing.T) {
 	want := map[attribute.Set]uint64{
 		attribute.NewSet(attribute.String("http.request.method", "GET"), attribute.String("http.route", "/v1/things/{id}"),
 			attribute.Int("http.response.status_code", 200)): 2,
-		attribute.NewSet(attribute.String("http.request.method", "GET"), attribute.Int("http.response.status_code", 404)): 1,
+		attribute.NewSet(attribute.String("http.request.method", "GET"), attribute.Int("http.response.status_code", 404)):    1,
 		attribute.NewSet(attribute.String("http.request.method", "_OTHER"), attribute.Int("http.response.status_code", 405)): 1,
 	}
 	if len(got) != len(want) {

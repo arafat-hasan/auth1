@@ -138,7 +138,11 @@ func TestServeRuns(t *testing.T) {
 
 	expect := func(url string, code int, contentType, contains string) string {
 		t.Helper()
-		resp, err := http.Get(url) //nolint:noctx // test server
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("GET %s: %v", url, err)
 		}

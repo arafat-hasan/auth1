@@ -28,10 +28,10 @@ func TestRecover(t *testing.T) {
 			wantStatus: 503, wantPanic: "string"},
 		{name: "error panic", handler: func(http.ResponseWriter, *http.Request) { panic(errors.New("e")) },
 			wantStatus: 503, wantPanic: "e"},
-		{name: "runtime error", handler: func(http.ResponseWriter, *http.Request) {
-			var m map[string]int
-			m["x"] = 1
-		}, wantStatus: 503, wantPanic: "assignment to entry in nil map"},
+		{name: "runtime error", handler: func(_ http.ResponseWriter, r *http.Request) {
+			var s []int
+			_ = s[len(r.URL.Path)] //nolint:gosec // the deliberate panic: index 1 of an empty slice
+		}, wantStatus: 503, wantPanic: "runtime error: index out of range [1] with length 0"},
 		{name: "after the response started", handler: func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte("ok"))
 			panic("late")

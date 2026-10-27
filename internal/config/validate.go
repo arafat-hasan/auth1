@@ -400,13 +400,16 @@ func validBasePath(p string) bool {
 		if seg == "" || seg == "." || seg == ".." {
 			return false
 		}
-		for _, r := range seg {
-			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-._~", r)) {
-				return false
-			}
+		if strings.IndexFunc(seg, func(r rune) bool { return !unreserved(r) }) >= 0 {
+			return false
 		}
 	}
 	return true
+}
+
+// unreserved reports whether r is an unreserved URL character (RFC 3986 §2.3).
+func unreserved(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-._~", r)
 }
 
 // usesSMS reports whether any SMS method is configured: an identifier verified by SMS, OTP sign-in

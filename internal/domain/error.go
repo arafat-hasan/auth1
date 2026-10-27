@@ -19,7 +19,7 @@ const (
 	CodeCodeInvalid              Code = "CODE_INVALID"
 	CodeChallengeClosed          Code = "CHALLENGE_CLOSED"
 	CodeResendTooSoon            Code = "RESEND_TOO_SOON"
-	CodeInvalidCredentials       Code = "INVALID_CREDENTIALS"
+	CodeInvalidCredentials       Code = "INVALID_CREDENTIALS" //nolint:gosec // an error code, not a credential
 	CodeSignInDelayed            Code = "SIGN_IN_DELAYED"
 	CodeRegistrationIncomplete   Code = "REGISTRATION_INCOMPLETE"
 	CodeRoleNotPermitted         Code = "ROLE_NOT_PERMITTED"
