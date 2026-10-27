@@ -60,7 +60,14 @@ func (m *Metrics) Gauge(name string) (metric.Float64Gauge, error) {
 // Histogram returns the catalogue histogram name.
 func (m *Metrics) Histogram(name string) (metric.Float64Histogram, error) {
 	return instrument(m, name, KindHistogram, func() (metric.Float64Histogram, error) {
-		return m.meter.Float64Histogram(name)
+		var opts []metric.Float64HistogramOption
+		if u := catalogue[name].unit; u != "" {
+			opts = append(opts, metric.WithUnit(u))
+		}
+		if b := catalogue[name].buckets; b != nil {
+			opts = append(opts, metric.WithExplicitBucketBoundaries(b...))
+		}
+		return m.meter.Float64Histogram(name, opts...)
 	})
 }
 
@@ -68,11 +75,11 @@ func (m *Metrics) Histogram(name string) (metric.Float64Histogram, error) {
 // with create the first time.
 func instrument[T any](m *Metrics, name string, kind Kind, create func() (T, error)) (T, error) {
 	var zero T
-	got, ok := catalogue[name]
+	s, ok := catalogue[name]
 	if !ok {
 		return zero, fmt.Errorf("metric %q is not in the TDD-08 §5.2 catalogue", name)
 	}
-	if got != kind {
+	if got := s.kind; got != kind {
 		return zero, fmt.Errorf("metric %q is a %s, not a %s", name, got, kind)
 	}
 
