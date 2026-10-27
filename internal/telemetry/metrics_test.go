@@ -65,7 +65,7 @@ func TestEveryCatalogueNameScrapes(t *testing.T) {
 	ctx := context.Background()
 	for _, name := range InstrumentNames() {
 		var err error
-		switch catalogue[name] {
+		switch catalogue[name].kind {
 		case KindCounter:
 			var c metric.Int64Counter
 			if c, err = m.Counter(name); err == nil {
@@ -89,13 +89,51 @@ func TestEveryCatalogueNameScrapes(t *testing.T) {
 
 	body := scrape(t, tel)
 	for _, name := range InstrumentNames() {
-		family := name
-		if catalogue[name] == KindHistogram {
-			family = name + "_bucket"
+		family := promFamily(name)
+		if catalogue[name].kind == KindHistogram {
+			family += "_bucket"
 		}
 		if len(sampleLines(body, family)) == 0 {
 			t.Errorf("no samples for %s in:\n%s", family, body)
 		}
+	}
+}
+
+// promFamily is the Prometheus family name of a catalogue instrument: dots become underscores and
+// the unit "s" adds _seconds.
+func promFamily(name string) string {
+	family := strings.ReplaceAll(name, ".", "_")
+	if catalogue[name].unit == "s" && !strings.HasSuffix(family, "_seconds") {
+		family += "_seconds"
+	}
+	return family
+}
+
+func TestHTTPDurationBuckets(t *testing.T) {
+	t.Parallel()
+
+	tel := newTest(t, &bytes.Buffer{}, nil)
+	h, err := NewMetrics(tel.MeterProvider()).Histogram("http.server.request.duration")
+	if err != nil {
+		t.Fatalf("Histogram: %v", err)
+	}
+	h.Record(context.Background(), 0.02)
+
+	lines := sampleLines(scrape(t, tel), "http_server_request_duration_seconds_bucket")
+	want := map[string]string{`le="0.005"`: " 0", `le="0.01"`: " 0", `le="0.025"`: " 1", `le="10"`: " 1"}
+	for le, value := range want {
+		found := false
+		for _, l := range lines {
+			if strings.Contains(l, le) && strings.HasSuffix(l, value) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no bucket %s with value%s in %q", le, value, lines)
+		}
+	}
+	if len(lines) != 15 { // 14 boundaries and +Inf
+		t.Errorf("%d buckets, want 15: %q", len(lines), lines)
 	}
 }
 

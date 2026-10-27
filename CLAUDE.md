@@ -40,6 +40,7 @@ make vuln                  # govulncheck ./...
 make generate              # go generate ./...
 ./bin/auth1 version        # version, commit, Go version
 ./bin/auth1 config check --config config.example.yaml   # load and validate a configuration
+AUTH1_APP_ENVIRONMENT=development ./bin/auth1 serve --config config.example.yaml   # API on :8080, metrics on :9090
 ```
 
 `make migrate` needs the `migrate` command, which WP-05 adds.
@@ -62,6 +63,14 @@ TDD-08 §5.2 catalogue (`telemetry.InstrumentNames()`); create instruments throu
 means a field with a `koanf` tag, its default, and a line in `config.example.yaml` (tests check
 the example lists every key with its default). The example's secret files are empty placeholders
 under `testdata/example/`.
+
+HTTP (TDD-08 §2): `internal/http/server` builds the Chi router (`NewRouter(Options)`: middleware
+via `Use`, `/livez` and `/readyz` at the root, API routes under `http.base_path` through
+`Options.Routes`) and `Run`s the servers with the drain and shutdown sequence; `cmd/auth1/serve.go`
+only wires it. Domain failures are `*domain.Error` with a `domain.Code`; only
+`internal/http/problem` maps a code to its status (`(*problem.Writer).Write`). Readiness checks are
+added with `health.Checker.Register`. Middleware reads the route pattern after routing, so it must
+stay installed with `Use`; logs, spans and metric labels carry the route pattern, never the path.
 
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.

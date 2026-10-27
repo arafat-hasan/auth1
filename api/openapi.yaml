@@ -123,6 +123,7 @@ paths:
               schema: { $ref: '#/components/schemas/RegistrationStarted' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -145,6 +146,7 @@ paths:
             schema: { $ref: '#/components/schemas/ResumeRequest' }
       responses:
         '202': { description: 'If an open flow holds the value, a message is on its way' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -169,6 +171,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/registrations/{flowId}/verify:
@@ -194,6 +197,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/registrations/{flowId}/resend:
@@ -213,6 +217,7 @@ paths:
       responses:
         '202': { description: The verification is on its way }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
@@ -244,6 +249,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
 
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
   /v1/verification-links/confirm:
     post:
       tags: [Registration]
@@ -264,6 +270,7 @@ paths:
               schema: { $ref: '#/components/schemas/LinkConfirmed' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/sessions:
@@ -296,6 +303,7 @@ paths:
               schema: { $ref: '#/components/schemas/MfaStep' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -319,6 +327,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/OtpSignInStarted' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -344,6 +353,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/sessions/mfa:
@@ -363,6 +373,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/sessions/mfa/enrolment:
@@ -387,6 +398,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TotpSetup' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/sessions/mfa/enrolment/confirm:
@@ -414,6 +426,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/sessions/refresh:
@@ -438,6 +451,7 @@ paths:
         '200': { $ref: '#/components/responses/Tokens' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
   /v1/sessions/current:
     delete:
       tags: [Sessions]
@@ -489,6 +503,7 @@ paths:
               schema: { $ref: '#/components/schemas/Me' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/me/sessions:
@@ -550,6 +565,7 @@ paths:
         '204': { description: Changed }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -580,6 +596,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -605,6 +622,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -630,6 +648,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
 
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
   /v1/me/phone-changes/{flowId}/resend:
     post:
       tags: [Me]
@@ -648,6 +667,7 @@ paths:
         '202': { description: The code is on its way }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/totp:
@@ -675,6 +695,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
     delete:
       tags: [Me]
@@ -692,6 +713,7 @@ paths:
         '204': { description: TOTP is off }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/totp/confirm:
@@ -720,6 +742,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/totp/replacement:
@@ -747,6 +770,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/totp/replacement/{flowId}/confirm:
@@ -770,6 +794,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '410': { $ref: '#/components/responses/Gone' }
 
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
   /v1/me/recovery-codes:
     post:
       tags: [Me]
@@ -795,6 +820,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/password-resets:
@@ -811,6 +837,7 @@ paths:
             schema: { $ref: '#/components/schemas/ResetRequest' }
       responses:
         '202': { description: 'If the value belongs to an account, a link is on its way' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -833,6 +860,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ResetStarted' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/password-resets/{flowId}/complete:
@@ -853,6 +881,7 @@ paths:
         '204': { description: Password changed }
         '400': { $ref: '#/components/responses/BadRequest' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -882,6 +911,7 @@ paths:
               schema: { $ref: '#/components/schemas/RegistrationStarted' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -913,6 +943,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
 
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
   /v1/directory/accounts/batch-get:
     post:
       tags: [Directory]
@@ -938,6 +969,7 @@ paths:
               schema: { $ref: '#/components/schemas/DirectoryBatch' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/directory/accounts/search:
@@ -965,6 +997,7 @@ paths:
               schema: { $ref: '#/components/schemas/DirectoryAccounts' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/directory/accounts/list:
@@ -992,6 +1025,7 @@ paths:
               schema: { $ref: '#/components/schemas/DirectoryPage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/accounts/{accountId}:
@@ -1048,6 +1082,7 @@ paths:
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/accounts/{accountId}/roles:
@@ -1079,6 +1114,7 @@ paths:
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/accounts/{accountId}/sessions/revoke:
@@ -1133,6 +1169,7 @@ paths:
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/accounts/{accountId}/mfa/reset:
@@ -1187,6 +1224,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/hooks/delivery/resolve:
@@ -1226,6 +1264,7 @@ paths:
               schema: { $ref: '#/components/schemas/ResolveResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/oauth/token:
@@ -1263,6 +1302,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/OAuthError' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
 webhooks:
@@ -1415,6 +1455,11 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     Unprocessable:
       description: '`VALIDATION_FAILED`, `IDENTIFIER_NOT_ALLOWED`, `PASSWORD_REJECTED`, `ROLE_UNKNOWN`, `IDEMPOTENCY_KEY_REUSED`'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PayloadTooLarge:
+      description: '`VALIDATION_FAILED`: the request body exceeds 64 KiB'
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

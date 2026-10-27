@@ -51,6 +51,13 @@ func (v *validator) required() {
 	} else if u, err := url.Parse(c.HTTP.Issuer); err != nil || !u.IsAbs() || u.Host == "" {
 		v.add("http.issuer", "%q is not an absolute URL", c.HTTP.Issuer)
 	}
+	if !validListen(c.HTTP.Listen) {
+		v.add("http.listen", "%q is not host:port with a port from 1 to 65535", c.HTTP.Listen)
+	}
+	if c.HTTP.BasePath != "" && !validBasePath(c.HTTP.BasePath) {
+		v.add("http.base_path", "%q is not /segment[/segment…] of letters, digits, '-', '.', '_' or '~'",
+			c.HTTP.BasePath)
+	}
 
 	if len(c.Clients) == 0 {
 		v.add("clients", "at least one client is required")
@@ -380,6 +387,29 @@ func validListen(addr string) bool {
 	}
 	n, err := strconv.Atoi(port)
 	return err == nil && n >= 1 && n <= 65535
+}
+
+// validBasePath reports whether p is one or more "/segment" parts, each segment made of unreserved
+// URL characters (RFC 3986 §2.3) and not "." or "..", so it cannot hold a route parameter, a
+// wildcard, a query, an empty segment or a dot-segment.
+func validBasePath(p string) bool {
+	if !strings.HasPrefix(p, "/") {
+		return false
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+		if strings.IndexFunc(seg, func(r rune) bool { return !unreserved(r) }) >= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// unreserved reports whether r is an unreserved URL character (RFC 3986 §2.3).
+func unreserved(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-._~", r)
 }
 
 // usesSMS reports whether any SMS method is configured: an identifier verified by SMS, OTP sign-in

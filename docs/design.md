@@ -4,11 +4,11 @@
 |---|---|
 | Document | Software Design Description (SDD). High level: *what* auth1 is and *why* it is built this way |
 | Status | Draft |
-| Version | 0.5 (design of auth1 1.0) |
+| Version | 0.6 (design of auth1 1.0) |
 | Date | 2026-10-27 |
 | Owner | Arafat Hasan |
 | Detailed designs | [`docs/tdd/`](tdd/): TDD-01 … TDD-08 (§16) |
-| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.4 |
+| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.6 |
 | Depends on | PostgreSQL 18, Redis, an AMQP 0-9-1 broker, a workload-identity source (a service mesh, or client credentials), a message-delivery service or provider |
 
 auth1 is an identity service: accounts, credentials, second factors, identifier verification,
@@ -1013,6 +1013,11 @@ The other flows are in TDD-02 and TDD-03.
 **Non-error outcomes** (202, `application/json`): `MFA_REQUIRED` and `MFA_ENROLMENT_REQUIRED`, each
 with a flow handle and its expiry.
 
+**Outside the table:** a request body over 64 KiB (TDD-07 §7) answers 413 with `VALIDATION_FAILED`,
+whatever the method; the contract lists 413 only on the operations that take a body. An unknown path or unsupported method answers 404 with `NOT_FOUND`. `Retry-After` and `retry_after`
+are sent only when the error carries a wait; an unexpected failure answers `UNAVAILABLE` without
+them.
+
 ## 11. Invariants
 
 Each is enforced by a constraint or a single conditional statement, and has a test. How each is
@@ -1221,3 +1226,4 @@ The build order is part of the implementation plan, written after the TDDs are a
 | 0.3 | 2026-10-26 | Restructured as the SDD, with detail moved to TDD-01…08. Added assumptions, quality attributes, architecture views, state models, a flow catalogue and a threat model. **Decisions:** UUIDv7 for ids (D-2); every account has a password (D-7); Argon2id with a pepper and bounded concurrency replaces bcrypt (D-7, closes 0.2's O-3); mandatory MFA with TOTP, recovery codes, forced enrolment and a service-driven reset (D-8); reauthentication by password and second factor (D-9); recovery needs the second factor, and the SMS step-up and `recovery_step_up` attribute are removed (D-10); restricted tokens use auth1's own audience (D-5); optional session revocation on a status change (D-5); a first-party API, stated as a decision (D-6); security notices (D-16); split directory scope, plus `accounts:identifiers:write` and `accounts:mfa:reset` (D-13). **Defects fixed:** resume works by possession instead of by sign-in (D-4); send limits per target value instead of per row (D-4, D-17); events ordered by `accountversion`, not outbox id (D-15); events and deliveries ordered apart, with parked-row handling (D-15); device-aware sign-in delays so they cannot lock out the owner (D-17); `amr` values corrected (D-8); trusted proxies and IPv6 /64 keys designed (D-17, closes 0.2's O-4); field ciphertext bound to its row (D-18); backup-restore runbook (D-19). Decision numbers changed; the 0.2 → 0.3 map: D-2→D-3, D-3→D-4, D-4→D-5, D-5→D-6, D-6→D-7, D-7→D-10, D-8→D-11, D-9→D-12, D-10→D-13, D-11→D-14, D-12→D-15, D-13→D-16, D-14→D-17, D-15→D-19. `api/openapi.yaml` and `api/asyncapi.yaml` aligned with 0.3 |
 | 0.4 | 2026-10-27 | **MFA is optional** (D-8): each account may enrol TOTP, self-service or forced; each client has `mfa: optional \| required`; an account with TOTP is always asked for it; self-service removal with `account.mfa_removed`. Reauthentication needs the second factor only when the account has one (D-9). Recovery: TOTP when enrolled, otherwise the link plus an optional SMS step-up (`recovery.sms_step_up`, D-10). Password default length 12, floor 8, as a documented deviation from NIST SP 800-63B-4 for single-factor passwords (D-7). I-16, the state × flow table, the flow catalogue, the threat model and T-5, T-21, T-30, T-32, T-33 updated; T-37, T-38 added. §17 states that only the rate limiter's code is carried over |
 | 0.5 | 2026-10-27 | The product-word rule (D-1, C-2) is a design rule kept by review; the CI guard and the *Guard* test level are removed |
+| 0.6 | 2026-10-27 | §10: a body over 64 KiB answers 413 `VALIDATION_FAILED`, an unknown route 404 `NOT_FOUND`; `Retry-After` only when the error carries a wait. `api/openapi.yaml` gains the `PayloadTooLarge` response on every operation with a body |

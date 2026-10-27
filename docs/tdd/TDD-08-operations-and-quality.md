@@ -48,7 +48,11 @@ internal/
   http/
     gen/                   generated server and types
     handlers/              thin: decode → use case → encode
-    middleware/            request id, trace, client IP, origin, CORS, auth, scope, rate limit, problems
+    middleware/            trace, access log, recover, body limit, client IP, origin, CORS, auth, scope, rate limit
+    requestid/             request id: generated, returned in X-Request-Id, kept in the context
+    problem/               domain.Error → problem details; the code → status table
+    health/                /livez, /readyz and their checks
+    server/                router, server timeouts, graceful shutdown
   worker/                  relay, jobs, leader election
   ops/                     operator commands
 test/e2e/                  end-to-end suites
@@ -254,6 +258,9 @@ telemetry:
   outside `development`;
 - an SMS method configured with `sms_budget_per_hour: 0`;
 - a keyring with zero or several `active` keys;
+- an `http.listen` that is not `host:port` with a port from 1 to 65535; an `http.base_path` that is
+  not empty and not `/segment[/segment…]`, each segment of letters, digits, `-`, `.`, `_` or `~`
+  and not `.` or `..`. These apply in every environment.
 - a `telemetry.metrics_listen` that is not `host:port` with a port from 1 to 65535, or that equals
   `http.listen`; a `telemetry.otlp_endpoint` that is not an absolute `http` or `https` URL, or that
   has a query or fragment; an empty `telemetry.service_name`. These apply in every environment.
@@ -376,6 +383,7 @@ Each is a short procedure kept in `docs/runbooks/`. To be written with the imple
 - **Replicas and scheduling:** at least 2 replicas, anti-affinity across nodes, a `PodDisruptionBudget` of `maxUnavailable: 1`.
 - **Resources:** CPU request 1, limit 2. Memory: 256 MiB + `max_concurrent × argon2.memory` + 25%.
 - **Probes:** `/livez` (liveness), `/readyz` (readiness).
+- **Stopping:** on SIGTERM, `/readyz` fails for 5 s, requests in flight get 15 s (the write timeout of TDD-07 §7), then telemetry gets 5 s to flush. At most 25 s, within the default `terminationGracePeriodSeconds` of 30 s.
 - **Migrations:** a pre-deploy job runs `auth1 migrate up`, and `auth1 config check` runs before it.
 - **Image:** distroless, non-root, read-only root filesystem. Secrets are mounted read-only.
 
