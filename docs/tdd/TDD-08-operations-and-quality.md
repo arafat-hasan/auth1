@@ -3,9 +3,9 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Version | 0.2 |
+| Version | 0.3 |
 | Date | 2026-10-27 |
-| SDD | [design.md](../design.md) 0.4: D-1, D-18, D-19, §6, §13, §14, §15 |
+| SDD | [design.md](../design.md) 0.5: D-1, D-18, D-19, §6, §13, §14, §15 |
 | Owner | Arafat Hasan |
 
 The binary and its commands, code layout, configuration, secrets, jobs, observability, runbooks,
@@ -212,8 +212,6 @@ retention:
 telemetry:
   otlp_endpoint: ""                    # empty: metrics on /metrics only, no trace export
   service_name: auth1
-product_word_guard:
-  words_file: /config/denied-words.txt # used by the CI test, not at run time
 ```
 
 ### 3.1 Validation
@@ -383,7 +381,6 @@ On every pull request:
 - `go vet`, `golangci-lint` and `govulncheck`
 - unit, repository and API tests
 - migrations up and down on an empty database
-- the product-word guard (D-1)
 - `oasdiff` against the last release tag; AsyncAPI validation
 - the layering check (§2)
 - `auth1 config check` on the example configuration

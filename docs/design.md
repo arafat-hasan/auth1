@@ -4,7 +4,7 @@
 |---|---|
 | Document | Software Design Description (SDD). High level: *what* auth1 is and *why* it is built this way |
 | Status | Draft |
-| Version | 0.4 (design of auth1 1.0) |
+| Version | 0.5 (design of auth1 1.0) |
 | Date | 2026-10-27 |
 | Owner | Arafat Hasan |
 | Detailed designs | [`docs/tdd/`](tdd/): TDD-01 … TDD-08 (§16) |
@@ -296,9 +296,9 @@ Each decision gives what is decided, why, and what was rejected. Detail is in th
 **Not configurable:** that every account has a password, that an account with TOTP is always asked
 for it, and the security floors (C-3).
 
-**A guard in CI.** A test scans the code, the default configuration and the migrations for a
-configured list of product words, and fails on any match. Each product keeps its configuration in
-its own repository. *Detail: TDD-08.*
+**A design rule, not a check.** No product name appears in the code, the default configuration or
+the migrations. Any product deploys auth1 in its own cluster and keeps its configuration in its own
+repository. Reviews keep the rule; nothing in CI scans for product words.
 
 ### D-2. Identifiers of records: UUIDv7
 
@@ -1128,7 +1128,6 @@ Every alert has a runbook.
 | Contract | AsyncAPI examples validate; `oasdiff` fails a breaking change |
 | End to end | auth1 with PostgreSQL, Redis, a broker and a fake notification service that calls the resolver |
 | Load | Sign-in and refresh at target throughput; sets the Argon2id parameters and replica size (O-3) |
-| Guard | The product-word scan (D-1) |
 
 **Acceptance cases.**
 
@@ -1225,3 +1224,4 @@ The build order is part of the implementation plan, written after the TDDs are a
 | 0.2 | 2026-10-19 | After review: stored refresh successor in the grace window; expiry retires identifiers; key publication times in `signing_keys`; sends counted at request; failed-OTP limits; invitation acceptance verifies every required identifier; the notification contract as a proposal; transition table; tests T-18–T-30 |
 | 0.3 | 2026-10-26 | Restructured as the SDD, with detail moved to TDD-01…08. Added assumptions, quality attributes, architecture views, state models, a flow catalogue and a threat model. **Decisions:** UUIDv7 for ids (D-2); every account has a password (D-7); Argon2id with a pepper and bounded concurrency replaces bcrypt (D-7, closes 0.2's O-3); mandatory MFA with TOTP, recovery codes, forced enrolment and a service-driven reset (D-8); reauthentication by password and second factor (D-9); recovery needs the second factor, and the SMS step-up and `recovery_step_up` attribute are removed (D-10); restricted tokens use auth1's own audience (D-5); optional session revocation on a status change (D-5); a first-party API, stated as a decision (D-6); security notices (D-16); split directory scope, plus `accounts:identifiers:write` and `accounts:mfa:reset` (D-13). **Defects fixed:** resume works by possession instead of by sign-in (D-4); send limits per target value instead of per row (D-4, D-17); events ordered by `accountversion`, not outbox id (D-15); events and deliveries ordered apart, with parked-row handling (D-15); device-aware sign-in delays so they cannot lock out the owner (D-17); `amr` values corrected (D-8); trusted proxies and IPv6 /64 keys designed (D-17, closes 0.2's O-4); field ciphertext bound to its row (D-18); backup-restore runbook (D-19). Decision numbers changed; the 0.2 → 0.3 map: D-2→D-3, D-3→D-4, D-4→D-5, D-5→D-6, D-6→D-7, D-7→D-10, D-8→D-11, D-9→D-12, D-10→D-13, D-11→D-14, D-12→D-15, D-13→D-16, D-14→D-17, D-15→D-19. `api/openapi.yaml` and `api/asyncapi.yaml` aligned with 0.3 |
 | 0.4 | 2026-10-27 | **MFA is optional** (D-8): each account may enrol TOTP, self-service or forced; each client has `mfa: optional \| required`; an account with TOTP is always asked for it; self-service removal with `account.mfa_removed`. Reauthentication needs the second factor only when the account has one (D-9). Recovery: TOTP when enrolled, otherwise the link plus an optional SMS step-up (`recovery.sms_step_up`, D-10). Password default length 12, floor 8, as a documented deviation from NIST SP 800-63B-4 for single-factor passwords (D-7). I-16, the state × flow table, the flow catalogue, the threat model and T-5, T-21, T-30, T-32, T-33 updated; T-37, T-38 added. §17 states that only the rate limiter's code is carried over |
+| 0.5 | 2026-10-27 | The product-word rule (D-1, C-2) is a design rule kept by review; the CI guard and the *Guard* test level are removed |
