@@ -76,4 +76,3 @@ func TestLayering(t *testing.T) {
 		t.Errorf("layering violation: %s", v)
 	}
 }
-
