@@ -2,6 +2,36 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project status: redesign for 1.0
+
+auth1 is being rebuilt to a new design. **The design documents are the source of truth for new
+work; the code below them is a pre-1.0 prototype** that 1.0 replaces with a fresh schema
+(migrations restart at `000001`) and no compatibility with the prototype's API, tokens or data.
+Nothing runs in production, so no migration path is needed.
+
+| Document | Role |
+|---|---|
+| `docs/design.md` | SDD: needs, decisions D-1…D-19, state models, invariants I-1…I-21, threat model, acceptance tests T-1…T-38 |
+| `docs/tdd/TDD-01` … `TDD-08` | TDDs: how each area is built (schema, flows, MFA, tokens, service access, events, abuse, operations) |
+| `api/openapi.yaml`, `api/asyncapi.yaml` | Contracts. Wire shapes are final here |
+| GitHub issues: roadmap #69 → milestone issues #60–#68 → work packages `WP-NN` (label `work-package`) | The implementation plan. Read a work package with `gh issue view <n>`; its step plan goes in the issue under `## Steps` when work starts. Branch `wp-NN-<slug>`, one PR per work package with `Closes #<n>`. See `docs/plan/README.md` |
+
+Rules for design and implementation work:
+- When a TDD needs to change a decision, change the SDD first. When a contract and a TDD disagree on a wire shape, the contract wins and the TDD is corrected.
+- Keep the code product-agnostic: no product names in code, default config or migrations (D-1).
+- Key 1.0 choices that differ from the prototype:
+  - UUIDv7 ids;
+  - Argon2id with a pepper (not bcrypt);
+  - **optional TOTP MFA** with recovery codes: per account, and a client may require it (`mfa: required`);
+  - every account has a password;
+  - opaque rotated refresh tokens in PostgreSQL (no Redis blacklists);
+  - restricted tokens use auth1's own audience;
+  - workload identity or client credentials for services (no static API keys);
+  - Redis only for per-IP rate-limit windows.
+- Docs use British spelling and the existing plain style; mark advisory TDD text *(guideline)*.
+
+The rest of this file describes **the prototype** as it is today.
+
 ## Commands
 
 ```bash

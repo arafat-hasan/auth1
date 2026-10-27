@@ -4,17 +4,22 @@ info:
   version: 1.0.0
   summary: Product-agnostic identity service.
   description: |
-    Accounts, identifiers, credentials, sessions, tokens, account state and roles.
+    Accounts, identifiers, credentials, second factors, sessions, tokens, account state and roles.
     One deployment serves one product; everything product-specific is deployment configuration.
-    Design: docs/design.md.
+    Design: docs/design.md (SDD 0.3) and docs/tdd/.
 
     Every path is served under the deployment's base path (`http.base_path`).
 
-    Errors are RFC 9457 problem details with a stable `code` (docs/design.md §6).
+    Errors are RFC 9457 problem details with a stable `code` (docs/design.md §10).
 
-    Service-facing operations authenticate the caller by workload identity (mutual TLS through
-    the mesh) or, where a deployment enables it, by a client-credentials token. Each such
-    operation names its scope in `x-auth1-scope`.
+    **Multi-factor authentication is optional per account, and a client may require it.** After the
+    first factor, a sign-in answers `202 MFA_REQUIRED` when the account has TOTP (on every client),
+    `202 MFA_ENROLMENT_REQUIRED` when it has none and the client requires MFA, and otherwise `200`
+    with the tokens. The second step, when there is one, returns the tokens (docs/design.md D-8).
+
+    Service-facing operations authenticate the caller by workload identity (through the mesh) or,
+    where a deployment enables it, by a client-credentials token. Each such operation names its
+    scope in `x-auth1-scope`.
   contact:
     name: auth1 maintainers
     url: https://github.com/arafat-hasan/auth1
@@ -35,11 +40,11 @@ tags:
   - name: Metadata
     description: Key set and server metadata
   - name: Registration
-    description: Creating an account and verifying its identifiers
+    description: Creating an account, verifying its identifiers, resuming a lost flow
   - name: Sessions
-    description: Sign-in, refresh and sign-out
+    description: Sign-in (and its second step, when there is one), forced enrolment, refresh and sign-out
   - name: Me
-    description: The signed-in account's own settings
+    description: The signed-in account's own settings and sensitive operations
   - name: Recovery
     description: Password reset
   - name: Invitations
@@ -49,7 +54,7 @@ tags:
   - name: Directory
     description: Account lookup for services
   - name: Account control
-    description: Status, roles, attributes and closing, for services
+    description: Status, roles, sessions, identifier changes, MFA reset and closing, for services
   - name: Hooks
     description: Hooks auth1 implements for other platform services
   - name: OAuth
@@ -61,7 +66,7 @@ paths:
       tags: [Metadata]
       operationId: getJwks
       summary: The signing keys
-      description: Every `next`, `active` and `retired` key. Cacheable for 5 minutes.
+      description: 'Every `next` and `active` key, and `retired` keys until the access-token lifetime plus 5 minutes after retirement. Cacheable for 5 minutes.'
       security: []
       responses:
         '200':
@@ -69,6 +74,8 @@ paths:
           headers:
             Cache-Control:
               schema: { type: string, example: 'public, max-age=300' }
+            ETag:
+              schema: { type: string }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Jwks' }
@@ -80,7 +87,7 @@ paths:
       tags: [Metadata]
       operationId: getServerMetadata
       summary: Server metadata (RFC 8414)
-      description: 'Issuer, JWKS URI, introspection and token endpoints, supported grants and scopes.'
+      description: 'Issuer, JWKS URI, introspection and token endpoints, supported grants, scopes and algorithms.'
       security: []
       responses:
         '200':
@@ -96,11 +103,12 @@ paths:
       operationId: startRegistration
       summary: Start a registration
       description: |
-        Creates a `pending` account and sends one verification per identifier, by the method the
-        identifier policy sets. Refused if a value is another account's verified identifier.
+        Creates a `pending` account with its password and sends one verification per identifier,
+        by the method the identifier policy sets. Refused if a value is another account's verified
+        identifier. Only for clients with `self_registration`.
 
         The flow endpoints below (`verify`, `resend`, `complete`) serve registration flows and the
-        flows opened by accepting an invitation alike (docs/design.md D-8).
+        flows opened by accepting an invitation alike (docs/tdd/TDD-02 §3, §8).
       security: []
       requestBody:
         required: true
@@ -116,6 +124,51 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /v1/registrations/resume:
+    post:
+      tags: [Registration]
+      operationId: requestRegistrationResume
+      summary: Resume a registration or invitation whose handle was lost
+      description: |
+        Always 202. For each open registration or invitation holding this value (at most three),
+        auth1 sends a resume message to that address, by the identifier type's verification
+        method. Following it proves possession, verifies the identifier and gives a new handle
+        (docs/tdd/TDD-02 §4).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResumeRequest' }
+      responses:
+        '202': { description: 'If an open flow holds the value, a message is on its way' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/registrations/resume/verify:
+    post:
+      tags: [Registration]
+      operationId: verifyRegistrationResume
+      summary: Resume a flow with a code
+      description: 'For identifier types verified by code. Emailed resume links go to `/v1/verification-links/confirm`. The old handle stops working.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResumeVerify' }
+      responses:
+        '200':
+          description: Resumed. A new handle
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FlowResumed' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/registrations/{flowId}/verify:
@@ -139,7 +192,6 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RegistrationProgress' }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -148,8 +200,8 @@ paths:
     post:
       tags: [Registration]
       operationId: resendRegistrationVerification
-      summary: Send a new verification for one identifier
-      description: 'At most one send per 60 seconds and five per hour per identifier, by default.'
+      summary: Send the verification for one identifier again
+      description: 'Reuses the open challenge. At most one send per 60 seconds and five per hour per target value, across accounts, by default.'
       security: []
       parameters:
         - $ref: '#/components/parameters/FlowId'
@@ -159,17 +211,21 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/RegistrationResend' }
       responses:
-        '202': { description: A new verification is on its way }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '202': { description: The verification is on its way }
         '410': { $ref: '#/components/responses/Gone' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   /v1/registrations/{flowId}/complete:
     post:
       tags: [Registration]
       operationId: completeRegistration
       summary: Activate the account and sign in
-      description: Succeeds when every required identifier is verified.
+      description: |
+        Succeeds when every required identifier is verified. Activates the account (with the
+        client's default roles, or the invited roles). On a client with `mfa: required` it answers
+        `202 MFA_ENROLMENT_REQUIRED` with a sign-in flow handle, and tokens are issued when
+        enrolment is confirmed; otherwise it answers `200` with the tokens.
       security: []
       parameters:
         - $ref: '#/components/parameters/FlowId'
@@ -180,7 +236,11 @@ paths:
             schema: { $ref: '#/components/schemas/FlowHandle' }
       responses:
         '200': { $ref: '#/components/responses/Tokens' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '202':
+          description: Enrolment required (the client requires MFA)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MfaStep' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
 
@@ -189,7 +249,7 @@ paths:
       tags: [Registration]
       operationId: confirmVerificationLink
       summary: Confirm an emailed link
-      description: Confirms an email at registration, or one side of an email change.
+      description: 'Confirms an identifier at registration or invitation, a resume link, or one side of an email change. For a resume link, the answer carries the new handle.'
       security: []
       requestBody:
         required: true
@@ -212,12 +272,15 @@ paths:
       operationId: signIn
       summary: Sign in with an identifier and a password
       description: |
-        A suspended or banned account receives a restricted session when the deployment allows it
-        (`statuses.restricted_sign_in`); its tokens carry `status` other than `active`.
+        On a correct password: `202 MFA_REQUIRED` when the account has TOTP; `202
+        MFA_ENROLMENT_REQUIRED` when it has none and the client has `mfa: required`; otherwise
+        `200` with the tokens (`amr` `["pwd"]`).
 
-        A `pending` account with the correct password gets `403 REGISTRATION_INCOMPLETE` whose
-        problem carries `resume`: a new flow handle, replacing the old one, and the identifier
-        types still pending. A wrong password always gets `INVALID_CREDENTIALS`.
+        A `pending` account whose sign-in identifier is verified, with the correct password, gets
+        `403 REGISTRATION_INCOMPLETE`; the client offers resume. A suspended or banned account
+        continues through the same steps and then receives a restricted session, unless the
+        deployment refuses it with `ACCOUNT_RESTRICTED`. A wrong password, an unknown identifier
+        and a deleted account all get `INVALID_CREDENTIALS`.
       security: []
       requestBody:
         required: true
@@ -227,30 +290,129 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/Tokens' }
         '202':
-          description: A second factor is required
+          description: 'A second step, MFA_REQUIRED or MFA_ENROLMENT_REQUIRED'
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/MfaRequired' }
+              schema: { $ref: '#/components/schemas/MfaStep' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
-  /v1/sessions/mfa:
+  /v1/sessions/otp:
     post:
       tags: [Sessions]
-      operationId: completeMfa
-      summary: Complete a sign-in with a TOTP code
-      description: 'The second step of a sign-in whose client requires TOTP. The `mfa_token` lives five minutes.'
+      operationId: requestSignInOtp
+      summary: Sign in, first factor, by a code sent to a sign-in identifier
+      description: 'Only for clients with `otp` in `first_factors`. Always 202 with a handle, whether or not the identifier belongs to an account.'
       security: []
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MfaCode' }
+            schema: { $ref: '#/components/schemas/OtpSignInRequest' }
+      responses:
+        '202':
+          description: 'If the identifier belongs to an account that may sign in, a code is on its way'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OtpSignInStarted' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/sessions/otp/verify:
+    post:
+      tags: [Sessions]
+      operationId: verifySignInOtp
+      summary: Verify the sign-in code
+      description: 'A wrong code and an unknown handle both answer `CODE_INVALID` without `attempts_left`.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HandleAndCode' }
+      responses:
+        '200': { $ref: '#/components/responses/Tokens' }
+        '202':
+          description: A second step, decided as for a password sign-in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MfaStep' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/sessions/mfa:
+    post:
+      tags: [Sessions]
+      operationId: completeSignIn
+      summary: Second step of a sign-in, with a TOTP code or a recovery code
+      description: 'For a flow at `MFA_REQUIRED`. Five wrong codes close the flow. Returns a full session, or a restricted one for a suspended or banned account.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecondFactorStep' }
       responses:
         '200': { $ref: '#/components/responses/Tokens' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/sessions/mfa/enrolment:
+    post:
+      tags: [Sessions]
+      operationId: startEnrolment
+      summary: Start forced TOTP enrolment (a client that requires MFA)
+      description: 'For a flow at `MFA_ENROLMENT_REQUIRED`. Returns a new secret; calling again before confirming replaces it.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FlowHandle' }
+      responses:
+        '200':
+          description: The secret, to enrol in an authenticator
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TotpSetup' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/sessions/mfa/enrolment/confirm:
+    post:
+      tags: [Sessions]
+      operationId: confirmEnrolment
+      summary: Confirm TOTP enrolment with a first code and receive the session
+      description: 'Confirms the factor, creates the recovery codes and signs in. The recovery codes are in this response only and are never shown again.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HandleAndCode' }
+      responses:
+        '200':
+          description: Enrolled and signed in
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetRefreshCookie' }
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnrolmentComplete' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '410': { $ref: '#/components/responses/Gone' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -260,8 +422,10 @@ paths:
       operationId: refreshSession
       summary: Rotate the refresh token and issue a new access token
       description: |
-        Browser clients send the refresh cookie; other clients send `refresh_token` in the body.
-        A rotated token reused after the grace window revokes the session.
+        Browser clients send the refresh cookie; native clients send `refresh_token` in the body.
+        Within the grace window a rotated token returns the successor already issued; after it, a
+        rotated token revokes the session. The tokens are full or restricted according to the
+        account's status now.
       security:
         - refreshCookie: []
         - {}
@@ -279,7 +443,7 @@ paths:
       tags: [Sessions]
       operationId: signOut
       summary: Sign out of the current session
-      description: 'Revokes the session named by the access token or the refresh cookie, and clears the cookie.'
+      description: 'Revokes the session named by the access token or the refresh cookie, and clears the cookie. Available to a restricted session.'
       security:
         - bearer: []
         - refreshCookie: []
@@ -309,7 +473,7 @@ paths:
       tags: [Me]
       operationId: updateMe
       summary: Change the display name or the locale
-      description: 'Not available to a restricted session. The locale is used for every message auth1 sends.'
+      description: 'Not available to a restricted session. The locale is used for every message auth1 sends. Emits `account.profile_updated`.'
       security:
         - bearer: []
       requestBody:
@@ -346,19 +510,20 @@ paths:
       tags: [Me]
       operationId: signOutOtherSessions
       summary: Sign out of every other session
-      description: 'Revokes every session of the account except the current one.'
+      description: 'Revokes every session of the account except the current one. Not available to a restricted session.'
       security:
         - bearer: []
       responses:
         '204': { description: Done }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /v1/me/sessions/{sessionId}:
     delete:
       tags: [Me]
       operationId: revokeMySession
       summary: Sign out of one session
-      description: 'Revokes one of the account''s own sessions.'
+      description: 'Revokes one of the account''s own sessions. Available to a restricted session.'
       security:
         - bearer: []
       parameters:
@@ -373,7 +538,7 @@ paths:
       tags: [Me]
       operationId: changePassword
       summary: Change the password
-      description: Revokes every other session.
+      description: 'Sensitive: needs the current password and, when the account has TOTP, a second factor. Revokes every other session and sends a notice.'
       security:
         - bearer: []
       requestBody:
@@ -386,13 +551,19 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   /v1/me/email-changes:
     post:
       tags: [Me]
       operationId: startEmailChange
       summary: Start an email change
-      description: Sends a confirmation link to the current and to the new address. Applies when both are confirmed.
+      description: |
+        Sensitive: needs the current password and, when the account has TOTP, a second factor. Sends a confirmation link to
+        the new address. By `identifier_changes.confirm_old_email`, the current address either must
+        confirm too (`required`) or receives a notice (`notify`). Applies when the policy's
+        confirmations are done.
       security:
         - bearer: []
       requestBody:
@@ -402,7 +573,7 @@ paths:
             schema: { $ref: '#/components/schemas/EmailChange' }
       responses:
         '202':
-          description: Both links sent
+          description: Links sent
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FlowStarted' }
@@ -417,7 +588,7 @@ paths:
       tags: [Me]
       operationId: startPhoneChange
       summary: Start a phone change
-      description: Sends a code to the new number.
+      description: 'Sensitive: needs the current password and, when the account has TOTP, a second factor. Sends a code to the new number.'
       security:
         - bearer: []
       requestBody:
@@ -430,7 +601,7 @@ paths:
           description: Code sent
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/FlowStarted' }
+              schema: { $ref: '#/components/schemas/FlowStartedWithHandle' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
@@ -442,7 +613,7 @@ paths:
       tags: [Me]
       operationId: verifyPhoneChange
       summary: Verify the new number and apply the change
-      description: 'Verifies the code sent to the new number. The swap applies only if no other account has verified it.'
+      description: 'Verifies the code sent to the new number. The swap applies only if no other account has verified it. The account''s email receives a notice.'
       security:
         - bearer: []
       parameters:
@@ -451,21 +622,40 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Code' }
+            schema: { $ref: '#/components/schemas/HandleAndCode' }
       responses:
         '204': { description: Applied }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
+
+  /v1/me/phone-changes/{flowId}/resend:
+    post:
+      tags: [Me]
+      operationId: resendPhoneChange
+      summary: Send the code to the new number again
+      security:
+        - bearer: []
+      parameters:
+        - $ref: '#/components/parameters/FlowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FlowHandle' }
+      responses:
+        '202': { description: The code is on its way }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/totp:
     post:
       tags: [Me]
-      operationId: startTotpSetup
-      summary: Start TOTP setup
-      description: 'Needs the current password. The secret is enabled only after a first valid code.'
+      operationId: startTotpEnrolment
+      summary: Enable TOTP (self-service), step one
+      description: 'Sensitive: needs the current password. Returns a new secret; the factor is enabled when `/v1/me/totp/confirm` accepts a first code. `409 MFA_STATE_INVALID` if TOTP is already on (replace it with `/v1/me/totp/replacement`).'
       security:
         - bearer: []
       requestBody:
@@ -476,55 +666,143 @@ paths:
       responses:
         '200':
           description: The secret, to enrol in an authenticator
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TotpSetup' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
     delete:
       tags: [Me]
       operationId: removeTotp
-      summary: Remove TOTP
-      description: 'Needs a valid current code. Not available to a restricted session.'
+      summary: Turn TOTP off
+      description: 'Sensitive: needs the current password and a second factor. Erases the factor and the recovery codes, revokes every other session, sends a notice and emits `account.mfa_removed`. Idempotent: `204` when TOTP is already off. A client that requires MFA asks for enrolment at the next sign-in.'
       security:
         - bearer: []
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Code' }
+            schema: { $ref: '#/components/schemas/Reauthentication' }
       responses:
-        '204': { description: Removed }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '204': { description: TOTP is off }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/totp/confirm:
     post:
       tags: [Me]
-      operationId: confirmTotpSetup
-      summary: Confirm TOTP setup with a first code
-      description: 'Enables TOTP. Later sign-ins on clients with `mfa` set to `optional` or `required` ask for a code.'
+      operationId: confirmTotpEnrolment
+      summary: Enable TOTP (self-service), step two
+      description: 'Confirms the secret from `POST /v1/me/totp` with a first code, enables the factor and creates the recovery codes, which are in this response only. The current session is unchanged; from the next sign-in on, every client asks for the second factor.'
       security:
         - bearer: []
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Code' }
+            schema: { $ref: '#/components/schemas/TotpCodeRequest' }
       responses:
-        '204': { description: Enabled }
+        '200':
+          description: Enabled. The recovery codes
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryCodes' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/me/totp/replacement:
+    post:
+      tags: [Me]
+      operationId: startTotpReplacement
+      summary: Start replacing the TOTP factor (for example, a new phone)
+      description: 'Sensitive: needs the current password and a second factor. The current factor stays in use until the new one is confirmed. `409 MFA_STATE_INVALID` if the account has no TOTP (enable it with `/v1/me/totp`).'
+      security:
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reauthentication' }
+      responses:
+        '200':
+          description: The new secret, and the flow to confirm it
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TotpReplacementStarted' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/me/totp/replacement/{flowId}/confirm:
+    post:
+      tags: [Me]
+      operationId: confirmTotpReplacement
+      summary: Confirm the new TOTP factor with a first code
+      description: 'Replaces the factor and sends a notice. Recovery codes are kept.'
+      security:
+        - bearer: []
+      parameters:
+        - $ref: '#/components/parameters/FlowId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HandleAndCode' }
+      responses:
+        '204': { description: Replaced }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '410': { $ref: '#/components/responses/Gone' }
+
+  /v1/me/recovery-codes:
+    post:
+      tags: [Me]
+      operationId: regenerateRecoveryCodes
+      summary: Replace every recovery code
+      description: 'Sensitive: needs the current password and a second factor. The old codes stop working. The new codes are in this response only. `409 MFA_STATE_INVALID` if the account has no TOTP.'
+      security:
+        - bearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Reauthentication' }
+      responses:
+        '200':
+          description: The new codes
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryCodes' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/password-resets:
     post:
       tags: [Recovery]
       operationId: requestPasswordReset
       summary: Request a reset link
-      description: Always 202, whether or not an account has the email.
+      description: 'Always 202, whether or not an account has the value. The value is of the deployment''s `recovery.via` type (default email).'
       security: []
       requestBody:
         required: true
@@ -532,7 +810,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ResetRequest' }
       responses:
-        '202': { description: 'If the email belongs to an account, a link is on its way' }
+        '202': { description: 'If the value belongs to an account, a link is on its way' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
@@ -541,7 +819,7 @@ paths:
       tags: [Recovery]
       operationId: startPasswordReset
       summary: Open a reset link
-      description: Says whether a step-up code is needed and, if so, sends it.
+      description: 'Says which proof completing the reset needs: `totp` (a TOTP code or a recovery code) when the account has TOTP; otherwise `sms` when the deployment''s `recovery.sms_step_up` is on and the account has a verified phone (a code is sent, and the masked phone returned); otherwise `none`.'
       security: []
       requestBody:
         required: true
@@ -562,7 +840,7 @@ paths:
       tags: [Recovery]
       operationId: completePasswordReset
       summary: Set the new password
-      description: Revokes every session. Never changes the account's status.
+      description: 'Needs the proof `start` named: `second_factor` for `totp`, `code` for `sms`, nothing for `none`. Revokes every session and sends a notice. Never changes the account''s status or its TOTP factor.'
       security: []
       parameters:
         - $ref: '#/components/parameters/FlowId'
@@ -574,9 +852,10 @@ paths:
       responses:
         '204': { description: Password changed }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '404': { $ref: '#/components/responses/NotFound' }
         '410': { $ref: '#/components/responses/Gone' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   /v1/invitations/accept:
     post:
@@ -587,7 +866,8 @@ paths:
         Verifies the invited email, stores the password and opens one challenge for each other
         identifier the policy requires, whose values the request supplies. The browser then
         verifies them and calls `complete` through the registration flow endpoints, which
-        activates the account with the invited roles and signs in.
+        activates the account with the invited roles and signs in (after enrolment, when the
+        invitation's client requires MFA).
       security: []
       requestBody:
         required: true
@@ -604,13 +884,14 @@ paths:
         '410': { $ref: '#/components/responses/Gone' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   /v1/introspect:
     post:
       tags: [Introspection]
       operationId: introspectToken
       summary: Introspect an access token (RFC 7662)
-      description: 'Inactive for a bad signature or issuer, an audience that is none of the deployment''s clients, an expired token, a revoked or expired session, or a deleted account. The audience is not compared with the caller, which is a service and never an audience. Otherwise returns the account status as it is now.'
+      description: 'Inactive for a bad signature or issuer, an audience that is neither one of the deployment''s clients nor the self audience, an expired token, a revoked or expired session, or a deleted account. The audience is not compared with the caller. Otherwise returns the account status as it is now.'
       x-auth1-scope: tokens:introspect
       security:
         - workload: []
@@ -622,10 +903,14 @@ paths:
             schema: { $ref: '#/components/schemas/IntrospectionRequest' }
       responses:
         '200':
-          description: The token's state. `active` false for any invalid, expired or revoked token
+          description: The token's state. Only `active` false for any invalid, expired or revoked token
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Introspection' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
 
   /v1/directory/accounts/batch-get:
@@ -633,7 +918,7 @@ paths:
       tags: [Directory]
       operationId: batchGetAccounts
       summary: Get accounts by id
-      description: 'Up to 100 ids. Each call is audited with the caller, the actor and the count, never the values.'
+      description: 'Up to 100 ids. Identifier values only with `directory:read:identifiers`. Each call is audited with the caller, the actor and the count, never the values.'
       x-auth1-scope: directory:read
       security:
         - workload: []
@@ -647,10 +932,11 @@ paths:
             schema: { $ref: '#/components/schemas/BatchGetRequest' }
       responses:
         '200':
-          description: The accounts found, in no particular order
+          description: The accounts found, in request order, and the ids not found
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DirectoryAccounts' }
+              schema: { $ref: '#/components/schemas/DirectoryBatch' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
@@ -659,7 +945,7 @@ paths:
       tags: [Directory]
       operationId: searchAccounts
       summary: Find an account by a verified identifier
-      description: Exact match on the normalised value of a current, verified identifier. Zero or one result.
+      description: 'Exact match on the normalised value of a current, verified identifier. Zero or one result. A value that fails normalisation returns none. Identifier values only with `directory:read:identifiers`.'
       x-auth1-scope: directory:read
       security:
         - workload: []
@@ -677,6 +963,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DirectoryAccounts' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
@@ -685,7 +972,7 @@ paths:
       tags: [Directory]
       operationId: listAccounts
       summary: List accounts by status, role and creation time
-      description: 'Cursor pagination, 20 per page by default. Audited like every directory call.'
+      description: 'Ordered by account id (creation order). Cursor pagination, 20 per page by default. A cursor is valid only with the filters it was issued for. Audited like every directory call.'
       x-auth1-scope: directory:read
       security:
         - workload: []
@@ -703,6 +990,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DirectoryPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
@@ -711,7 +999,7 @@ paths:
       tags: [Account control]
       operationId: deleteAccount
       summary: Close an account
-      description: Revokes every session, erases credentials and releases the identifiers. Also closes a `pending` account (an abandoned registration or invitation). Idempotent.
+      description: 'Revokes every session, erases the password, the TOTP factor and the recovery codes, and releases the identifiers. Also closes a `pending` account (an abandoned registration or invitation). Idempotent.'
       x-auth1-scope: accounts:delete
       security:
         - workload: []
@@ -722,6 +1010,7 @@ paths:
         - $ref: '#/components/parameters/Actor'
       responses:
         '204': { description: 'Closed, or already closed' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Unprocessable' }
@@ -732,9 +1021,10 @@ paths:
       operationId: setAccountStatus
       summary: Set an account's status
       description: |
-        `until` is information for display; auth1 never changes a status on a timer. The next
-        refresh of any session reads the new status. The allowed transitions are in
-        docs/design.md D-4; any other is `409 STATUS_TRANSITION_INVALID`.
+        `until` is information for display; auth1 never changes a status on a timer. By default
+        the next refresh of any session reads the new status; `revoke_sessions` revokes them at
+        once. The allowed transitions are in docs/design.md §8.1; any other is
+        `409 STATUS_TRANSITION_INVALID`.
       x-auth1-scope: accounts:status:write
       security:
         - workload: []
@@ -753,7 +1043,8 @@ paths:
           description: The account after the change
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountSummary' }
+              schema: { $ref: '#/components/schemas/DirectoryAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
@@ -783,39 +1074,11 @@ paths:
           description: The account after the change
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountSummary' }
+              schema: { $ref: '#/components/schemas/DirectoryAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
-        '422': { $ref: '#/components/responses/Unprocessable' }
-
-  /v1/accounts/{accountId}/attributes:
-    put:
-      tags: [Account control]
-      operationId: setAccountAttributes
-      summary: Set policy attributes of an account
-      description: 'Sets attributes that recovery policy reads. Audited.'
-      x-auth1-scope: accounts:status:write
-      security:
-        - workload: []
-        - serviceToken: ['accounts:status:write']
-      parameters:
-        - $ref: '#/components/parameters/AccountId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-        - $ref: '#/components/parameters/Actor'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/AttributesChange' }
-      responses:
-        '200':
-          description: The account after the change
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AccountSummary' }
-        '403': { $ref: '#/components/responses/CallerNotAllowed' }
-        '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
   /v1/accounts/{accountId}/sessions/revoke:
@@ -823,7 +1086,7 @@ paths:
       tags: [Account control]
       operationId: revokeAccountSessions
       summary: Revoke every session of an account
-      description: 'Every refresh token of the account stops working at once. Access tokens expire on their own.'
+      description: 'Every refresh token of the account stops working at once. Access tokens expire on their own. Sends a notice and emits `account.sessions_revoked`.'
       x-auth1-scope: accounts:status:write
       security:
         - workload: []
@@ -834,8 +1097,68 @@ paths:
         - $ref: '#/components/parameters/Actor'
       responses:
         '204': { description: Revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/accounts/{accountId}/identifier-changes:
+    post:
+      tags: [Account control]
+      operationId: startSupportIdentifierChange
+      summary: Start an identifier change for an account whose old address is lost
+      description: |
+        For the product's support, after its own identity proofing. Opens a change in which only
+        the new value confirms (a link for an email, a code for a phone). The account's other
+        addresses receive a notice when the change is requested and when it applies.
+      x-auth1-scope: accounts:identifiers:write
+      security:
+        - workload: []
+        - serviceToken: ['accounts:identifiers:write']
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Actor'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportIdentifierChange' }
+      responses:
+        '202':
+          description: The confirmation is on its way to the new value
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FlowStarted' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CallerNotAllowed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/accounts/{accountId}/mfa/reset:
+    post:
+      tags: [Account control]
+      operationId: resetAccountMfa
+      summary: Reset a lost second factor
+      description: |
+        For the product's support, after its own identity proofing, when the person has lost both
+        the authenticator and the recovery codes. Erases the TOTP factor and the recovery codes,
+        revokes every session, sends a notice and emits `account.mfa_reset`. The next sign-in
+        enrols again.
+      x-auth1-scope: accounts:mfa:reset
+      security:
+        - workload: []
+        - serviceToken: ['accounts:mfa:reset']
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Actor'
+      responses:
+        '204': { description: Reset }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/CallerNotAllowed' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /v1/invitations:
     post:
@@ -860,7 +1183,8 @@ paths:
           description: Invited
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AccountSummary' }
+              schema: { $ref: '#/components/schemas/DirectoryAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/Unprocessable' }
@@ -871,14 +1195,17 @@ paths:
       operationId: resolveDeliveryReferences
       summary: Resolve the references of a delivery request at send time
       description: |
-        Called by the notification service for requests auth1 submitted. Returns a value only for a
-        reference whose challenge is still open. The caller must not store, cache, log or emit the
-        values, and must drop a delivery whose values are absent. Idempotent per `request_id`:
-        resolving again returns the same values while the challenge is open, and moves no counter.
+        Called by the notification service for requests auth1 submitted. auth1 resolves a
+        reference only if it appears in the delivery request it sent under that `request_id`, and,
+        for a secret or an address under change, only while its challenge is open. A retired
+        identifier resolves only for a notice, within `delivery.retired_address_window`.
 
-        The resolver contract belongs to the notification service, which calls every resolver the
-        same way. The request and response shapes here are auth1's proposal for that contract,
-        until the notification service publishes it; auth1 then conforms (docs/design.md D-13, O-1).
+        The caller must not store, cache, log or emit the values, and must drop a delivery whose
+        values are absent. Idempotent per `request_id`: resolving again returns the same values
+        while the challenge is open, and moves no counter.
+
+        The resolver contract belongs to the notification service. The shapes here are auth1's
+        proposal for it, until the notification service publishes it (docs/design.md D-16, O-1).
       x-auth1-scope: delivery:resolve
       security:
         - workload: []
@@ -897,6 +1224,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ResolveResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/CallerNotAllowed' }
         '422': { $ref: '#/components/responses/Unprocessable' }
 
@@ -905,7 +1233,10 @@ paths:
       tags: [OAuth]
       operationId: issueServiceToken
       summary: Client-credentials token (RFC 6749 §4.4, RFC 7523)
-      description: Only when `service_auth.mode` includes `client_credentials`.
+      description: |
+        Only when `service_auth.mode` includes `client_credentials`. The client authenticates with
+        a `private_key_jwt` assertion; each assertion's `jti` is accepted once. The token's `aud`
+        is the service audience, accepted only on service endpoints. Errors follow RFC 6749 §5.2.
       security: []
       requestBody:
         required: true
@@ -915,6 +1246,9 @@ paths:
       responses:
         '200':
           description: A service token
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ServiceToken' }
@@ -923,7 +1257,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OAuthError' }
+        '401':
+          description: '`invalid_client` (RFC 6749 §5.2)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthError' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
 webhooks:
   deliveryRequest:
@@ -933,10 +1273,10 @@ webhooks:
       summary: Outbound. A delivery request auth1 submits to the notification service
       description: |
         Sent by auth1's `notification` adapter to `delivery.notification.request_url`, over the
-        mesh, idempotent on `request_id`. It holds references only; the notification service
-        resolves them at send time through `/v1/hooks/delivery/resolve`. The request API itself is
-        the notification service's contract; this body is auth1's proposal for it, until that
-        contract is published (docs/design.md D-13, O-1).
+        mesh, idempotent on `request_id` (also sent as `Idempotency-Key`). It holds references and
+        non-secret variables only; the notification service resolves the references at send time
+        through `/v1/hooks/delivery/resolve`. The request API itself is the notification service's
+        contract; this body is auth1's proposal for it (docs/design.md D-16, O-1).
       security:
         - workload: []
       requestBody:
@@ -954,17 +1294,19 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: An access token issued by this deployment.
+      description: |
+        An access token issued by this deployment to a person: a client's audience, or the self
+        audience for a restricted session (accepted only where an operation says so).
     refreshCookie:
       type: apiKey
       in: cookie
-      name: auth1_refresh
-      description: The refresh token, for browser clients. HttpOnly, Secure, SameSite=Strict, path-scoped.
+      name: __Secure-auth1_rt
+      description: The refresh token, for browser clients. HttpOnly, Secure, SameSite=Strict, path-scoped to the session endpoints.
     workload:
       type: mutualTLS
       description: |
-        The caller's workload identity from the mesh (mutual TLS), mapped to scopes by
-        `service_auth.callers`. The scope each operation needs is in `x-auth1-scope`.
+        The caller's workload identity from the mesh, mapped to scopes by `service_auth.callers`.
+        The scope each operation needs is in `x-auth1-scope`.
     serviceToken:
       type: oauth2
       description: For deployments without a mesh. A client-credentials token from `/v1/oauth/token`.
@@ -973,10 +1315,13 @@ components:
           tokenUrl: /v1/oauth/token
           scopes:
             tokens:introspect: Introspect access tokens
-            directory:read: Read the directory
-            accounts:status:write: Change statuses, revoke sessions, set attributes
+            directory:read: Read the directory, without identifier values
+            directory:read:identifiers: Include identifier values in directory records
+            accounts:status:write: Change statuses and revoke sessions
             accounts:roles:write: Set roles
             accounts:invite: Create invitations
+            accounts:identifiers:write: Start support-driven identifier changes
+            accounts:mfa:reset: Reset a lost second factor
             accounts:delete: Close accounts
             delivery:resolve: Resolve delivery references
 
@@ -985,6 +1330,7 @@ components:
       name: flowId
       in: path
       required: true
+      description: A flow id. Never enough on its own; the handle or link token is also required
       schema: { type: string, format: uuid }
     AccountId:
       name: accountId
@@ -1001,21 +1347,23 @@ components:
       in: header
       required: true
       description: Unique per intended change. Replays return the first response for 24 hours.
-      schema: { type: string, minLength: 8, maxLength: 200 }
+      schema: { type: string, minLength: 1, maxLength: 255, pattern: '^[\x21-\x7E]+$' }
     Actor:
       name: Auth1-Actor
       in: header
       required: false
-      description: The account id of the person on whose behalf the calling service acts. Audited.
-      schema: { type: string, format: uuid }
+      description: |
+        The person on whose behalf the calling service acts, for example `staff:<id>`. Recorded
+        verbatim in the audit and the event's actor. Information only, never authorisation.
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[\x20-\x7E]+$' }
 
   headers:
     SetRefreshCookie:
       description: The refresh token, for browser clients
-      schema: { type: string, example: 'auth1_refresh=…; Path=/v1/sessions; HttpOnly; Secure; SameSite=Strict' }
+      schema: { type: string, example: '__Secure-auth1_rt=…; Path=/v1/sessions; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict' }
     ClearRefreshCookie:
       description: Clears the refresh cookie
-      schema: { type: string, example: 'auth1_refresh=; Path=/v1/sessions; Max-Age=0; HttpOnly; Secure; SameSite=Strict' }
+      schema: { type: string, example: '__Secure-auth1_rt=; Path=/v1/sessions; Max-Age=0; HttpOnly; Secure; SameSite=Strict' }
     RetryAfter:
       description: Seconds to wait
       schema: { type: integer, minimum: 1 }
@@ -1025,11 +1373,13 @@ components:
       description: A session. For browser clients the refresh token is in the cookie only
       headers:
         Set-Cookie: { $ref: '#/components/headers/SetRefreshCookie' }
+        Cache-Control:
+          schema: { type: string, example: no-store }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/TokenResponse' }
     BadRequest:
-      description: '`CODE_INVALID`'
+      description: '`CODE_INVALID`: a wrong OTP, TOTP or recovery code'
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -1054,7 +1404,7 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Conflict:
-      description: '`IDENTIFIER_TAKEN`, `VERIFICATION_INCOMPLETE`, `STATUS_TRANSITION_INVALID`'
+      description: '`IDENTIFIER_TAKEN`, `VERIFICATION_INCOMPLETE`, `STATUS_TRANSITION_INVALID`, `MFA_STATE_INVALID`'
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -1076,7 +1426,9 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Unavailable:
-      description: '`UNAVAILABLE`'
+      description: '`UNAVAILABLE`: a dependency is down, the hashing capacity is full, or the SMS budget is spent'
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -1097,15 +1449,11 @@ components:
                  INVALID_CREDENTIALS, SIGN_IN_DELAYED, REGISTRATION_INCOMPLETE, ROLE_NOT_PERMITTED,
                  ACCOUNT_RESTRICTED, SESSION_INVALID, TOKEN_INVALID, REAUTHENTICATION_REQUIRED,
                  CALLER_NOT_ALLOWED, IDEMPOTENCY_KEY_REUSED, STATUS_TRANSITION_INVALID,
-                 ROLE_UNKNOWN, NOT_FOUND, RATE_LIMITED, UNAVAILABLE]
+                 MFA_STATE_INVALID, ROLE_UNKNOWN, NOT_FOUND, RATE_LIMITED, UNAVAILABLE]
         detail: { type: string }
         instance: { type: string }
         retry_after: { type: integer, minimum: 1 }
         attempts_left: { type: integer, minimum: 0 }
-        resume:
-          description: 'For `REGISTRATION_INCOMPLETE` after a correct password: the flow to resume. Its handle replaces the previous one'
-          allOf:
-            - $ref: '#/components/schemas/RegistrationStarted'
         reasons:
           type: array
           description: For `PASSWORD_REJECTED`
@@ -1134,6 +1482,13 @@ components:
       pattern: '^[a-z][a-z0-9_]{0,31}$'
       examples: [email, phone]
 
+    IdentifierInput:
+      type: object
+      required: [type, value]
+      properties:
+        type: { $ref: '#/components/schemas/IdentifierType' }
+        value: { type: string, minLength: 3, maxLength: 320 }
+
     Locale:
       type: string
       description: A BCP 47 tag from `locales.allowed`
@@ -1154,14 +1509,57 @@ components:
 
     OtpCode:
       type: string
-      pattern: '^[0-9]{4,10}$'
+      pattern: '^[0-9]{6,10}$'
+
+    TotpCode:
+      type: string
+      pattern: '^[0-9]{6}$'
+
+    RecoveryCode:
+      type: string
+      description: 'Ten Crockford base32 characters, shown as `XXXXX-XXXXX`. Case, spaces and hyphens are ignored'
+      minLength: 10
+      maxLength: 16
+
+    SecondFactor:
+      description: A TOTP code, or one of the account's recovery codes
+      oneOf:
+        - type: object
+          required: [totp]
+          additionalProperties: false
+          properties:
+            totp: { $ref: '#/components/schemas/TotpCode' }
+        - type: object
+          required: [recovery_code]
+          additionalProperties: false
+          properties:
+            recovery_code: { $ref: '#/components/schemas/RecoveryCode' }
+
+    Handle:
+      type: string
+      description: Opaque, 256 bits. Proves the browser holds this flow
+      minLength: 43
+      maxLength: 64
+
+    FlowHandle:
+      type: object
+      required: [handle]
+      properties:
+        handle: { $ref: '#/components/schemas/Handle' }
+
+    HandleAndCode:
+      type: object
+      required: [handle, code]
+      properties:
+        handle: { $ref: '#/components/schemas/Handle' }
+        code: { $ref: '#/components/schemas/OtpCode' }
 
     RegistrationRequest:
       type: object
       required: [client_id, display_name, identifiers, password, locale]
       properties:
         client_id: { type: string }
-        display_name: { type: string, minLength: 1, maxLength: 200 }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
         identifiers:
           type: object
           description: One value per identifier type the policy accepts
@@ -1173,11 +1571,11 @@ components:
 
     RegistrationStarted:
       type: object
-      required: [flow_id, handle, pending, expires_at]
+      required: [flow_id, handle, pending_types, expires_at]
       properties:
         flow_id: { type: string, format: uuid }
-        handle: { type: string, description: Opaque. Proves the browser started this registration }
-        pending:
+        handle: { $ref: '#/components/schemas/Handle' }
+        pending_types:
           type: array
           items: { $ref: '#/components/schemas/IdentifierType' }
         expires_at: { type: string, format: date-time }
@@ -1186,7 +1584,7 @@ components:
       type: object
       required: [handle, identifier_type, code]
       properties:
-        handle: { type: string }
+        handle: { $ref: '#/components/schemas/Handle' }
         identifier_type: { $ref: '#/components/schemas/IdentifierType' }
         code: { $ref: '#/components/schemas/OtpCode' }
 
@@ -1194,22 +1592,44 @@ components:
       type: object
       required: [handle, identifier_type]
       properties:
-        handle: { type: string }
+        handle: { $ref: '#/components/schemas/Handle' }
         identifier_type: { $ref: '#/components/schemas/IdentifierType' }
 
     RegistrationProgress:
       type: object
-      required: [pending]
+      required: [pending_types]
       properties:
-        pending:
+        pending_types:
           type: array
           items: { $ref: '#/components/schemas/IdentifierType' }
 
-    FlowHandle:
+    ResumeRequest:
       type: object
-      required: [handle]
+      required: [client_id, identifier]
       properties:
-        handle: { type: string }
+        client_id: { type: string }
+        identifier: { $ref: '#/components/schemas/IdentifierInput' }
+
+    ResumeVerify:
+      type: object
+      required: [flow_id, identifier, code]
+      properties:
+        flow_id: { type: string, format: uuid }
+        identifier: { $ref: '#/components/schemas/IdentifierInput' }
+        code: { $ref: '#/components/schemas/OtpCode' }
+
+    FlowResumed:
+      type: object
+      required: [flow_id, kind, handle, pending_types, expires_at]
+      properties:
+        flow_id: { type: string, format: uuid }
+        kind: { type: string, enum: [registration, invitation] }
+        accepted: { type: boolean, description: 'For an invitation: whether it was already accepted. If not, continue with `/v1/invitations/accept`' }
+        handle: { $ref: '#/components/schemas/Handle' }
+        pending_types:
+          type: array
+          items: { $ref: '#/components/schemas/IdentifierType' }
+        expires_at: { type: string, format: date-time }
 
     FlowStarted:
       type: object
@@ -1218,42 +1638,87 @@ components:
         flow_id: { type: string, format: uuid }
         expires_at: { type: string, format: date-time }
 
+    FlowStartedWithHandle:
+      type: object
+      required: [flow_id, handle, expires_at]
+      properties:
+        flow_id: { type: string, format: uuid }
+        handle: { $ref: '#/components/schemas/Handle' }
+        expires_at: { type: string, format: date-time }
+
     LinkToken:
       type: object
       required: [token]
       properties:
-        token: { type: string, minLength: 16, maxLength: 200 }
+        token: { type: string, minLength: 43, maxLength: 64 }
 
     LinkConfirmed:
       type: object
-      required: [flow, complete]
+      required: [purpose, flow_id, complete]
       properties:
-        flow: { type: string, enum: [registration, email_change] }
-        complete: { type: boolean, description: Whether the flow needs nothing more }
+        purpose: { type: string, enum: [verify_identifier, resume, email_change_old, email_change_new] }
         flow_id: { type: string, format: uuid }
+        complete: { type: boolean, description: Whether the flow needs nothing more from links }
+        handle: { $ref: '#/components/schemas/Handle' }
+        pending_types:
+          type: array
+          description: For registration, invitation and resume
+          items: { $ref: '#/components/schemas/IdentifierType' }
 
     SignInRequest:
       type: object
       required: [client_id, identifier, password]
       properties:
         client_id: { type: string }
-        identifier: { type: string, minLength: 3, maxLength: 320, description: 'A sign-in identifier, such as an email' }
+        identifier: { $ref: '#/components/schemas/IdentifierInput' }
         password: { $ref: '#/components/schemas/Password' }
 
-    MfaRequired:
+    OtpSignInRequest:
       type: object
-      required: [code, mfa_token, expires_at]
+      required: [client_id, identifier]
       properties:
-        code: { type: string, const: MFA_REQUIRED }
-        mfa_token: { type: string }
+        client_id: { type: string }
+        identifier: { $ref: '#/components/schemas/IdentifierInput' }
+
+    OtpSignInStarted:
+      type: object
+      required: [handle, expires_at]
+      properties:
+        handle: { $ref: '#/components/schemas/Handle' }
         expires_at: { type: string, format: date-time }
 
-    MfaCode:
+    MfaStep:
       type: object
-      required: [mfa_token, code]
+      description: 'Not an error: the sign-in continues with a second step'
+      required: [code, flow_id, handle, expires_at]
       properties:
-        mfa_token: { type: string }
-        code: { $ref: '#/components/schemas/OtpCode' }
+        code: { type: string, enum: [MFA_REQUIRED, MFA_ENROLMENT_REQUIRED] }
+        flow_id: { type: string, format: uuid }
+        handle: { $ref: '#/components/schemas/Handle' }
+        expires_at: { type: string, format: date-time }
+
+    SecondFactorStep:
+      type: object
+      required: [handle, second_factor]
+      properties:
+        handle: { $ref: '#/components/schemas/Handle' }
+        second_factor: { $ref: '#/components/schemas/SecondFactor' }
+
+    TotpSetup:
+      type: object
+      required: [secret, otpauth_uri]
+      properties:
+        secret: { type: string, description: 'Base32, 160 bits' }
+        otpauth_uri: { type: string, format: uri, example: 'otpauth://totp/Example:someone%40example.com?secret=…&issuer=Example&algorithm=SHA1&digits=6&period=30' }
+
+    RecoveryCodes:
+      type: object
+      required: [recovery_codes]
+      properties:
+        recovery_codes:
+          type: array
+          minItems: 1
+          items: { type: string, example: 'ABCDE-FGHJK' }
 
     RefreshRequest:
       type: object
@@ -1263,14 +1728,20 @@ components:
 
     TokenResponse:
       type: object
-      required: [access_token, token_type, expires_in, account_status]
+      required: [access_token, token_type, expires_in, session_id, account_status]
       properties:
-        access_token: { type: string, description: 'JWT, RS256, typ at+jwt' }
+        access_token: { type: string, description: 'JWT, typ at+jwt. A restricted session''s token has the self audience' }
         token_type: { type: string, const: Bearer }
         expires_in: { type: integer, description: Seconds, maximum: 900 }
+        session_id: { type: string, format: uuid }
         refresh_token: { type: string, description: Only for clients whose refresh transport is the body }
         account_status: { $ref: '#/components/schemas/SessionStatus' }
         status_until: { type: string, format: date-time, description: For a suspension with an end date }
+
+    EnrolmentComplete:
+      allOf:
+        - $ref: '#/components/schemas/TokenResponse'
+        - $ref: '#/components/schemas/RecoveryCodes'
 
     Identifier:
       type: object
@@ -1278,13 +1749,13 @@ components:
       properties:
         type: { $ref: '#/components/schemas/IdentifierType' }
         masked: { type: string, description: 'For /v1/me only, for example s•••@example.com' }
-        value: { type: string, description: The normalised value. Directory only }
+        value: { type: string, description: 'The normalised value. Directory only, with directory:read:identifiers' }
         verified: { type: boolean }
         verified_at: { type: string, format: date-time }
 
     Me:
       type: object
-      required: [account_id, display_name, status, roles, locale, identifiers, mfa_enabled]
+      required: [account_id, display_name, status, roles, locale, identifiers, mfa_enrolled, recovery_codes_remaining]
       properties:
         account_id: { type: string, format: uuid }
         display_name: { type: string }
@@ -1297,13 +1768,14 @@ components:
         identifiers:
           type: array
           items: { $ref: '#/components/schemas/Identifier' }
-        mfa_enabled: { type: boolean }
+        mfa_enrolled: { type: boolean }
+        recovery_codes_remaining: { type: integer, minimum: 0 }
 
     MeUpdate:
       type: object
       minProperties: 1
       properties:
-        display_name: { type: string, minLength: 1, maxLength: 200 }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
         locale: { $ref: '#/components/schemas/Locale' }
 
     Session:
@@ -1327,63 +1799,68 @@ components:
 
     Reauthentication:
       type: object
+      description: 'The proof every sensitive operation needs (docs/design.md D-9): the current password, and `second_factor` when the account has TOTP. A `second_factor` sent for an account without TOTP is ignored'
       required: [current_password]
       properties:
         current_password: { $ref: '#/components/schemas/Password' }
+        second_factor: { $ref: '#/components/schemas/SecondFactor' }
 
-    PasswordChange:
-      type: object
-      required: [current_password, new_password]
-      properties:
-        current_password: { $ref: '#/components/schemas/Password' }
-        new_password: { $ref: '#/components/schemas/Password' }
-
-    EmailChange:
-      type: object
-      required: [current_password, new_email]
-      properties:
-        current_password: { $ref: '#/components/schemas/Password' }
-        new_email: { type: string, format: email, maxLength: 320 }
-
-    PhoneChange:
-      type: object
-      required: [current_password, new_phone]
-      properties:
-        current_password: { $ref: '#/components/schemas/Password' }
-        new_phone: { type: string, minLength: 3, maxLength: 32 }
-
-    Code:
+    TotpCodeRequest:
       type: object
       required: [code]
       properties:
-        code: { $ref: '#/components/schemas/OtpCode' }
+        code: { $ref: '#/components/schemas/TotpCode' }
 
-    TotpSetup:
-      type: object
-      required: [secret, otpauth_uri]
-      properties:
-        secret: { type: string, description: Base32 }
-        otpauth_uri: { type: string, format: uri }
+    PasswordChange:
+      allOf:
+        - $ref: '#/components/schemas/Reauthentication'
+        - type: object
+          required: [new_password]
+          properties:
+            new_password: { $ref: '#/components/schemas/Password' }
+
+    EmailChange:
+      allOf:
+        - $ref: '#/components/schemas/Reauthentication'
+        - type: object
+          required: [new_email]
+          properties:
+            new_email: { type: string, format: email, maxLength: 254 }
+
+    PhoneChange:
+      allOf:
+        - $ref: '#/components/schemas/Reauthentication'
+        - type: object
+          required: [new_phone]
+          properties:
+            new_phone: { type: string, minLength: 3, maxLength: 32, description: 'E.164, starting with +' }
+
+    TotpReplacementStarted:
+      allOf:
+        - $ref: '#/components/schemas/FlowStartedWithHandle'
+        - $ref: '#/components/schemas/TotpSetup'
 
     ResetRequest:
       type: object
-      required: [email]
+      required: [client_id, value]
       properties:
-        email: { type: string, format: email, maxLength: 320 }
+        client_id: { type: string, description: The client whose link base URL the link uses }
+        value: { type: string, minLength: 3, maxLength: 320, description: 'A value of the `recovery.via` type, by default an email' }
 
     ResetStarted:
       type: object
-      required: [flow_id, step_up]
+      required: [flow_id, proof]
       properties:
         flow_id: { type: string, format: uuid }
-        step_up: { type: string, enum: [none, phone_code] }
-        masked_phone: { type: string, description: 'For example •••••••0100' }
+        proof: { type: string, enum: [totp, sms, none], description: '`totp` accepts a TOTP code or a recovery code; `sms` a code sent to the masked phone' }
+        masked_phone: { type: string, description: 'For `sms`, for example •••••••0100' }
 
     ResetComplete:
       type: object
       required: [token, new_password]
       properties:
         token: { type: string }
+        second_factor: { $ref: '#/components/schemas/SecondFactor' }
         code: { $ref: '#/components/schemas/OtpCode' }
         new_password: { $ref: '#/components/schemas/Password' }
 
@@ -1421,6 +1898,9 @@ components:
           type: array
           items: { $ref: '#/components/schemas/Role' }
         status: { $ref: '#/components/schemas/SessionStatus' }
+        amr:
+          type: array
+          items: { type: string, enum: [pwd, sms, email, otp, rcode, mfa] }
         exp: { type: integer }
         iat: { type: integer }
         iss: { type: string }
@@ -1441,10 +1921,9 @@ components:
     SearchRequest:
       type: object
       description: Exactly one identifier
-      required: [identifier_type, value]
+      required: [identifier]
       properties:
-        identifier_type: { $ref: '#/components/schemas/IdentifierType' }
-        value: { type: string, minLength: 3, maxLength: 320 }
+        identifier: { $ref: '#/components/schemas/IdentifierInput' }
         include_deleted: { type: boolean, default: false }
 
     ListRequest:
@@ -1458,12 +1937,13 @@ components:
           items: { $ref: '#/components/schemas/Role' }
         created_from: { type: string, format: date-time }
         created_to: { type: string, format: date-time }
+        include_deleted: { type: boolean, default: false }
         cursor: { type: string }
         limit: { type: integer, minimum: 1, maximum: 100, default: 20 }
 
     DirectoryAccount:
       type: object
-      required: [account_id, display_name, status, roles, locale, created_at, identifiers]
+      required: [account_id, display_name, status, roles, locale, mfa_enrolled, created_at, version]
       properties:
         account_id: { type: string, format: uuid }
         display_name: { type: string }
@@ -1474,9 +1954,12 @@ components:
           type: array
           items: { $ref: '#/components/schemas/Role' }
         locale: { $ref: '#/components/schemas/Locale' }
+        mfa_enrolled: { type: boolean }
         created_at: { type: string, format: date-time }
+        version: { type: integer, minimum: 1 }
         identifiers:
           type: array
+          description: Current identifiers. Present only for callers with directory:read:identifiers
           items: { $ref: '#/components/schemas/Identifier' }
 
     DirectoryAccounts:
@@ -1486,6 +1969,17 @@ components:
         accounts:
           type: array
           items: { $ref: '#/components/schemas/DirectoryAccount' }
+
+    DirectoryBatch:
+      type: object
+      required: [accounts, not_found]
+      properties:
+        accounts:
+          type: array
+          items: { $ref: '#/components/schemas/DirectoryAccount' }
+        not_found:
+          type: array
+          items: { type: string, format: uuid }
 
     DirectoryPage:
       type: object
@@ -1503,6 +1997,7 @@ components:
         status: { type: string, enum: [active, suspended, banned] }
         reason_code: { type: string, description: 'Required for suspended and banned; from statuses.reason_codes' }
         until: { type: string, format: date-time, description: Suspended only. Information for display }
+        revoke_sessions: { type: boolean, default: false, description: Revoke every session at once instead of at the next refresh }
 
     RolesChange:
       type: object
@@ -1513,31 +2008,18 @@ components:
           uniqueItems: true
           items: { $ref: '#/components/schemas/Role' }
 
-    AttributesChange:
+    SupportIdentifierChange:
       type: object
-      required: [recovery_step_up]
+      required: [identifier]
       properties:
-        recovery_step_up: { type: boolean, description: Used when recovery.step_up is by_attribute }
-
-    AccountSummary:
-      type: object
-      required: [account_id, status, roles, version]
-      properties:
-        account_id: { type: string, format: uuid }
-        status: { $ref: '#/components/schemas/AccountStatus' }
-        status_reason: { type: string }
-        status_until: { type: string, format: date-time }
-        roles:
-          type: array
-          items: { $ref: '#/components/schemas/Role' }
-        version: { type: integer, minimum: 1 }
+        identifier: { $ref: '#/components/schemas/IdentifierInput' }
 
     InvitationRequest:
       type: object
       required: [email, display_name, client_id, roles]
       properties:
-        email: { type: string, format: email, maxLength: 320 }
-        display_name: { type: string, minLength: 1, maxLength: 200 }
+        email: { type: string, format: email, maxLength: 254 }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
         client_id: { type: string, description: The client whose link base URL the invitation uses }
         roles:
           type: array
@@ -1546,9 +2028,18 @@ components:
           items: { $ref: '#/components/schemas/Role' }
         locale: { $ref: '#/components/schemas/Locale' }
 
+    Reference:
+      type: string
+      description: |
+        A reference auth1 resolves at send time:
+        `auth1:identifier:<id>` (an identifier's value), `auth1:challenge-target:<challenge id>`
+        (an address under change), `auth1:secret:<challenge id>` (an OTP),
+        `auth1:link:<challenge id>` (a full link with its token).
+      pattern: '^auth1:(identifier|challenge-target|secret|link):[0-9a-f-]{36}$'
+
     ResolveRequest:
       type: object
-      description: auth1's proposal for the notification service's resolver contract (docs/design.md D-13)
+      description: auth1's proposal for the notification service's resolver contract (docs/design.md D-16)
       required: [request_id, type, references]
       properties:
         request_id: { type: string, description: The id auth1 gave the delivery request }
@@ -1557,9 +2048,7 @@ components:
           type: array
           minItems: 1
           maxItems: 10
-          items:
-            type: string
-            pattern: '^auth1:(identifier|challenge-target|secret):[0-9a-f-]{36}$'
+          items: { $ref: '#/components/schemas/Reference' }
 
     ResolveResponse:
       type: object
@@ -1574,18 +2063,28 @@ components:
       type: object
       description: |
         Outbound. What auth1's `notification` adapter submits to the notification service.
-        References only; the values come from the resolver hook at send time.
+        Secrets and addresses are references, resolved at send time; other variables are
+        non-secret values.
       x-auth1-outbound: true
-      required: [request_id, type, locale, recipient, variables]
+      required: [request_id, type, channel, locale, recipient, variables]
       properties:
-        request_id: { type: string, description: '`<challenge id>:<send number>`. The idempotency key' }
-        type: { type: string, examples: [auth.phone_verification_code] }
+        request_id: { type: string, description: '`<challenge id>:<send number>`, or the outbox id for a notice. The idempotency key' }
+        type: { type: string, examples: [auth.phone_verification_code, auth.notice_password_changed] }
+        channel: { type: string, enum: [email, sms] }
         locale: { $ref: '#/components/schemas/Locale' }
-        recipient: { type: string, pattern: '^auth1:(identifier|challenge-target):[0-9a-f-]{36}$' }
+        recipient:
+          type: string
+          pattern: '^auth1:(identifier|challenge-target):[0-9a-f-]{36}$'
         variables:
           type: object
-          additionalProperties: { type: string }
+          description: References (for `code`, `link` and personal values) or plain non-secret values
+          additionalProperties:
+            oneOf:
+              - { type: string }
+              - { type: integer }
           example: { code: 'auth1:secret:0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b' }
+        deadline: { type: string, format: date-time, description: Drop the message after this time }
+        traceparent: { type: string }
         resolver: { type: string, const: auth1, description: The namespace whose hook resolves the references }
 
     ClientCredentialsRequest:
@@ -1603,7 +2102,7 @@ components:
       properties:
         access_token: { type: string }
         token_type: { type: string, const: Bearer }
-        expires_in: { type: integer }
+        expires_in: { type: integer, maximum: 900 }
         scope: { type: string }
 
     OAuthError:
@@ -1614,15 +2113,27 @@ components:
         error_description: { type: string }
 
     Jwk:
-      type: object
-      required: [kty, kid, use, alg, n, e]
-      properties:
-        kty: { type: string, const: RSA }
-        kid: { type: string }
-        use: { type: string, const: sig }
-        alg: { type: string, const: RS256 }
-        n: { type: string }
-        e: { type: string }
+      description: A public signing key
+      oneOf:
+        - type: object
+          required: [kty, kid, use, alg, n, e]
+          properties:
+            kty: { type: string, const: RSA }
+            kid: { type: string, description: RFC 7638 thumbprint }
+            use: { type: string, const: sig }
+            alg: { type: string, const: RS256 }
+            n: { type: string }
+            e: { type: string }
+        - type: object
+          required: [kty, kid, use, alg, crv, x, y]
+          properties:
+            kty: { type: string, const: EC }
+            kid: { type: string, description: RFC 7638 thumbprint }
+            use: { type: string, const: sig }
+            alg: { type: string, const: ES256 }
+            crv: { type: string, const: P-256 }
+            x: { type: string }
+            y: { type: string }
 
     Jwks:
       type: object
@@ -1644,6 +2155,12 @@ components:
           type: array
           items: { type: string }
         token_endpoint_auth_methods_supported:
+          type: array
+          items: { type: string }
+        token_endpoint_auth_signing_alg_values_supported:
+          type: array
+          items: { type: string }
+        introspection_endpoint_auth_methods_supported:
           type: array
           items: { type: string }
         scopes_supported:
