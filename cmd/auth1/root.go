@@ -1,6 +1,10 @@
 package main
 
-import "github.com/spf13/cobra"
+import (
+	"os"
+
+	"github.com/spf13/cobra"
+)
 
 // newRootCmd builds the auth1 command tree. Subcommands are added here as they are built.
 func newRootCmd(info buildInfo) *cobra.Command {
@@ -10,6 +14,6 @@ func newRootCmd(info buildInfo) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newVersionCmd(info))
+	root.AddCommand(newVersionCmd(info), newConfigCmd(os.Environ))
 	return root
 }

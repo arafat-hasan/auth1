@@ -1,0 +1,186 @@
+# auth1 example configuration (TDD-08 §3). Every key is listed with its default, except where a
+# comment says otherwise. Check a file with: auth1 config check --config <file>
+#
+# Environment variables override single values: AUTH1_<PATH>, the key path upper-cased with "."
+# replaced by "_" (for example AUTH1_TOKENS_REFRESH_IDLE_TTL=200h). Lists and maps are file-only.
+#
+# Secrets are files, never values. This example points them at empty placeholders under
+# testdata/example/ so that it passes "config check" from the repository root; a deployment uses
+# the defaults shown in the comments, or its own mount paths.
+#
+# Durations use Go syntax (15m, 1h30m); sizes accept KiB, MiB and GiB (64MiB).
+
+app:
+  environment: production                 # development | test | staging | production; only development relaxes the floors
+
+http:
+  listen: ":8080"                         # address the HTTP API listens on
+  base_path: ""                           # path prefix in front of every route
+  issuer: https://id.example.com          # required; no default. The iss of every token
+  trusted_proxies: []                     # CIDRs whose forwarding headers are trusted, e.g. [10.0.0.0/8]
+
+keys:
+  keyring_file: testdata/example/secrets/signing/keyring.yaml   # default /secrets/signing/keyring.yaml; signing keyring
+  min_publish_before_use: 15m             # a new signing key is published this long before it signs
+
+encryption:
+  keyring_file: testdata/example/secrets/fields/keyring.yaml    # default /secrets/fields/keyring.yaml; field-encryption keys
+  blind_index_key_file: testdata/example/secrets/fields/bidx.key # default /secrets/fields/bidx.key; blind-index key
+  mac_key_file: testdata/example/secrets/mac/mac.key            # default /secrets/mac/mac.key; OTP and recovery-code MAC key
+  device_cookie_key_file: testdata/example/secrets/mac/device.key # default /secrets/mac/device.key; device-cookie MAC key
+
+tokens:
+  access_ttl: 15m                         # floor: at most 15m
+  self_audience: ""                       # audience of restricted tokens; empty means the issuer
+  refresh_idle_ttl: 168h                  # a refresh token unused this long expires
+  refresh_absolute_ttl: 720h              # a session ends this long after sign-in
+  refresh_reuse_grace: 10s                # floor: at most 60s; window in which a rotated token may be reused
+
+clients:                                  # required: at least one; no default
+  - id: web                               # sent by the client on sign-in and registration
+    audience: example-web                 # aud of full tokens issued to this client
+    allowed_roles: [user]                 # token roles = account roles ∩ allowed roles
+    default_roles: [user]                 # given at registration; a subset of allowed_roles
+    first_factors: [password]             # [password] | [password, otp]
+    mfa: optional                         # optional (default) | required
+    otp_channel: sms                      # sms | email; used when otp is a first factor
+    self_registration: true               # whether this client may start registrations
+    refresh_transport: cookie             # cookie | body
+    origins: [https://www.example.com]    # allowed origins and CORS allow-list; https outside development
+    link_base_url: https://www.example.com/account   # base URL of emailed links
+
+identifiers:                              # identifier policy by type; a file that sets it replaces the default
+  email: { required: true, verify: email_link, sign_in: true, calling_codes: [] }    # verify: email_link | email_code | sms_otp
+  phone: { required: false, verify: sms_otp, sign_in: false, calling_codes: [] }    # calling_codes: allowed codes without +, e.g. ["44"]
+
+passwords:
+  min_length: 12                          # floor: at least 8; 15 for strict NIST SP 800-63B-4 conformance
+  max_length: 128                         # floor: at least 64
+  deny_list_file: testdata/example/config/common-passwords.txt   # default /config/common-passwords.txt; one refused password per line
+  pepper_keyring_file: testdata/example/secrets/pepper/keyring.yaml # default /secrets/pepper/keyring.yaml; pepper keys
+  argon2:
+    memory: 64MiB                         # floor: at least 19MiB
+    iterations: 2                         # floor: at least 2
+    parallelism: 1                        # Argon2id lanes
+    max_concurrent: 4                     # hashes at once per replica; peak memory is this times memory
+    queue_timeout: 2s                     # wait for a hashing slot before answering 503
+
+mfa:
+  totp:
+    issuer: Example                       # no default; shown in authenticator apps
+    label: email                          # email | display_name | none
+    skew_steps: 1                         # floor: at most 2; accepted 30-second steps either side
+  recovery_codes: 10                      # recovery codes issued at a time
+  attempts_per_flow: 5                    # wrong second-factor codes before a sign-in flow closes
+  sign_in_flow_ttl: 10m                   # time to give the second factor
+
+otp:
+  length: 6                               # floor: at least 6
+  ttl: 5m                                 # a code expires after this
+  max_attempts: 3                         # floor: at most 5; wrong tries per code
+  cooldown: 15m                           # pause after the attempts are used up
+  resend_after: 60s                       # earliest resend
+  max_sends_per_hour: 5                   # codes sent per identifier per hour
+
+links:
+  verification_ttl: 24h                   # verification links expire after this
+  reset_ttl: 30m                          # floor: at most 2h; password-reset links expire after this
+  invitation_ttl: 72h                     # invitations expire after this
+
+flows:
+  pending_registration_ttl: 24h           # an unfinished registration expires after this
+
+recovery:
+  via: email                              # identifier type that password resets are requested with
+  sms_step_up: false                      # SMS code for accounts without TOTP that have a verified phone
+
+identifier_changes:
+  confirm_old_email: required             # required | notify
+
+roles:
+  catalog: [user, admin]                  # every role an account or client may name
+  revoke_sessions_on_removal: true        # removing a role revokes the account's sessions
+
+bootstrap:
+  roles: [admin]                          # roles given to the bootstrap invitations
+  emails_file: testdata/example/secrets/bootstrap/emails.txt   # default /secrets/bootstrap/emails.txt; empty disables bootstrap
+
+statuses:
+  reason_codes: [policy_violation, admin_action]   # reasons a service may give for a status change
+  restricted_sign_in: true                # restricted accounts may sign in to restricted tokens
+
+locales:
+  allowed: [en]                           # locales of messages
+  default: en                             # locale when none is given
+
+delivery:
+  adapter: notification                   # notification | direct | capture (development only)
+  notification:
+    request_url: http://notification/v1/requests   # notification service endpoint
+  direct:
+    smtp: { host: "", port: 587, from: "", username: "", password_file: "" }   # mail server for the direct adapter
+    sms: { url: "", sender: "", token_file: "" }   # SMS gateway for the direct adapter
+    templates_dir: /config/templates      # message templates for the direct adapter
+  retired_address_window: 168h            # a retired identifier stays reserved this long
+  notices:
+    new_sign_in: false                    # notify on sign-in from a new device
+  types: {}                               # purpose -> message type; defaults in TDD-06 §7
+
+service_auth:
+  mode: mesh                              # mesh | client_credentials | both; required outside development, no default
+  mesh:
+    source: header                        # header | peer_cert
+    header: x-forwarded-client-cert       # header carrying the caller identity
+    format: xfcc                          # xfcc | plain
+    trusted_sidecar_cidrs: [127.0.0.1/32, "::1/128"]   # sidecars allowed to set the header
+    ca_file: ""                           # CA for peer certificates; required with peer_cert
+  client_credentials:
+    audience: auth1-services              # audience of client-credentials tokens
+    token_ttl: 5m                         # floor: at most 15m
+    clients:                              # services using client credentials; no default
+      - id: reports                       # client id
+        jwks_file: ""                     # the service's public keys, as a file ...
+        jwks_uri: https://reports.example.com/.well-known/jwks.json   # ... or a URL; exactly one
+  callers:                                # scopes by service identity; no default
+    - identity: spiffe://cluster.local/ns/example/sa/reports
+      scopes: [tokens:introspect]
+
+rate_limits:
+  global_ip:          { limit: 600, window: 1m }   # every request, per IP
+  sign_in_ip:         { limit: 30, window: 5m }    # sign-in attempts per IP
+  registration_ip:    { limit: 5, window: 1h }     # registrations per IP
+  reset_ip:           { limit: 10, window: 1h }    # reset requests per IP
+  reset_account:      { limit: 3, window: 1h }     # reset requests per account
+  send_ip:            { limit: 20, window: 1h }    # codes and links sent per IP
+  verify_ip:          { limit: 30, window: 1h }    # verification attempts per IP
+  resume_ip:          { limit: 10, window: 1h }    # flow resumes per IP
+  token_client:       { limit: 60, window: 1m }    # client-credentials tokens per client
+  factor_failures:    { limit: 10, window: 1h }    # second-factor failures per account
+  sign_in_failures:   { threshold: 5, first_delay: 1s, max_delay: 15m }   # delay after repeated failures
+  sms_budget_per_hour: 100                # default 0; must be above 0 when any SMS method is configured
+
+events:
+  exchange: auth1.events                  # AMQP exchange events are published to
+  source: /auth1                          # CloudEvents source
+
+outbox:
+  poll_interval: 200ms                    # relay poll interval
+  batch_size: 100                         # rows per relay batch
+  max_attempts: 20                        # publish attempts before a row is parked
+  publish_timeout: 5s                     # wait for a broker confirm
+
+database: { dsn_file: testdata/example/secrets/db/dsn, max_conns: 20, acquire_timeout: 2s }   # dsn_file default /secrets/db/dsn
+redis:    { address: redis:6379, prefix: "auth1:", password_file: "" }   # rate-limit windows only
+amqp:     { url_file: testdata/example/secrets/amqp/url }   # url_file default /secrets/amqp/url
+
+retention:
+  expired_registrations: 168h             # expired registrations are deleted after this
+  closed_challenges: 720h                 # closed challenges are deleted after this
+  revoked_sessions: 2160h                 # revoked sessions are deleted after this
+  idempotency_keys: 24h                   # idempotency keys are kept this long
+  published_outbox: 168h                  # published outbox rows are deleted after this
+  audit_client_details: 2160h             # client details in audit rows are cleared after this
+
+telemetry:
+  otlp_endpoint: ""                       # empty: metrics on /metrics only, no trace export
+  service_name: auth1                     # service name in telemetry
