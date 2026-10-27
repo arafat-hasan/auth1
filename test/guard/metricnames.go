@@ -17,7 +17,8 @@ import (
 var metricName = regexp.MustCompile(`^auth1_[a-z0-9_]+$`)
 
 // CheckMetricNames reports each metric name in literals that allowed does not list, sorted and
-// without repeats.
+// without repeats. It sees only whole literals: a name built at run time, such as "auth1_" + x,
+// passes here and is refused by telemetry.Metrics when the instrument is created.
 func CheckMetricNames(literals, allowed []string) []string {
 	var unknown []string
 	for _, l := range literals {
