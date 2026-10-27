@@ -61,8 +61,11 @@ func NewRouter(o Options) http.Handler {
 	r.NotFound(notFound)
 	r.MethodNotAllowed(notFound)
 
-	r.Method(http.MethodGet, "/livez", o.Health.Live())
-	r.Method(http.MethodGet, "/readyz", o.Health.Ready())
+	// The probes also answer HEAD, which some load balancers send; net/http drops the body.
+	for _, m := range []string{http.MethodGet, http.MethodHead} {
+		r.Method(m, "/livez", o.Health.Live())
+		r.Method(m, "/readyz", o.Health.Ready())
+	}
 	if o.Routes != nil {
 		if o.BasePath == "" {
 			r.Group(o.Routes)

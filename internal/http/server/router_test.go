@@ -74,11 +74,13 @@ func TestRouter(t *testing.T) {
 	}{
 		{basePath: "", probes: []probe{
 			{"GET", "/livez", 200}, {"GET", "/readyz", 200}, {"GET", "/v1/ping", 200},
+			{"HEAD", "/livez", 200}, {"HEAD", "/readyz", 200}, {"HEAD", "/nope", 404},
 			{"GET", "/auth/v1/ping", 404}, {"GET", "/nope", 404}, {"POST", "/livez", 404},
 			{"POST", "/v1/ping", 404}, {"FOO", "/v1/ping", 404},
 		}},
 		{basePath: "/auth", probes: []probe{
 			{"GET", "/livez", 200}, {"GET", "/readyz", 200}, {"GET", "/auth/v1/ping", 200},
+			{"HEAD", "/livez", 200}, {"HEAD", "/auth/livez", 404},
 			{"GET", "/v1/ping", 404}, {"GET", "/auth/livez", 404}, {"GET", "/auth/nope", 404},
 			{"POST", "/auth/v1/ping", 404}, {"GET", "/nope", 404},
 		}},
