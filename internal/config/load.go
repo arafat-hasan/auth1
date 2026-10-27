@@ -41,6 +41,11 @@ func Load(path string, environ []string) (*Config, error) {
 	if err := k.Load(confmap.Provider(raw, ""), nil); err != nil {
 		return nil, fmt.Errorf("load %s: %w", path, err)
 	}
+	env, envProblems := resolveEnv(environ, scalarPaths())
+	problems = append(problems, envProblems...)
+	if err := k.Load(confmap.Provider(env, "."), nil); err != nil {
+		return nil, fmt.Errorf("load environment: %w", err)
+	}
 
 	var cfg Config
 	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{
