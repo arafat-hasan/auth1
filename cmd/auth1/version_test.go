@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"runtime"
+	"runtime/debug"
 	"testing"
 )
 
@@ -37,5 +38,47 @@ func TestDefaultBuildInfo(t *testing.T) {
 	}
 	if info.GoVersion != runtime.Version() {
 		t.Errorf("GoVersion = %q, want %q", info.GoVersion, runtime.Version())
+	}
+}
+
+func TestResolveBuildInfo(t *testing.T) {
+	t.Parallel()
+
+	stamped := &debug.BuildInfo{
+		Main:     debug.Module{Version: "v1.0.0"},
+		Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "0123456789abcdef"}},
+	}
+	tests := []struct {
+		name            string
+		version, commit string
+		bi              *debug.BuildInfo
+		want            buildInfo
+	}{
+		{
+			name: "no build info", version: "dev", commit: "unknown",
+			want: buildInfo{Version: "dev", Commit: "unknown"},
+		},
+		{
+			name: "devel build without VCS", version: "dev", commit: "unknown",
+			bi:   &debug.BuildInfo{Main: debug.Module{Version: "(devel)"}},
+			want: buildInfo{Version: "dev", Commit: "unknown"},
+		},
+		{
+			name: "stamped by the toolchain", version: "dev", commit: "unknown", bi: stamped,
+			want: buildInfo{Version: "v1.0.0", Commit: "0123456789abcdef"},
+		},
+		{
+			name: "ldflags win", version: "v2.0.0", commit: "abc123", bi: stamped,
+			want: buildInfo{Version: "v2.0.0", Commit: "abc123"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.want.GoVersion = runtime.Version()
+			if got := resolveBuildInfo(tt.version, tt.commit, tt.bi); got != tt.want {
+				t.Errorf("resolveBuildInfo = %+v, want %+v", got, tt.want)
+			}
+		})
 	}
 }
