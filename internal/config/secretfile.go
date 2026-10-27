@@ -38,21 +38,40 @@ func (f *SecretFile) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// check reports whether the file is a readable regular file, following symlinks. It opens the
+// check reports whether the file is a readable regular file. It reads nothing.
+func (f SecretFile) check() error { return checkFile(f.path) }
+
+// checkFile reports whether path is a readable regular file, following symlinks. It opens the
 // file to prove it can be read, but reads nothing.
-func (f SecretFile) check() error {
-	info, err := os.Stat(f.path)
+func checkFile(path string) error {
+	info, err := os.Stat(path)
 	if err != nil {
 		return fileError(err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", f.path)
+		return fmt.Errorf("%s is not a regular file", path)
 	}
-	file, err := os.Open(f.path)
+	file, err := os.Open(path) //nolint:gosec // paths come from the operator's configuration
 	if err != nil {
 		return fileError(err)
 	}
 	return file.Close()
+}
+
+// checkDir reports whether path is a readable directory.
+func checkDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileError(err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	dir, err := os.Open(path) //nolint:gosec // paths come from the operator's configuration
+	if err != nil {
+		return fileError(err)
+	}
+	return dir.Close()
 }
 
 // fileError describes a file-system error without its operation noise.
