@@ -38,15 +38,34 @@ var layerRules = []struct {
 	{layer: "internal/telemetry", allowed: []string{"internal/telemetry", "internal/config"}},
 }
 
-// CheckLayering reports every dependency that breaks the layering rules. deps maps each package
-// import path to the import paths it depends on. Violations are sorted and read
-// "<package> imports <dependency>", both relative to module ("." is the module root).
+// testOnly lists the packages that only test files may import. ListDeps leaves test files out, so
+// any dependency on them from a listed package is a violation, unless the importer is one of them.
+var testOnly = []string{"internal/testing"}
+
+// CheckLayering reports every dependency that breaks the layering rules or imports a test-only
+// package, once per dependency. deps maps each package import path to the import paths it depends
+// on. Violations are sorted and read "<package> imports <dependency>", both relative to module
+// ("." is the module root).
 func CheckLayering(module string, deps map[string][]string) []string {
 	var violations []string
 	for pkg, pkgDeps := range deps {
 		rel, ok := relative(module, pkg)
 		if !ok {
 			continue
+		}
+		found := map[string]bool{}
+		report := func(depRel string) {
+			if !found[depRel] {
+				found[depRel] = true
+				violations = append(violations, rel+" imports "+depRel)
+			}
+		}
+		if !matchesAny(rel, testOnly) {
+			for _, dep := range pkgDeps {
+				if depRel, ok := relative(module, dep); ok && matchesAny(depRel, testOnly) {
+					report(depRel)
+				}
+			}
 		}
 		for _, rule := range layerRules {
 			if !under(rel, rule.layer) {
@@ -63,7 +82,7 @@ func CheckLayering(module string, deps map[string][]string) []string {
 				if rule.allowed == nil && !matchesAny(depRel, rule.denied) {
 					continue
 				}
-				violations = append(violations, rel+" imports "+depRel)
+				report(depRel)
 			}
 		}
 	}
