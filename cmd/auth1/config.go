@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 
@@ -40,20 +41,34 @@ func newConfigCmd(environ func() []string) *cobra.Command {
 // checkConfig prints "configuration OK" or every problem from loading and validating, one per
 // line. A file that cannot be read or parsed is returned as an error.
 func checkConfig(cmd *cobra.Command, path string, environ []string) error {
-	cfg, err := config.Load(path, environ)
-	problems := config.Problems(err)
-	if err != nil && len(problems) == 0 {
+	_, problems, err := loadConfig(path, environ)
+	if err != nil {
 		return err
 	}
-	if cfg != nil {
-		problems = append(problems, config.Problems(cfg.Validate())...)
-	}
-
 	out := cmd.OutOrStdout()
 	if len(problems) == 0 {
 		_, err := fmt.Fprintln(out, "configuration OK")
 		return err
 	}
+	return printProblems(out, problems)
+}
+
+// loadConfig loads path with its environ overrides and validates it. It returns the problems
+// found, or an error when the file cannot be read or parsed.
+func loadConfig(path string, environ []string) (*config.Config, []*config.Problem, error) {
+	cfg, err := config.Load(path, environ)
+	problems := config.Problems(err)
+	if err != nil && len(problems) == 0 {
+		return nil, nil, err
+	}
+	if cfg != nil {
+		problems = append(problems, config.Problems(cfg.Validate())...)
+	}
+	return cfg, problems, nil
+}
+
+// printProblems writes the problem count and each problem to out, and returns errConfigInvalid.
+func printProblems(out io.Writer, problems []*config.Problem) error {
 	if _, err := fmt.Fprintf(out, "configuration has %d problem(s):\n", len(problems)); err != nil {
 		return err
 	}

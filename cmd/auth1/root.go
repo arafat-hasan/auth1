@@ -14,6 +14,6 @@ func newRootCmd(info buildInfo) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newVersionCmd(info), newConfigCmd(os.Environ))
+	root.AddCommand(newVersionCmd(info), newConfigCmd(os.Environ), newServeCmd(os.Environ, info, defaultServeDeps()))
 	return root
 }
