@@ -63,6 +63,14 @@ it.
 YAML file (`--config`), with environment overrides `AUTH1_<SECTION>_<KEY>` for scalar values. Secrets
 are **files** named in the configuration, never values.
 
+The file is read over the defaults below:
+- A key with no value, such as a section whose keys are all commented out, keeps its default.
+- A list in the file replaces the default list.
+- A map of sections (`identifiers`) in the file decides which entries exist: a default entry the
+  file does not name is dropped. An entry the file names keeps that entry's defaults under the
+  values it sets, so `identifiers: { email: { verify: email_code } }` keeps email's `required` and
+  `sign_in`, and drops `phone`.
+
 ```yaml
 app:
   environment: production              # development | test | staging | production
@@ -235,8 +243,14 @@ telemetry:
 | `links.reset_ttl` | ≤ 2h |
 | `service_auth.client_credentials.token_ttl` | ≤ 15m |
 
+- a negative duration, size or count anywhere; or zero for `tokens.access_ttl`, `links.reset_ttl`,
+  `service_auth.client_credentials.token_ttl` or `otp.max_attempts`, whose floors are only upper
+  bounds. These apply in every environment;
 - `delivery.adapter: capture` or no `service_auth.mode` outside `development`;
-- a client role outside the catalog; a client origin that is not `https` outside `development`;
+- a client role outside the catalog;
+- a client origin that is not exactly a scheme and host, or that is not `https` outside
+  `development`; a service client's `jwks_uri` that is not an absolute URL, or not `https`
+  outside `development`;
 - an SMS method configured with `sms_budget_per_hour: 0`;
 - a keyring with zero or several `active` keys.
 
