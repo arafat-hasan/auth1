@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
@@ -31,25 +32,39 @@ func Trace(tp trace.TracerProvider, prop propagation.TextMapPropagator) func(htt
 			ctx, span := tracer.Start(ctx, spanName(method, ""),
 				trace.WithSpanKind(trace.SpanKindServer),
 				trace.WithAttributes(semconv.HTTPRequestMethodKey.String(method), semconv.URLScheme(scheme)))
-			defer span.End()
 
 			ww := wrap(w, r)
+			completed := false
+			defer func() { endSpan(span, ww, r, method, !completed) }()
 			next.ServeHTTP(ww, r.WithContext(ctx))
-
-			code := status(ww)
-			attrs := []attribute.KeyValue{semconv.HTTPResponseStatusCode(code)}
-			route := routePattern(r)
-			if route != "" {
-				attrs = append(attrs, semconv.HTTPRoute(route))
-			}
-			if code >= http.StatusInternalServerError {
-				attrs = append(attrs, semconv.ErrorTypeKey.String(strconv.Itoa(code)))
-				span.SetStatus(codes.Error, "")
-			}
-			span.SetAttributes(attrs...)
-			span.SetName(spanName(method, route))
+			completed = true
 		})
 	}
+}
+
+// endSpan names the span after routing, sets the response attributes and ends it. An aborted
+// request is marked as an error with error.type=aborted.
+func endSpan(span trace.Span, ww chimw.WrapResponseWriter, r *http.Request, method string, aborted bool) {
+	defer span.End()
+	code := responseStatus(ww, aborted)
+	var attrs []attribute.KeyValue
+	if code != 0 {
+		attrs = append(attrs, semconv.HTTPResponseStatusCode(code))
+	}
+	route := routePattern(r)
+	if route != "" {
+		attrs = append(attrs, semconv.HTTPRoute(route))
+	}
+	switch {
+	case aborted:
+		attrs = append(attrs, semconv.ErrorTypeKey.String(abortedType))
+		span.SetStatus(codes.Error, "")
+	case code >= http.StatusInternalServerError:
+		attrs = append(attrs, semconv.ErrorTypeKey.String(strconv.Itoa(code)))
+		span.SetStatus(codes.Error, "")
+	}
+	span.SetAttributes(attrs...)
+	span.SetName(spanName(method, route))
 }
 
 // spanName is "METHOD route", "METHOD" when no route matched, and "HTTP" for an unknown method.

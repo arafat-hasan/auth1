@@ -108,6 +108,45 @@ func TestAccessLog(t *testing.T) {
 	}
 }
 
+func TestAccessLogAborted(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	h, reader := logRouter(t, &logs)
+	serveAborting(t, h)
+
+	var line map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &line); err != nil {
+		t.Fatalf("log is not one JSON line: %v: %s", err, logs.String())
+	}
+	want := map[string]any{"level": "ERROR", "msg": "request", "route": "/abort", "status": 0.0, "aborted": true}
+	for k, v := range want {
+		if line[k] != v {
+			t.Errorf("%s = %v, want %v", k, line[k], v)
+		}
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	wantSet := attribute.NewSet(attribute.String("http.request.method", "GET"),
+		attribute.String("http.route", "/abort"), attribute.String("error.type", "aborted"))
+	found := false
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			for _, dp := range m.Data.(metricdata.Histogram[float64]).DataPoints {
+				if dp.Attributes.Equals(&wantSet) && dp.Count == 1 {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no data point with %s", wantSet.Encoded(attribute.DefaultEncoder()))
+	}
+}
+
 func TestRequestDurationMetric(t *testing.T) {
 	t.Parallel()
 

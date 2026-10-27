@@ -26,7 +26,48 @@ func testRouter(mws ...func(http.Handler) http.Handler) chi.Router {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 	r.Get("/silent", func(http.ResponseWriter, *http.Request) {})
+	r.Get("/abort", func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) })
 	return r
+}
+
+// serveAborting serves a request to /abort on h and checks that http.ErrAbortHandler reaches it.
+func serveAborting(t *testing.T, h http.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	defer func() {
+		if v := recover(); v != http.ErrAbortHandler { //nolint:errorlint // the exact sentinel is re-panicked
+			t.Errorf("recovered %v, want http.ErrAbortHandler", v)
+		}
+	}()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/abort", nil))
+	return rec
+}
+
+func TestTraceAborted(t *testing.T) {
+	t.Parallel()
+
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	serveAborting(t, testRouter(Trace(tp, propagation.TraceContext{})))
+
+	spans := rec.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("%d spans, want 1", len(spans))
+	}
+	s := spans[0]
+	if s.Name() != "GET /abort" || s.Status().Code != codes.Error {
+		t.Errorf("name %q status %v, want GET /abort and Error", s.Name(), s.Status().Code)
+	}
+	got := map[attribute.Key]attribute.Value{}
+	for _, kv := range s.Attributes() {
+		got[kv.Key] = kv.Value
+	}
+	if got["error.type"].AsString() != "aborted" {
+		t.Errorf("error.type %v, want aborted", got["error.type"].String())
+	}
+	if _, ok := got["http.response.status_code"]; ok {
+		t.Error("an aborted request with no response has a status code")
+	}
 }
 
 const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"

@@ -44,10 +44,13 @@ func wrap(w http.ResponseWriter, r *http.Request) chimw.WrapResponseWriter {
 	return chimw.NewWrapResponseWriter(w, r.ProtoMajor)
 }
 
-// status returns the status ww sent, or 200 when the handler wrote nothing, which net/http then
-// answers with 200.
-func status(ww chimw.WrapResponseWriter) int {
-	if s := ww.Status(); s != 0 {
+// abortedType is the error.type of a request whose handler aborted with http.ErrAbortHandler.
+const abortedType = "aborted"
+
+// responseStatus returns the status ww sent. When the handler wrote nothing it is 200, which
+// net/http then answers, unless the handler aborted: then it is 0, as nothing was sent.
+func responseStatus(ww chimw.WrapResponseWriter, aborted bool) int {
+	if s := ww.Status(); s != 0 || aborted {
 		return s
 	}
 	return http.StatusOK
