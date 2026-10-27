@@ -110,6 +110,28 @@ func TestRunWaitsDrainDelay(t *testing.T) {
 	}
 }
 
+func TestRunDrainEndsOnServeError(t *testing.T) {
+	t.Parallel()
+
+	good := listen(t)
+	bad := listen(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runAsync(ctx, []Listener{
+		{Name: "main", Listener: good, Handler: http.NotFoundHandler()},
+		{Name: "metrics", Listener: bad, Handler: http.NotFoundHandler()},
+	}, Shutdown{Drain: func() { _ = bad.Close() }, DrainDelay: time.Hour, Timeout: time.Second})
+	start := time.Now()
+	cancel()
+
+	err := waitRun(t, done)
+	if !errors.Is(err, net.ErrClosed) {
+		t.Errorf("Run = %v, want the metrics listener's error", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Run took %v; a failed server should end the drain delay", d)
+	}
+}
+
 func TestRunShutdownTimeout(t *testing.T) {
 	t.Parallel()
 
