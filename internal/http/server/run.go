@@ -63,7 +63,7 @@ func Run(ctx context.Context, logger *slog.Logger, ls []Listener, s Shutdown) er
 // drain fails readiness, disables keep-alives and waits the drain delay, so load balancers stop
 // sending requests before the listeners close.
 func drain(ctx context.Context, logger *slog.Logger, servers []*http.Server, s Shutdown) {
-	logger.LogAttrs(ctx, slog.LevelInfo, "draining", slog.Duration("delay", s.DrainDelay))
+	logger.LogAttrs(ctx, slog.LevelInfo, "draining", slog.Float64("delay", s.DrainDelay.Seconds()))
 	if s.Drain != nil {
 		s.Drain()
 	}
