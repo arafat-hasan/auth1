@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -153,4 +154,101 @@ func TestHandlerConformance(t *testing.T) {
 		return m
 	}
 	slogtest.Run(t, newHandler, result)
+}
+
+// TestUserTimeAttr checks that an attribute the caller names time keeps its name and does not
+// become a second ts, which a JSON reader would take in place of the record's time.
+func TestUserTimeAttr(t *testing.T) {
+	t.Parallel()
+
+	userTime := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+	const userTS = "1970-01-01T00:00:00Z"
+	withSpan := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}, TraceFlags: trace.FlagsSampled,
+	}))
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		log  func(ctx context.Context, l *slog.Logger)
+		want func(m map[string]any) any // where the caller's time ends up
+	}{
+		{
+			name: "record attribute",
+			ctx:  context.Background(),
+			log:  func(ctx context.Context, l *slog.Logger) { l.InfoContext(ctx, "m", slog.Time("time", userTime)) },
+			want: func(m map[string]any) any { return m["time"] },
+		},
+		{
+			name: "record attribute with a span",
+			ctx:  withSpan,
+			log:  func(ctx context.Context, l *slog.Logger) { l.InfoContext(ctx, "m", slog.Time("time", userTime)) },
+			want: func(m map[string]any) any { return m["time"] },
+		},
+		{
+			name: "With attribute",
+			ctx:  withSpan,
+			log: func(ctx context.Context, l *slog.Logger) {
+				l.With(slog.Time("time", userTime)).InfoContext(ctx, "m")
+			},
+			want: func(m map[string]any) any { return m["time"] },
+		},
+		{
+			name: "inside a group",
+			ctx:  context.Background(),
+			log: func(ctx context.Context, l *slog.Logger) {
+				l.WithGroup("g").InfoContext(ctx, "m", slog.Time("time", userTime))
+			},
+			want: func(m map[string]any) any { return m["g"].(map[string]any)["time"] },
+		},
+		{
+			name: "group named time",
+			ctx:  context.Background(),
+			log: func(ctx context.Context, l *slog.Logger) {
+				l.InfoContext(ctx, "m", slog.Group("time", slog.Time("at", userTime)))
+			},
+			want: func(m map[string]any) any { return m["time"].(map[string]any)["at"] },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			tt.log(tt.ctx, slog.New(NewHandler(&buf, "svc", "v1")))
+			if n := strings.Count(buf.String(), `"ts":`); n != 1 {
+				t.Fatalf("line has %d ts keys, want 1:\n%s", n, buf.String())
+			}
+			if strings.Contains(buf.String(), userTimeKey) {
+				t.Fatalf("line holds the stand-in key:\n%s", buf.String())
+			}
+			m := logLines(t, &buf)[0]
+			if m["ts"] == userTS {
+				t.Errorf("ts is the caller's time, want the record's")
+			}
+			if got := tt.want(m); got != userTS {
+				t.Errorf("caller's time = %v, want %s:\n%s", got, userTS, buf.String())
+			}
+		})
+	}
+}
+
+// BenchmarkHandle measures a request-style logger, with attributes from With, with and without
+// a span. With a span the handler rebuilds its chain for each record.
+func BenchmarkHandle(b *testing.B) {
+	withSpan := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}, TraceFlags: trace.FlagsSampled,
+	}))
+	l := slog.New(NewHandler(io.Discard, "svc", "v1")).
+		With(RequestID("r1"), ClientID("c1")).WithGroup("req").With("method", "GET", "route", "/x")
+	for _, bc := range []struct {
+		name string
+		ctx  context.Context
+	}{{"no span", context.Background()}, {"span", withSpan}} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				l.InfoContext(bc.ctx, "request", "status", 200)
+			}
+		})
+	}
 }
