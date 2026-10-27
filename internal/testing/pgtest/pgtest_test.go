@@ -102,3 +102,27 @@ func TestServerStopStart(t *testing.T) {
 		t.Fatalf("ping after start: %v", err)
 	}
 }
+
+func TestDSNFromTemplate(t *testing.T) {
+	a, b := DSN(t), DSN(t)
+	if a == b {
+		t.Fatalf("DSN returned %q twice", a)
+	}
+	dbA, dbB := open(t, a), open(t, b)
+	var ok bool
+	if err := dbA.QueryRowContext(t.Context(), "SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&ok); err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("schema_migrations is missing: the template was not migrated")
+	}
+	if _, err := dbA.ExecContext(t.Context(), "CREATE TABLE only_in_a (id int)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbB.QueryRowContext(t.Context(), "SELECT to_regclass('only_in_a') IS NOT NULL").Scan(&ok); err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("a table created in one database is visible in the other")
+	}
+}

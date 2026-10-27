@@ -14,10 +14,16 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // the pgx database/sql driver
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"github.com/arafat-hasan/auth1/internal/adapters/postgres/migrate"
+	"github.com/arafat-hasan/auth1/migrations"
 )
 
 // Image is the PostgreSQL image the containers run.
 const Image = "postgres:18-alpine"
+
+// templateName is the database that holds the migrated schema; DSN copies it.
+const templateName = "t_template"
 
 // requireDockerEnv, set to 1, turns a missing Docker into a test failure.
 const requireDockerEnv = "AUTH1_REQUIRE_DOCKER"
@@ -45,6 +51,21 @@ type instance struct {
 	admin *sql.DB
 
 	mu sync.Mutex // serialises CREATE DATABASE from one template
+
+	templateOnce sync.Once
+	templateErr  error
+}
+
+// DSN returns the DSN of a new database with every migration in migrations.FS applied, dropped
+// when the test ends. The migrations run once per test package, on a template database.
+func DSN(t testing.TB) string {
+	t.Helper()
+	in := shared(t)
+	in.templateOnce.Do(func() { in.templateErr = in.migrateTemplate() })
+	if in.templateErr != nil {
+		t.Fatalf("pgtest: %v", in.templateErr)
+	}
+	return in.create(t, templateName)
 }
 
 // Empty returns the DSN of a new, empty database, dropped when the test ends.
@@ -124,6 +145,23 @@ func start() (*instance, error) {
 		return nil, fmt.Errorf("ping %s: %w", Image, err)
 	}
 	return &instance{ctr: ctr, base: *u, admin: admin}, nil
+}
+
+// migrateTemplate creates the template database and applies the migrations to it. Its connection
+// is closed afterwards, since PostgreSQL copies only a template nobody is connected to.
+func (in *instance) migrateTemplate() error {
+	if _, err := in.admin.Exec("CREATE DATABASE " + templateName + " TEMPLATE template0"); err != nil {
+		return fmt.Errorf("create template: %w", err)
+	}
+	db, err := sql.Open("pgx", in.dsn(templateName))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := migrate.New(db, migrations.FS).Up(context.Background()); err != nil {
+		return fmt.Errorf("migrate template: %w", err)
+	}
+	return nil
 }
 
 // create makes a database from template and returns its DSN. The database is dropped, with any
