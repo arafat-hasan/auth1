@@ -49,8 +49,9 @@ Code layout follows TDD-08 §2; every package has a `doc.go` naming the TDD sect
 The binary is `cmd/auth1` (cobra; `newRootCmd` in `root.go` is where subcommands are added).
 
 `test/guard` holds the layering check (`TestLayering`), run by `make test` and in CI: from
-`go list -deps`, `internal/domain` imports nothing internal and `internal/app` imports only
-`internal/domain` and `internal/app`.
+`go list -deps` (plus files left out by build constraints), `internal/domain` imports nothing
+internal, `internal/app` imports only `internal/domain` and `internal/app`, and
+`internal/adapters` and `internal/http` do not import each other.
 
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
