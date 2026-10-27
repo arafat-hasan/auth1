@@ -254,6 +254,9 @@ telemetry:
   outside `development`;
 - an SMS method configured with `sms_budget_per_hour: 0`;
 - a keyring with zero or several `active` keys;
+- an `http.listen` that is not `host:port` with a port from 1 to 65535; an `http.base_path` that is
+  not empty and not `/segment[/segment…]`, each segment of letters, digits, `-`, `.`, `_` or `~`
+  and not `.` or `..`. These apply in every environment.
 - a `telemetry.metrics_listen` that is not `host:port` with a port from 1 to 65535, or that equals
   `http.listen`; a `telemetry.otlp_endpoint` that is not an absolute `http` or `https` URL, or that
   has a query or fragment; an empty `telemetry.service_name`. These apply in every environment.

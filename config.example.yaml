@@ -15,7 +15,7 @@ app:
 
 http:
   listen: ":8080"                         # address the HTTP API listens on
-  base_path: ""                           # path prefix in front of every route
+  base_path: ""                           # path prefix in front of every API route, e.g. /auth; no trailing slash
   issuer: https://id.example.com          # required; no default. The iss of every token
   trusted_proxies: []                     # CIDRs whose forwarding headers are trusted, e.g. [10.0.0.0/8]
 
