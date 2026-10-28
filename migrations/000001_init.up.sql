@@ -288,7 +288,7 @@ GRANT UPDATE (ip, user_agent) ON auth_audit TO auth1_app;
 CREATE FUNCTION auth_audit_create_partitions(months integer) RETURNS integer
     LANGUAGE plpgsql
     SECURITY DEFINER
-    SET search_path = pg_catalog, public
+    SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     first_month timestamp := date_trunc('month', now() AT TIME ZONE 'UTC');
