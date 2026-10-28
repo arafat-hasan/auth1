@@ -18,9 +18,9 @@ var tables = []string{
 }
 
 // queryStrings runs a query that returns one text column.
-func queryStrings(t *testing.T, db *sql.DB, query string) []string {
+func queryStrings(t *testing.T, db *sql.DB, query string, args ...any) []string {
 	t.Helper()
-	rows, err := db.QueryContext(t.Context(), query)
+	rows, err := db.QueryContext(t.Context(), query, args...)
 	if err != nil {
 		t.Fatalf("%s: %v", query, err)
 	}

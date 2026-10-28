@@ -240,3 +240,43 @@ CREATE INDEX outbox_event_pending ON outbox (subject, account_version)
 CREATE INDEX outbox_delivery_pending ON outbox (next_attempt_at)
     WHERE destination = 'delivery' AND published_at IS NULL AND parked_at IS NULL;
 CREATE INDEX outbox_published ON outbox (published_at) WHERE published_at IS NOT NULL;  -- retention (§5)
+
+-- Audit partitions (TDD-01 §4.1, TDD-08 §7). The partition job runs as auth1_app, which may not
+-- create tables, so it calls this function, which runs as its owner, the migrator. It creates the
+-- monthly partitions auth_audit_YYYY_MM for the current UTC month and the next `months` months
+-- that are missing, gives each the grants of its parent and nothing else, and returns how many it
+-- created. Callers are serialised by an advisory lock ("auth1aud"). There is no DEFAULT partition.
+CREATE FUNCTION auth_audit_create_partitions(months integer) RETURNS integer
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    first_month timestamp := date_trunc('month', now() AT TIME ZONE 'UTC');
+    month_start timestamp;
+    part        text;
+    created     integer := 0;
+BEGIN
+    IF months IS NULL OR months NOT BETWEEN 0 AND 12 THEN
+        RAISE EXCEPTION 'months must be between 0 and 12, not %', coalesce(months::text, 'null')
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    PERFORM pg_advisory_xact_lock(x'6175746831617564'::bigint);
+    FOR i IN 0 .. months LOOP
+        month_start := first_month + i * interval '1 month';
+        part := 'auth_audit_' || to_char(month_start, 'YYYY_MM');
+        CONTINUE WHEN to_regclass(format('public.%I', part)) IS NOT NULL;
+        EXECUTE format('CREATE TABLE public.%I PARTITION OF public.auth_audit FOR VALUES FROM (%L) TO (%L)',
+            part, month_start AT TIME ZONE 'UTC', (month_start + interval '1 month') AT TIME ZONE 'UTC');
+        EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC, auth1_app', part);
+        EXECUTE format('GRANT SELECT, INSERT ON public.%I TO auth1_app', part);
+        EXECUTE format('GRANT UPDATE (ip, user_agent) ON public.%I TO auth1_app', part);
+        created := created + 1;
+    END LOOP;
+    RETURN created;
+END
+$$;
+REVOKE EXECUTE ON FUNCTION auth_audit_create_partitions(integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION auth_audit_create_partitions(integer) TO auth1_app;
+
+SELECT auth_audit_create_partitions(1);

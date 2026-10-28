@@ -1,6 +1,8 @@
--- Reverts 000001: drops every table in the reverse order of creation, with its indexes. No
--- CASCADE, so a dependency the up file adds and this file misses fails instead of being hidden.
+-- Reverts 000001: drops the partition function, then every table in the reverse order of
+-- creation, with its indexes and, for auth_audit, its partitions. No CASCADE, so a dependency the
+-- up file adds and this file misses fails instead of being hidden.
 
+DROP FUNCTION auth_audit_create_partitions(integer);
 DROP TABLE outbox;
 DROP TABLE auth_audit;
 DROP TABLE signing_keys;
