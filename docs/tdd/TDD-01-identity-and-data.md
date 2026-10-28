@@ -135,6 +135,7 @@ CREATE UNIQUE INDEX identifiers_verified_unique ON identifiers (type, value_bidx
 CREATE UNIQUE INDEX identifiers_current_per_type ON identifiers (account_id, type)
     WHERE retired_at IS NULL;                                   -- I-2
 CREATE INDEX identifiers_lookup ON identifiers (type, value_bidx) WHERE retired_at IS NULL;
+CREATE INDEX identifiers_account ON identifiers (account_id);      -- FK; the purge (§5)
 
 CREATE TABLE password_credentials (
     account_id   uuid PRIMARY KEY REFERENCES accounts (id),
@@ -190,6 +191,7 @@ CREATE TABLE flows (
 );
 CREATE INDEX flows_account_open ON flows (account_id, kind) WHERE completed_at IS NULL AND cancelled_at IS NULL;
 CREATE INDEX flows_open_expiry ON flows (expires_at) WHERE completed_at IS NULL AND cancelled_at IS NULL;
+CREATE INDEX flows_account ON flows (account_id);                  -- FK; the purge (§5)
 
 CREATE TABLE challenges (
     id             uuid PRIMARY KEY,
@@ -216,6 +218,8 @@ CREATE UNIQUE INDEX challenges_link ON challenges (secret_mac) WHERE method = 'e
 CREATE INDEX challenges_open ON challenges (expires_at) WHERE closed_at IS NULL;
 CREATE INDEX challenges_flow ON challenges (flow_id);
 CREATE INDEX challenges_target ON challenges (target_bidx, created_at);  -- send limits per value
+CREATE INDEX challenges_identifier ON challenges (identifier_id);  -- FK; the purge (§5)
+CREATE INDEX challenges_closed ON challenges (closed_at) WHERE closed_at IS NOT NULL;  -- retention (§5)
 
 CREATE TABLE sessions (
     id                   uuid PRIMARY KEY,
@@ -234,6 +238,9 @@ CREATE TABLE sessions (
 );
 CREATE INDEX sessions_account_live ON sessions (account_id) WHERE revoked_at IS NULL;
 CREATE INDEX sessions_revoked ON sessions (revoked_at) WHERE revoked_at IS NOT NULL;
+CREATE INDEX sessions_account ON sessions (account_id);            -- FK; the purge (§5)
+CREATE INDEX sessions_expiry ON sessions (least(idle_expires_at, absolute_expires_at))
+    WHERE revoked_at IS NULL;                                   -- retention (§5)
 
 CREATE TABLE refresh_tokens (
     token_hash      bytea PRIMARY KEY,                          -- sha256
@@ -254,6 +261,7 @@ CREATE TABLE sign_in_throttles (                                -- TDD-07 §4
     updated_at   timestamptz NOT NULL,
     PRIMARY KEY (account_id, bucket)
 );
+CREATE INDEX sign_in_throttles_updated ON sign_in_throttles (updated_at);  -- retention (§5)
 
 CREATE TABLE sms_budget (                                       -- TDD-07 §6
     hour  timestamptz PRIMARY KEY,                              -- truncated to the hour
@@ -266,6 +274,7 @@ CREATE TABLE client_assertions (                                -- jti replay pr
     expires_at  timestamptz NOT NULL,
     PRIMARY KEY (client_id, jti)
 );
+CREATE INDEX client_assertions_expiry ON client_assertions (expires_at);   -- retention (§5)
 
 CREATE TABLE idempotency_keys (
     caller        text NOT NULL,
@@ -302,6 +311,8 @@ CREATE TABLE auth_audit (
     PRIMARY KEY (id, at)
 ) PARTITION BY RANGE (at);
 CREATE INDEX auth_audit_account ON auth_audit (account_id, at);
+CREATE INDEX auth_audit_uncleared ON auth_audit (at)
+    WHERE ip IS NOT NULL OR user_agent IS NOT NULL;              -- clearing after 90 days (§5)
 
 CREATE TABLE outbox (
     id               uuid PRIMARY KEY,                          -- UUIDv7; CloudEvents id for events
@@ -324,6 +335,7 @@ CREATE INDEX outbox_event_pending ON outbox (subject, account_version)
     WHERE destination = 'event' AND published_at IS NULL;
 CREATE INDEX outbox_delivery_pending ON outbox (next_attempt_at)
     WHERE destination = 'delivery' AND published_at IS NULL AND parked_at IS NULL;
+CREATE INDEX outbox_published ON outbox (published_at) WHERE published_at IS NOT NULL;  -- retention (§5)
 ```
 
 ### 4.1 Grants
@@ -364,6 +376,11 @@ CREATE INDEX outbox_delivery_pending ON outbox (next_attempt_at)
 | `auth_audit` | Kept; monthly partitions | `ip`, `user_agent` set to null after 90 days; a product may drop partitions past its legal horizon |
 | `sessions.user_agent` | 90 days | Null |
 | Deleted accounts | Kept encrypted, released from uniqueness | Erasure on request (SDD O-2) |
+
+Each purge by age, and the clearing of audit IPs, reads an index on its cut-off column, and every foreign key has an
+index that starts with its column, so a purge scans no table, either to find its rows or to check
+the rows that reference them. Only a pending account's rows are purged from `accounts`; there is no
+`ON DELETE CASCADE`, so the purge deletes the referencing rows first.
 
 ## 6. Implementation guidelines *(guideline)*
 
