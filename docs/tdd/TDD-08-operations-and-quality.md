@@ -250,7 +250,8 @@ telemetry:
 
 - a negative duration, size or count anywhere; or zero for `tokens.access_ttl`, `links.reset_ttl`,
   `service_auth.client_credentials.token_ttl` or `otp.max_attempts`, whose floors are only upper
-  bounds. These apply in every environment;
+  bounds, or for `database.max_conns` or `database.acquire_timeout`, where zero would mean an
+  unbounded pool or no wait for a connection. These apply in every environment;
 - `delivery.adapter: capture` or no `service_auth.mode` outside `development`;
 - a client role outside the catalog;
 - a client origin that is not exactly a scheme and host, or that is not `https` outside
@@ -261,6 +262,9 @@ telemetry:
 - an `http.listen` that is not `host:port` with a port from 1 to 65535; an `http.base_path` that is
   not empty and not `/segment[/segment…]`, each segment of letters, digits, `-`, `.`, `_` or `~`
   and not `.` or `..`. These apply in every environment.
+- outside `development`, a `database.dsn_file` DSN that allows a connection without TLS: `sslmode`
+  `disable`, `allow` or `prefer`, or no `sslmode` (which means `prefer`). `serve` and `migrate`
+  check this when they open the pool; the DSN itself never appears in an error or a log line.
 - a `telemetry.metrics_listen` that is not `host:port` with a port from 1 to 65535, or that equals
   `http.listen`; a `telemetry.otlp_endpoint` that is not an absolute `http` or `https` URL, or that
   has a query or fragment; an empty `telemetry.service_name`. These apply in every environment.
@@ -382,7 +386,9 @@ Each is a short procedure kept in `docs/runbooks/`. To be written with the imple
 
 - **Replicas and scheduling:** at least 2 replicas, anti-affinity across nodes, a `PodDisruptionBudget` of `maxUnavailable: 1`.
 - **Resources:** CPU request 1, limit 2. Memory: 256 MiB + `max_concurrent × argon2.memory` + 25%.
-- **Probes:** `/livez` (liveness), `/readyz` (readiness).
+- **Probes:** `/livez` (liveness), `/readyz` (readiness). `/readyz` pings PostgreSQL over one
+  connection of its own, outside the `database.max_conns` pool, so a pool whose connections are
+  all busy does not fail it; each instance opens at most `max_conns` + 1 connections.
 - **Stopping:** on SIGTERM, `/readyz` fails for 5 s, requests in flight get 15 s (the write timeout of TDD-07 §7), then telemetry gets 5 s to flush. At most 25 s, within the default `terminationGracePeriodSeconds` of 30 s.
 - **Migrations:** a pre-deploy job runs `auth1 migrate up`, and `auth1 config check` runs before it.
 - **Image:** distroless, non-root, read-only root filesystem. Secrets are mounted read-only.

@@ -20,6 +20,6 @@ vuln:
 generate:
 	go generate ./...
 
-# The migrate command arrives with WP-05; until then this target fails.
+# make migrate ARGS="status --config config.yaml"
 migrate:
 	go run ./cmd/auth1 migrate $(ARGS)

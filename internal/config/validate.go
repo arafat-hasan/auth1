@@ -166,7 +166,8 @@ func (v *validator) optionalFile(path, file string) {
 }
 
 // ranges refuses a negative number anywhere, and zero for the settings whose floor is only an
-// upper bound, where zero would mean an unusable lifetime or no attempts at all. These apply in
+// upper bound, where zero would mean an unusable lifetime or no attempts at all, and for the
+// database pool, where zero would mean no limit on connections or no wait for one. These apply in
 // every environment.
 func (v *validator) ranges() {
 	for path, val := range flatten(*v.c) {
@@ -188,6 +189,7 @@ func (v *validator) ranges() {
 		"tokens.access_ttl":                         c.Tokens.AccessTTL,
 		"links.reset_ttl":                           c.Links.ResetTTL,
 		"service_auth.client_credentials.token_ttl": c.ServiceAuth.ClientCredentials.TokenTTL,
+		"database.acquire_timeout":                  c.Database.AcquireTimeout,
 	} {
 		if d == 0 {
 			v.add(path, "must be above 0")
@@ -195,6 +197,9 @@ func (v *validator) ranges() {
 	}
 	if c.OTP.MaxAttempts == 0 {
 		v.add("otp.max_attempts", "must be above 0")
+	}
+	if c.Database.MaxConns == 0 {
+		v.add("database.max_conns", "must be above 0")
 	}
 }
 

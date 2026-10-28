@@ -35,6 +35,8 @@ jobs:
           version: v2.15.0
 
       - name: Test
+        env:
+          AUTH1_REQUIRE_DOCKER: "1" # repository tests fail, not skip, without Docker
         run: go test -race ./...
 
       - name: Vulnerabilities

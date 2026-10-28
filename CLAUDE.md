@@ -41,9 +41,14 @@ make generate              # go generate ./...
 ./bin/auth1 version        # version, commit, Go version
 ./bin/auth1 config check --config config.example.yaml   # load and validate a configuration
 AUTH1_APP_ENVIRONMENT=development ./bin/auth1 serve --config config.example.yaml   # API on :8080, metrics on :9090
+AUTH1_APP_ENVIRONMENT=development make migrate ARGS="status --config config.example.yaml"   # also up, down [N]
+./bin/auth1 migrate create <name>   # next numbered empty pair in migrations/
 ```
 
-`make migrate` needs the `migrate` command, which WP-05 adds.
+The example's DSN (`testdata/example/secrets/db/dsn`) points at
+`postgres://auth1:auth1@localhost:5432/auth1` without TLS, so it needs
+`AUTH1_APP_ENVIRONMENT=development`. Tests that need PostgreSQL use Docker: they skip without it,
+unless `AUTH1_REQUIRE_DOCKER=1` (set in CI), which makes them fail.
 
 ## Layout and guards
 
@@ -71,6 +76,19 @@ only wires it. Domain failures are `*domain.Error` with a `domain.Code`; only
 `internal/http/problem` maps a code to its status (`(*problem.Writer).Write`). Readiness checks are
 added with `health.Checker.Register`. Middleware reads the route pattern after routing, so it must
 stay installed with `Use`; logs, spans and metric labels carry the route pattern, never the path.
+
+PostgreSQL (TDD-01 §4, §6): `postgres.Open` builds the bun pool on pgx from `database.dsn_file`
+(read at start-up, never logged; outside `development` it refuses a DSN without TLS);
+`postgres.OpenProbe` builds the one-connection pool that the `/readyz` check pings.
+`internal/app.UnitOfWork` is the transaction port; `postgres.UnitOfWork` runs one `READ COMMITTED`
+transaction, a nested `Do` joins it, and an acquire timeout or a connection lost before
+`COMMIT` is sent is `UNAVAILABLE`. Repositories take
+their executor from `postgres.Conn(ctx, db)`: the open transaction, else the pool. bun uses `?`
+placeholders. Migrations are plain SQL in `migrations/` (embedded as `migrations.FS`), run by
+`internal/adapters/postgres/migrate` under an advisory lock; never edit an applied one.
+`internal/testing/pgtest` (test files only, enforced by `TestLayering`) gives each test a database:
+`pgtest.DSN(t)` migrated from a per-package template, `pgtest.Empty(t)` empty, and
+`pgtest.NewServer(t)` a container of its own that the test can stop and start.
 
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.

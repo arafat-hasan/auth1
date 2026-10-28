@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/arafat-hasan/auth1/internal/http/server"
+	"github.com/arafat-hasan/auth1/internal/testing/pgtest"
 )
 
 // testDeps binds every listener on 127.0.0.1:0 and reports each bound address on addrs, keyed by
@@ -74,8 +76,8 @@ func TestStopFitsGracePeriod(t *testing.T) {
 	}
 }
 
-func newTestServeCmd(deps serveDeps, out io.Writer, args ...string) func(ctx context.Context) error {
-	cmd := newServeCmd(func() []string { return nil }, buildInfo{Version: "v-test"}, deps)
+func newTestServeCmd(deps serveDeps, out io.Writer, environ []string, args ...string) func(ctx context.Context) error {
+	cmd := newServeCmd(func() []string { return environ }, buildInfo{Version: "v-test"}, deps)
 	cmd.SetOut(out)
 	cmd.SetErr(out)
 	cmd.SetArgs(args)
@@ -95,7 +97,7 @@ func TestServeRefusesInvalidConfig(t *testing.T) {
 		return nil, errors.New("must not bind")
 	}}
 	var out bytes.Buffer
-	err := newTestServeCmd(deps, &out, "--config", path)(context.Background())
+	err := newTestServeCmd(deps, &out, nil, "--config", path)(context.Background())
 	if !errors.Is(err, errConfigInvalid) {
 		t.Fatalf("serve = %v, want errConfigInvalid\n%s", err, out.String())
 	}
@@ -112,7 +114,7 @@ func TestServeRefusesInvalidConfig(t *testing.T) {
 func TestServeRequiresConfig(t *testing.T) {
 	t.Parallel()
 
-	err := newTestServeCmd(serveDeps{}, &bytes.Buffer{})(context.Background())
+	err := newTestServeCmd(serveDeps{}, &bytes.Buffer{}, nil)(context.Background())
 	if err == nil {
 		t.Fatal("serve without --config: want an error")
 	}
@@ -140,7 +142,7 @@ func TestServeBindFailure(t *testing.T) {
 			},
 			drainDelay: time.Millisecond, shutdownTimeout: time.Second, telemetryTimeout: time.Second,
 		}
-		err := newTestServeCmd(deps, &bytes.Buffer{}, "--config", "config.example.yaml")(context.Background())
+		err := newTestServeCmd(deps, &bytes.Buffer{}, developmentEnv, "--config", "config.example.yaml")(context.Background())
 		if err == nil || !strings.Contains(err.Error(), tt.wantKey) || !strings.Contains(err.Error(), "address already in use") {
 			t.Errorf("fail %s: serve = %v, want the %s bind error", tt.failAddr, err, tt.wantKey)
 		}
@@ -160,7 +162,8 @@ func TestServeRuns(t *testing.T) {
 	addrs := make(chan [2]string, 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	run := newTestServeCmd(testDeps(addrs), &bytes.Buffer{}, "--config", "config.example.yaml")
+	env := dsnEnv(t, pgtest.Empty(t))
+	run := newTestServeCmd(testDeps(addrs), &bytes.Buffer{}, env, "--config", "config.example.yaml")
 	done := make(chan error, 1)
 	go func() { done <- run(ctx) }()
 
@@ -201,7 +204,10 @@ func TestServeRuns(t *testing.T) {
 		return string(b)
 	}
 	expect(api+"/livez", 200, "application/json", `"ok"`)
-	expect(api+"/readyz", 200, "application/json", `"draining"`)
+	readyz := expect(api+"/readyz", 200, "application/json", `"draining"`)
+	if !strings.Contains(readyz, `"postgres"`) {
+		t.Errorf("/readyz lacks the postgres check: %s", readyz)
+	}
 	expect(api+"/nope", 404, "application/problem+json", `"NOT_FOUND"`)
 	expect(metrics+"/metrics", 200, "", "http_server_request_duration_seconds_bucket")
 
@@ -212,7 +218,7 @@ func TestServeRuns(t *testing.T) {
 	var ready struct {
 		Checks []struct{ Name, Status string } `json:"checks"`
 	}
-	if err := json.Unmarshal([]byte(body), &ready); err != nil || len(ready.Checks) != 1 ||
+	if err := json.Unmarshal([]byte(body), &ready); err != nil || len(ready.Checks) != 2 ||
 		ready.Checks[0].Name != "draining" || ready.Checks[0].Status != "failing" {
 		t.Errorf("/readyz while draining: %s", body)
 	}
@@ -232,4 +238,138 @@ func restoreDefaults(t *testing.T) {
 	t.Helper()
 	logger := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(logger) })
+}
+
+// dsnEnv writes dsn to a file and returns the overrides that make serve use it in development.
+func dsnEnv(t *testing.T, dsn string) []string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dsn")
+	writeFile(t, path, dsn)
+	return append(slices.Clone(developmentEnv), "AUTH1_DATABASE_DSN_FILE="+path)
+}
+
+// startServe runs serve on the example configuration with environ, from the repository root, and
+// returns the API's base URL. The test's cleanup stops serve and checks that it returned nil.
+func startServe(t *testing.T, environ []string) string {
+	t.Helper()
+	t.Chdir(filepath.Join("..", ".."))
+	restoreDefaults(t)
+
+	addrs := make(chan [2]string, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	run := newTestServeCmd(testDeps(addrs), &bytes.Buffer{}, environ, "--config", "config.example.yaml")
+	done := make(chan error, 1)
+	go func() { done <- run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("serve = %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Error("serve did not stop")
+		}
+	})
+
+	bound := map[string]string{}
+	for range 2 {
+		select {
+		case a := <-addrs:
+			bound[a[0]] = a[1]
+		case err := <-done:
+			t.Fatalf("serve returned early: %v", err)
+		case <-time.After(10 * time.Second):
+			t.Fatal("serve did not bind its listeners")
+		}
+	}
+	return "http://" + bound[":8080"]
+}
+
+// check returns the status of the named check in a /readyz body, or "" when it is absent.
+func check(t *testing.T, body, name string) string {
+	t.Helper()
+	var ready struct {
+		Checks []struct{ Name, Status string } `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(body), &ready); err != nil {
+		t.Fatalf("/readyz body %q: %v", body, err)
+	}
+	for _, c := range ready.Checks {
+		if c.Name == name {
+			return c.Status
+		}
+	}
+	return ""
+}
+
+func get(t *testing.T, url string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+// waitReady polls /readyz until it answers code with the postgres check in state, or fails t
+// after within.
+func waitReady(t *testing.T, api string, code int, state string, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		got, body := get(t, api+"/readyz")
+		if got == code && check(t, body, "postgres") == state {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("/readyz = %d %s after %v; want %d with postgres %s", got, body, within, code, state)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestServeReadinessFollowsPostgres(t *testing.T) {
+	srv := pgtest.NewServer(t)
+	api := startServe(t, dsnEnv(t, srv.DSN()))
+
+	waitReady(t, api, http.StatusOK, "ok", 5*time.Second)
+	srv.Stop(t)
+	waitReady(t, api, http.StatusServiceUnavailable, "failing", 3*time.Second)
+	if code, _ := get(t, api+"/livez"); code != http.StatusOK {
+		t.Errorf("/livez = %d while PostgreSQL is stopped; want 200", code)
+	}
+	srv.Start(t)
+	waitReady(t, api, http.StatusOK, "ok", 10*time.Second)
+}
+
+func TestServeStartsWithPostgresDown(t *testing.T) {
+	api := startServe(t, dsnEnv(t, "postgres://u@127.0.0.1:1/x?sslmode=disable"))
+	waitReady(t, api, http.StatusServiceUnavailable, "failing", 3*time.Second)
+	if code, _ := get(t, api+"/livez"); code != http.StatusOK {
+		t.Errorf("/livez = %d; want 200", code)
+	}
+}
+
+func TestServeRefusesEmptyDSN(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+	restoreDefaults(t)
+	var bound atomic.Bool
+	deps := serveDeps{listen: func(string, string) (net.Listener, error) {
+		bound.Store(true)
+		return nil, errors.New("must not bind")
+	}, telemetryTimeout: time.Second}
+	err := newTestServeCmd(deps, &bytes.Buffer{}, dsnEnv(t, ""), "--config", "config.example.yaml")(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Errorf("serve = %v; want the empty DSN error", err)
+	}
+	if bound.Load() {
+		t.Error("serve bound a listener before refusing the DSN")
+	}
 }

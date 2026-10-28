@@ -82,6 +82,25 @@ func TestCheckLayeringRules(t *testing.T) {
 			want: []string{"internal/domain imports internal/telemetry"},
 		},
 		{
+			name: "adapter imports the test harness",
+			deps: map[string][]string{mod + "/internal/adapters/postgres": {mod + "/internal/testing/pgtest"}},
+			want: []string{"internal/adapters/postgres imports internal/testing/pgtest"},
+		},
+		{
+			name: "command imports the test harness",
+			deps: map[string][]string{mod + "/cmd/auth1": {mod + "/internal/testing/pgtest"}},
+			want: []string{"cmd/auth1 imports internal/testing/pgtest"},
+		},
+		{
+			name: "domain imports the test harness once",
+			deps: map[string][]string{mod + "/internal/domain": {mod + "/internal/testing/pgtest"}},
+			want: []string{"internal/domain imports internal/testing/pgtest"},
+		},
+		{
+			name: "test harness imports an adapter",
+			deps: map[string][]string{mod + "/internal/testing/pgtest": {mod + "/internal/adapters/postgres", mod + "/internal/testing/other"}},
+		},
+		{
 			name: "telemetry imports config",
 			deps: map[string][]string{mod + "/internal/telemetry": {mod + "/internal/config"}},
 		},
