@@ -228,7 +228,7 @@ CREATE TABLE sessions (
     amr                  text[] NOT NULL,
     auth_time            timestamptz NOT NULL,
     device_id            uuid,                                  -- from the device cookie (TDD-07 §4)
-    user_agent           text,                                  -- cleared with the audit details
+    user_agent           text,                                  -- cleared 90 days after last_used_at (§5)
     created_at           timestamptz NOT NULL,
     last_used_at         timestamptz NOT NULL,
     idle_expires_at      timestamptz NOT NULL,
@@ -241,6 +241,7 @@ CREATE INDEX sessions_revoked ON sessions (revoked_at) WHERE revoked_at IS NOT N
 CREATE INDEX sessions_account ON sessions (account_id);            -- FK; the purge (§5)
 CREATE INDEX sessions_expiry ON sessions (least(idle_expires_at, absolute_expires_at))
     WHERE revoked_at IS NULL;                                   -- retention (§5)
+CREATE INDEX sessions_user_agent ON sessions (last_used_at) WHERE user_agent IS NOT NULL;  -- clearing (§5)
 
 CREATE TABLE refresh_tokens (
     token_hash      bytea PRIMARY KEY,                          -- sha256
@@ -374,10 +375,10 @@ CREATE INDEX outbox_published ON outbox (published_at) WHERE published_at IS NOT
 | Idempotency keys | 24 h | Deleted |
 | Published outbox rows | 7 days | Deleted |
 | `auth_audit` | Kept; monthly partitions | `ip`, `user_agent` set to null after 90 days; a product may drop partitions past its legal horizon |
-| `sessions.user_agent` | 90 days | Null |
+| `sessions.user_agent` | 90 days after `last_used_at`, so a live session keeps it | Null |
 | Deleted accounts | Kept encrypted, released from uniqueness | Erasure on request (SDD O-2) |
 
-Each purge by age, and the clearing of audit IPs, reads an index on its cut-off column, and every foreign key has an
+Each purge by age, and each clearing of IPs and user agents, reads an index on its cut-off column, and every foreign key has an
 index that starts with its column, so a purge scans no table, either to find its rows or to check
 the rows that reference them. Only a pending account's rows are purged from `accounts`; there is no
 `ON DELETE CASCADE`, so the purge deletes the referencing rows first.
