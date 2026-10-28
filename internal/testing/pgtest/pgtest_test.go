@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // the pgx database/sql driver
+
+	deploypg "github.com/arafat-hasan/auth1/deploy/postgres"
 )
 
 func open(t *testing.T, dsn string) *sql.DB {
@@ -116,6 +119,13 @@ func TestDSNFromTemplate(t *testing.T) {
 	if !ok {
 		t.Error("schema_migrations is missing: the template was not migrated")
 	}
+	var owner string
+	if err := dbA.QueryRowContext(t.Context(), "SELECT relowner::regrole::text FROM pg_class WHERE oid = 'schema_migrations'::regclass").Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if owner != Migrator {
+		t.Errorf("schema_migrations is owned by %s; want %s: the migrations did not run as the migrator", owner, Migrator)
+	}
 	if _, err := dbA.ExecContext(t.Context(), "CREATE TABLE only_in_a (id int)"); err != nil {
 		t.Fatal(err)
 	}
@@ -124,5 +134,35 @@ func TestDSNFromTemplate(t *testing.T) {
 	}
 	if ok {
 		t.Error("a table created in one database is visible in the other")
+	}
+}
+
+func TestRoles(t *testing.T) {
+	ctx := t.Context()
+	dsn := Empty(t)
+	admin := open(t, dsn)
+
+	var owner string
+	if err := admin.QueryRowContext(ctx, "SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname = 'public'").Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if owner != Migrator {
+		t.Errorf("public is owned by %s; want %s", owner, Migrator)
+	}
+
+	app := open(t, As(t, dsn, App))
+	_, err := app.ExecContext(ctx, "CREATE TABLE made_by_app (i int)")
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		t.Errorf("%s creating a table: %v; want insufficient_privilege (42501)", App, err)
+	}
+
+	migrator := open(t, As(t, dsn, Migrator))
+	if _, err := migrator.ExecContext(ctx, "CREATE TABLE made_by_migrator (i int)"); err != nil {
+		t.Errorf("%s creating a table: %v", Migrator, err)
+	}
+
+	if _, err := admin.ExecContext(ctx, deploypg.RolesSQL); err != nil {
+		t.Errorf("running the roles script a second time: %v", err)
 	}
 }

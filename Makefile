@@ -20,6 +20,6 @@ vuln:
 generate:
 	go generate ./...
 
-# make migrate ARGS="status --config config.yaml"
+# make migrate ARGS="status --config config.yaml --dsn-file <migrator dsn>"
 migrate:
 	go run ./cmd/auth1 migrate $(ARGS)

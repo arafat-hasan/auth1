@@ -15,12 +15,26 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	deploypg "github.com/arafat-hasan/auth1/deploy/postgres"
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres/migrate"
 	"github.com/arafat-hasan/auth1/migrations"
 )
 
 // Image is the PostgreSQL image the containers run.
 const Image = "postgres:18-alpine"
+
+// The roles of TDD-01 §4.1, which deploy/postgres/roles.sql creates in every container.
+const (
+	Migrator = "auth1_migrator" // runs the migrations and owns the schema
+	App      = "auth1_app"      // the service at run time
+)
+
+// rolePassword is the password both roles get in a test container.
+const rolePassword = "pgtest"
+
+// bootstrapName is the database the roles script has run in; Empty copies it, and so does the
+// template.
+const bootstrapName = "t_bootstrap"
 
 // templateName is the database that holds the migrated schema; DSN copies it.
 const templateName = "t_template"
@@ -59,6 +73,9 @@ type instance struct {
 
 	mu sync.Mutex // serialises CREATE DATABASE from one template
 
+	bootstrapOnce sync.Once
+	bootstrapErr  error
+
 	templateOnce sync.Once
 	templateErr  error
 }
@@ -96,11 +113,12 @@ func stopShared() error {
 	return nil
 }
 
-// DSN returns the DSN of a new database with every migration in migrations.FS applied, dropped
-// when the test ends. The migrations run once per test package, on a template database.
+// DSN returns the superuser DSN of a new database with every migration in migrations.FS applied,
+// dropped when the test ends. The migrations run once per test package, as Migrator, on a template
+// database. As gives the DSN of another role.
 func DSN(t testing.TB) string {
 	t.Helper()
-	in := shared(t)
+	in := bootstrapped(t)
 	in.templateOnce.Do(func() { in.templateErr = in.migrateTemplate() })
 	if in.templateErr != nil {
 		t.Fatalf("pgtest: %v", in.templateErr)
@@ -108,10 +126,33 @@ func DSN(t testing.TB) string {
 	return in.create(t, templateName)
 }
 
-// Empty returns the DSN of a new, empty database, dropped when the test ends.
+// Empty returns the superuser DSN of a new database with no tables, dropped when the test ends.
+// The roles script has run in it: Migrator owns the public schema and App may only use it.
 func Empty(t testing.TB) string {
 	t.Helper()
-	return shared(t).create(t, "template0")
+	return bootstrapped(t).create(t, bootstrapName)
+}
+
+// As returns dsn with role, Migrator or App, as its user.
+func As(t testing.TB, dsn, role string) string {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("pgtest: parse DSN: %v", err)
+	}
+	u.User = url.UserPassword(role, rolePassword)
+	return u.String()
+}
+
+// bootstrapped returns the package's container once the roles script has run in it.
+func bootstrapped(t testing.TB) *instance {
+	t.Helper()
+	in := shared(t)
+	in.bootstrapOnce.Do(func() { in.bootstrapErr = in.bootstrap() })
+	if in.bootstrapErr != nil {
+		t.Fatalf("pgtest: %v", in.bootstrapErr)
+	}
+	return in
 }
 
 // shared returns the package's container, starting it on first use. It fails t when the package's
@@ -197,13 +238,38 @@ func start() (in *instance, err error) {
 	return &instance{ctr: ctr, base: *u, admin: admin}, nil
 }
 
-// migrateTemplate creates the template database and applies the migrations to it. Its connection
-// is closed afterwards, since PostgreSQL copies only a template nobody is connected to.
+// bootstrap creates the bootstrap database, runs the roles script in it as a DBA would, and sets
+// the roles' passwords. Its connection is closed afterwards, so the database can be copied.
+func (in *instance) bootstrap() error {
+	if _, err := in.admin.Exec("CREATE DATABASE " + bootstrapName + " TEMPLATE template0"); err != nil {
+		return fmt.Errorf("create bootstrap database: %w", err)
+	}
+	db, err := sql.Open("pgx", in.dsn(bootstrapName))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(deploypg.RolesSQL); err != nil {
+		return fmt.Errorf("roles script: %w", err)
+	}
+	for _, role := range []string{Migrator, App} {
+		if _, err := db.Exec("ALTER ROLE " + role + " PASSWORD '" + rolePassword + "'"); err != nil {
+			return fmt.Errorf("set the password of %s: %w", role, err)
+		}
+	}
+	return nil
+}
+
+// migrateTemplate creates the template database and applies the migrations to it as Migrator. Its
+// connection is closed afterwards, since PostgreSQL copies only a template nobody is connected to.
 func (in *instance) migrateTemplate() error {
-	if _, err := in.admin.Exec("CREATE DATABASE " + templateName + " TEMPLATE template0"); err != nil {
+	if _, err := in.admin.Exec("CREATE DATABASE " + templateName + " TEMPLATE " + bootstrapName); err != nil {
 		return fmt.Errorf("create template: %w", err)
 	}
-	db, err := sql.Open("pgx", in.dsn(templateName))
+	u := in.base
+	u.Path = "/" + templateName
+	u.User = url.UserPassword(Migrator, rolePassword)
+	db, err := sql.Open("pgx", u.String())
 	if err != nil {
 		return err
 	}
