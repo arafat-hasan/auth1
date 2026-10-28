@@ -371,7 +371,7 @@ CREATE INDEX outbox_published ON outbox (published_at) WHERE published_at IS NOT
 | Closed flows | 30 days after `completed_at` or `cancelled_at` | Deleted, after their challenges |
 | Revoked or expired sessions and their refresh tokens | 90 days | Deleted |
 | Refresh successor | Grace window | `successor_enc` set to null within a minute |
-| Used recovery codes; replaced batches | Until the next regeneration + 30 days | Deleted |
+| Recovery codes, used or not | Until the next regeneration or the removal of MFA | Deleted in that transaction (TDD-03 §5.3, §5.4); no purge |
 | `client_assertions` | Until `expires_at` | Deleted |
 | `sms_budget` | 30 days | Deleted |
 | `sign_in_throttles` | 90 days after `updated_at` | Deleted |
