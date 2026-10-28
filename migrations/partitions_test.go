@@ -154,6 +154,25 @@ func TestCreatePartitions(t *testing.T) {
 	}
 }
 
+// TestCreatePartitionsDefaultPrivileges checks that a new partition has only its parent's grants
+// even when a DBA has set default privileges for the migrator, which the function's REVOKE undoes.
+func TestCreatePartitionsDefaultPrivileges(t *testing.T) {
+	t.Parallel()
+	dsn := pgtest.DSN(t)
+	admin, app := open(t, dsn), open(t, pgtest.As(t, dsn, pgtest.App))
+	// Default privileges belong to the database, which only this test uses.
+	mustExec(t, admin, `ALTER DEFAULT PRIVILEGES FOR ROLE auth1_migrator IN SCHEMA public
+		GRANT ALL ON TABLES TO PUBLIC, auth1_app`)
+
+	if n, err := createPartitions(t, app, 2); err != nil || n != 1 {
+		t.Fatalf("create(2) = %d, %v; want 1", n, err)
+	}
+	name, _, _ := strings.Cut(wantPartitions(t, admin, 2)[2], " ")
+	if got := auditGrants(t, admin, name); !slices.Equal(got, partitionGrants) {
+		t.Errorf("grants on %s:\n got %q\nwant %q", name, got, partitionGrants)
+	}
+}
+
 // TestCreatePartitionsTimeZone checks that the bounds are UTC months whatever the caller's
 // TimeZone.
 func TestCreatePartitionsTimeZone(t *testing.T) {
