@@ -17,6 +17,9 @@ func TestCheckMetricNames(t *testing.T) {
 	}
 }
 
+// notMetrics are the auth1_ names that are not metrics: the PostgreSQL roles of TDD-01 §4.1.
+var notMetrics = []string{"auth1_app", "auth1_migrator"}
+
 // TestMetricNames fails when code names an auth1_ metric that TDD-08 §5.2 does not list.
 func TestMetricNames(t *testing.T) {
 	t.Parallel()
@@ -28,7 +31,7 @@ func TestMetricNames(t *testing.T) {
 	if !slices.Contains(literals, "auth1_refresh_total") {
 		t.Fatal("found no catalogue name; is the scan reading the module?")
 	}
-	for _, name := range CheckMetricNames(literals, telemetry.InstrumentNames()) {
+	for _, name := range CheckMetricNames(literals, append(telemetry.InstrumentNames(), notMetrics...)) {
 		t.Errorf("metric %s is not in the TDD-08 §5.2 catalogue", name)
 	}
 }

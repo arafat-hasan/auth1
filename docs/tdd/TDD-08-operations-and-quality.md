@@ -372,7 +372,7 @@ Each is a short procedure kept in `docs/runbooks/`. To be written with the imple
 | Flow expiry | 1 min | Yes | TDD-02 §2.5 |
 | Successor erasure | 30 s | Yes | TDD-04 §3 |
 | Purge | 1 h | Yes | TDD-01 §5 |
-| Audit detail clearing | 1 h | Yes | Null `ip`, `user_agent` past 90 days; same for `sessions.user_agent` |
+| Audit detail clearing | 1 h | Yes | Null `auth_audit.ip`, `user_agent` past 90 days; `sessions.user_agent` 90 days after `last_used_at` (TDD-01 §5) |
 | Audit partitions | 1 day | Yes | Create the next 2 monthly partitions |
 | Keyring sync | On change, 30 s poll | No | TDD-04 §5.2 |
 | Bootstrap | Start-up | Yes | TDD-02 §8.1 |

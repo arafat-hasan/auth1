@@ -4,8 +4,8 @@
 |---|---|
 | Document | Software Design Description (SDD). High level: *what* auth1 is and *why* it is built this way |
 | Status | Draft |
-| Version | 0.6 (design of auth1 1.0) |
-| Date | 2026-10-27 |
+| Version | 0.7 (design of auth1 1.0) |
+| Date | 2026-10-28 |
 | Owner | Arafat Hasan |
 | Detailed designs | [`docs/tdd/`](tdd/): TDD-01 … TDD-08 (§16) |
 | Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.6 |
@@ -778,7 +778,7 @@ The full table is in TDD-07. The principles:
 | Scaling | CPU and memory bound on Argon2id. Replicas sized from the load test (O-3) |
 | Database | Its own database and role. Migrations run as a pre-deploy job. Expand and contract only |
 | Health | `/livez` (process); `/readyz` (PostgreSQL reachable, keyrings loaded). Redis and the broker are reported but do not fail readiness |
-| Retention *(cfg)* | Expired registrations and invitations: identifiers retired at expiry; rows purged 7 days later. Closed challenges: 30 days. Revoked sessions and their refresh tokens: 90 days. Idempotency keys: 24 h. Published outbox rows: 7 days. Audit: kept, monthly partitions; IP and user agent cleared after 90 days. Deleted accounts: kept encrypted and released from uniqueness; erasure on request is an operator command (O-2) |
+| Retention *(cfg)* | Expired registrations and invitations: identifiers retired at expiry; rows purged 7 days later. Closed challenges and closed flows: 30 days. Revoked sessions and their refresh tokens: 90 days. Idempotency keys: 24 h. Published outbox rows: 7 days. Audit: kept, monthly partitions; IP and user agent cleared after 90 days. Deleted accounts: kept encrypted and released from uniqueness; erasure on request is an operator command (O-2) |
 | Backup and restore | The platform's point-in-time recovery (A-7). After any restore to an earlier point, the runbook revokes every session (`auth1 sessions revoke-all`), because the restored rows may bring back revoked sessions or used refresh tokens |
 | Jobs | Outbox relay; flow expiry; erasing grace successors; purges; clearing audit IPs; creating audit partitions; re-encryption on request |
 
@@ -1227,3 +1227,4 @@ The build order is part of the implementation plan, written after the TDDs are a
 | 0.4 | 2026-10-27 | **MFA is optional** (D-8): each account may enrol TOTP, self-service or forced; each client has `mfa: optional \| required`; an account with TOTP is always asked for it; self-service removal with `account.mfa_removed`. Reauthentication needs the second factor only when the account has one (D-9). Recovery: TOTP when enrolled, otherwise the link plus an optional SMS step-up (`recovery.sms_step_up`, D-10). Password default length 12, floor 8, as a documented deviation from NIST SP 800-63B-4 for single-factor passwords (D-7). I-16, the state × flow table, the flow catalogue, the threat model and T-5, T-21, T-30, T-32, T-33 updated; T-37, T-38 added. §17 states that only the rate limiter's code is carried over |
 | 0.5 | 2026-10-27 | The product-word rule (D-1, C-2) is a design rule kept by review; the CI guard and the *Guard* test level are removed |
 | 0.6 | 2026-10-27 | §10: a body over 64 KiB answers 413 `VALIDATION_FAILED`, an unknown route 404 `NOT_FOUND`; `Retry-After` only when the error carries a wait. `api/openapi.yaml` gains the `PayloadTooLarge` response on every operation with a body |
+| 0.7 | 2026-10-28 | D-19 retention: closed flows are deleted 30 days after they close, like closed challenges; before, nothing removed them |

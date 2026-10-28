@@ -5,7 +5,8 @@ config.example.yaml` passes from the repository root. They hold no keys: `config
 checks that each file exists and is readable. Real fixtures replace them when the packages that
 parse keyrings and keys arrive (WP-10, WP-12). Never put real secrets here.
 
-`secrets/db/dsn` is the exception: it holds a local development DSN,
-`postgres://auth1:auth1@localhost:5432/auth1?sslmode=disable`, so `auth1 serve` and `auth1 migrate`
-reach a PostgreSQL container started with those credentials. It has no TLS, so it is accepted only
-with `AUTH1_APP_ENVIRONMENT=development`.
+`secrets/db/` is the exception: it holds local development DSNs for the two roles of
+`deploy/postgres/roles.sql`, with each role's name as its password. `dsn` is `auth1_app`'s, which
+`auth1 serve` reads through `database.dsn_file`; `migrator-dsn` is `auth1_migrator`'s, which
+`auth1 migrate` takes with `--dsn-file`. They reach a local PostgreSQL bootstrapped as CLAUDE.md
+shows. They have no TLS, so they are accepted only with `AUTH1_APP_ENVIRONMENT=development`.
