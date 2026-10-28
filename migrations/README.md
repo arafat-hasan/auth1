@@ -13,4 +13,8 @@ Plain SQL, applied in order by `auth1 migrate up` under a PostgreSQL advisory lo
 - Only `up` creates `schema_migrations`, so `status` works for a role that may read the table but
   not create tables. `up`, `down` and `status` wait at most `--wait` (default 1m) for a connection
   and the advisory lock.
+- Migrations run as `auth1_migrator`, after a DBA has run `deploy/postgres/roles.sql`; `000001`
+  fails, naming the role, when a role is missing. Grant each new table to `auth1_app` explicitly
+  (no default privileges: they would reach the audit partitions) and index each foreign key; the
+  tests in this directory check both.
 - After 1.0 ships, migrations are expand and contract only.

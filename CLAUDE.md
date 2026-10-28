@@ -60,8 +60,8 @@ The binary is `cmd/auth1` (cobra; `newRootCmd` in `root.go` is where subcommands
 internal, `internal/app` imports only `internal/domain` and `internal/app`, and
 `internal/adapters` and `internal/http` do not import each other, and `internal/telemetry` imports
 only `internal/config`. `TestMetricNames` fails on any `auth1_…` string literal that is not in the
-TDD-08 §5.2 catalogue (`telemetry.InstrumentNames()`); create instruments through
-`telemetry.Metrics`.
+TDD-08 §5.2 catalogue (`telemetry.InstrumentNames()`) or one of the two role names it exempts
+(`notMetrics`); create instruments through `telemetry.Metrics`.
 
 `internal/config` loads YAML over the defaults in `Default()`, then `AUTH1_<PATH>` overrides
 (resolved against the schema's scalar key paths); `Validate()` applies TDD-08 §3.1. Adding a key
@@ -86,9 +86,17 @@ transaction, a nested `Do` joins it, and an acquire timeout or a connection lost
 their executor from `postgres.Conn(ctx, db)`: the open transaction, else the pool. bun uses `?`
 placeholders. Migrations are plain SQL in `migrations/` (embedded as `migrations.FS`), run by
 `internal/adapters/postgres/migrate` under an advisory lock; never edit an applied one.
-`internal/testing/pgtest` (test files only, enforced by `TestLayering`) gives each test a database:
-`pgtest.DSN(t)` migrated from a per-package template, `pgtest.Empty(t)` empty, and
-`pgtest.NewServer(t)` a container of its own that the test can stop and start.
+Roles (TDD-01 §4.1): a DBA runs `deploy/postgres/roles.sql` once per database to create
+`auth1_migrator` (runs the migrations, owns `public` and every object) and `auth1_app` (the
+service: `USAGE` only, plus the per-table grants in the migrations); `000001` fails, naming the
+role, without them. Every new table needs its explicit grants (`TestAppGrants`) and an index for
+each foreign key (`TestForeignKeysIndexed`). Audit partitions come from
+`auth_audit_create_partitions(months)`, a `SECURITY DEFINER` function that `auth1_app` may call.
+`internal/testing/pgtest` (test files only, enforced by `TestLayering`) gives each test a database,
+with the roles bootstrapped and the migrations run as `auth1_migrator`: `pgtest.DSN(t)` migrated
+from a per-package template, `pgtest.Empty(t)` empty, both as superuser, and
+`pgtest.As(t, dsn, pgtest.App)` the same database as another role; `pgtest.NewServer(t)` is a
+container of its own, without the roles, that the test can stop and start.
 
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
