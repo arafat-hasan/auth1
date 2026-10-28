@@ -45,9 +45,16 @@ const requireDockerEnv = "AUTH1_REQUIRE_DOCKER"
 // startTimeout bounds starting a container and waiting for it to accept connections.
 const startTimeout = 2 * time.Minute
 
-// The package's shared container and Docker health, each found once per test binary. The
-// testcontainers reaper removes the container when the binary exits.
+// stopTimeout bounds removing the shared container when the test binary ends.
+const stopTimeout = time.Minute
+
+// The package's shared container and Docker health, each found once per test binary. Main
+// removes the container after the tests; the testcontainers reaper is only a fallback for a binary
+// that dies before Main returns, since it relies on seeing its client disconnect, and some Docker
+// hosts' port proxy never passes the disconnect on.
 var (
+	inMain atomic.Bool
+
 	dockerOnce   sync.Once
 	dockerHealth error
 
@@ -71,6 +78,39 @@ type instance struct {
 
 	templateOnce sync.Once
 	templateErr  error
+}
+
+// Main runs the package's tests and then removes its shared container. Each test package that uses
+// DSN or Empty calls it from its TestMain:
+//
+//	func TestMain(m *testing.M) { pgtest.Main(m) }
+//
+// A failure to remove the container fails the run, so a leak is not missed.
+func Main(m *testing.M) {
+	inMain.Store(true)
+	code := m.Run()
+	if err := stopShared(); err != nil {
+		fmt.Fprintf(os.Stderr, "pgtest: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
+// stopShared closes the shared container's admin connection and removes the container, if the
+// package started one. It runs after every test has ended.
+func stopShared() error {
+	if sharedInst == nil {
+		return nil
+	}
+	_ = sharedInst.admin.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+	defer cancel()
+	if err := sharedInst.ctr.Terminate(ctx); err != nil {
+		return fmt.Errorf("remove %s container: %w", Image, err)
+	}
+	return nil
 }
 
 // DSN returns the superuser DSN of a new database with every migration in migrations.FS applied,
@@ -115,9 +155,13 @@ func bootstrapped(t testing.TB) *instance {
 	return in
 }
 
-// shared returns the package's container, starting it on first use.
+// shared returns the package's container, starting it on first use. It fails t when the package's
+// TestMain does not call Main, since nothing would then remove the container.
 func shared(t testing.TB) *instance {
 	t.Helper()
+	if !inMain.Load() {
+		t.Fatal("pgtest: the test package's TestMain must call pgtest.Main")
+	}
 	checkDocker(t)
 	sharedOnce.Do(func() { sharedInst, sharedErr = start() })
 	if sharedErr != nil {

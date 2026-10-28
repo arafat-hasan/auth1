@@ -104,7 +104,10 @@ each foreign key (`TestForeignKeysIndexed`). Audit partitions come from
 with the roles bootstrapped and the migrations run as `auth1_migrator`: `pgtest.DSN(t)` migrated
 from a per-package template, `pgtest.Empty(t)` empty, both as superuser, and
 `pgtest.As(t, dsn, pgtest.App)` the same database as another role; `pgtest.NewServer(t)` is a
-container of its own, without the roles, that the test can stop and start.
+container of its own, without the roles, that the test can stop and start. A package using
+`DSN` or `Empty` needs `func TestMain(m *testing.M) { pgtest.Main(m) }`: `Main` removes the
+shared container when the tests end, because the testcontainers reaper (Ryuk) cannot be relied on:
+on a host whose `docker-proxy` does not pass on the client's disconnect, Ryuk never reaps.
 
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
