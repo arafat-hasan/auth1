@@ -20,6 +20,9 @@ import (
 // migrationName is the <name> part of a new migration's files.
 var migrationName = regexp.MustCompile(`^[a-z0-9_]+$`)
 
+// defaultMigrateWait is how long up, down and status wait for a connection and the migration lock.
+const defaultMigrateWait = time.Minute
+
 // newMigrateCmd builds "auth1 migrate" over the migrations in fsys (migrations.FS in main).
 // environ supplies the AUTH1_ overrides (os.Environ in main).
 func newMigrateCmd(environ func() []string, fsys fs.FS) *cobra.Command {
@@ -30,13 +33,19 @@ func newMigrateCmd(environ func() []string, fsys fs.FS) *cobra.Command {
 			"create holds a PostgreSQL advisory lock, so concurrent runs apply each migration once.",
 	}
 
-	// withRunner registers --config and --dsn-file on c and gives run a runner on the database.
+	// withRunner registers --config, --dsn-file and --wait on c and gives run a runner on the
+	// database.
 	withRunner := func(c *cobra.Command, run func(c *cobra.Command, args []string, r *migrate.Runner) error) *cobra.Command {
 		var path, dsnFile string
+		var wait time.Duration
 		c.Flags().StringVar(&path, "config", "", "configuration file (YAML)")
 		c.Flags().StringVar(&dsnFile, "dsn-file", "", "file holding the DSN; overrides database.dsn_file (for the schema owner)")
+		c.Flags().DurationVar(&wait, "wait", defaultMigrateWait, "how long to wait for a connection and the migration lock (0: no limit)")
 		_ = c.MarkFlagRequired("config")
 		c.RunE = func(c *cobra.Command, args []string) error {
+			if wait < 0 {
+				return fmt.Errorf("--wait %v is negative", wait)
+			}
 			env := environ()
 			if dsnFile != "" {
 				env = append(env, "AUTH1_DATABASE_DSN_FILE="+dsnFile)
@@ -53,7 +62,7 @@ func newMigrateCmd(environ func() []string, fsys fs.FS) *cobra.Command {
 				return err
 			}
 			defer func() { _ = db.Close() }()
-			return run(c, args, migrate.New(db.DB, fsys))
+			return run(c, args, migrate.New(db.DB, fsys, migrate.WithWait(wait)))
 		}
 		return c
 	}
@@ -109,6 +118,9 @@ func newMigrateCmd(environ func() []string, fsys fs.FS) *cobra.Command {
 			if s.FileMissing {
 				state = "applied, no file " + s.AppliedAt.UTC().Format(time.RFC3339)
 			}
+			if s.Changed {
+				state = "applied, changed " + s.AppliedAt.UTC().Format(time.RFC3339)
+			}
 			if _, err := fmt.Fprintf(c.OutOrStdout(), "%06d  %s  %s\n", s.Version, s.Name, state); err != nil {
 				return err
 			}
@@ -156,9 +168,6 @@ func createMigration(out io.Writer, dir, name string) error {
 	}
 	m := migrate.Migration{Version: next, Name: name}
 	up, down := filepath.Join(dir, m.File()), filepath.Join(dir, m.DownFile())
-	if _, err := os.Stat(down); err == nil {
-		return fmt.Errorf("create: %s already exists", down)
-	}
 	for i, path := range []string{up, down} {
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // the path is built from --dir and a checked name
 		if err != nil {

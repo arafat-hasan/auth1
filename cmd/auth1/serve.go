@@ -95,8 +95,9 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	slog.SetDefault(logger)
 	otel.SetTextMapPropagator(tel.Propagator())
 
-	// The pool connects on first use, so serve starts while PostgreSQL is down; /readyz reports it.
-	// It closes after the servers have shut down (deferred after telemetry, so it runs first).
+	// The pools connect on first use, so serve starts while PostgreSQL is down; /readyz reports it
+	// through a probe pool of its own, so busy request connections do not fail readiness. They
+	// close after the servers have shut down (deferred after telemetry, so they close first).
 	db, err := postgres.Open(cfg.Database, cfg.App.Environment)
 	if err != nil {
 		return err
@@ -104,6 +105,15 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	defer func() {
 		if cerr := db.Close(); cerr != nil {
 			err = errors.Join(err, fmt.Errorf("close database pool: %w", cerr))
+		}
+	}()
+	probe, err := postgres.OpenProbe(cfg.Database, cfg.App.Environment)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := probe.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close database probe: %w", cerr))
 		}
 	}()
 
@@ -119,7 +129,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		}
 		return nil
 	}, true)
-	checks.Register("postgres", postgres.Ping(db, pingTimeout), true)
+	checks.Register("postgres", postgres.Ping(probe, pingTimeout), true)
 
 	listeners, err := bind(deps.listen, cfg.HTTP.Listen, cfg.Telemetry.MetricsListen)
 	if err != nil {

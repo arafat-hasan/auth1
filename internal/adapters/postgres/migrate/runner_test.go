@@ -3,14 +3,18 @@ package migrate_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io/fs"
 	"maps"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // the pgx database/sql driver
 
@@ -122,6 +126,9 @@ func TestUpDownStatus(t *testing.T) {
 		if s.Applied || s.FileMissing {
 			t.Errorf("state %+v; want pending", s)
 		}
+	}
+	if tableExists(t, db, "schema_migrations") {
+		t.Error("Status created schema_migrations; only Up may")
 	}
 
 	mustUp(t, r, 1, 2, 3)
@@ -306,4 +313,99 @@ func TestFailingMigration(t *testing.T) {
 
 	fsys["000002_bad.up.sql"] = &fstest.MapFile{Data: []byte("CREATE TABLE a (id int);")}
 	mustUp(t, migrate.New(db, fsys), 2)
+}
+
+func TestDownWithoutTable(t *testing.T) {
+	db := openDB(t, pgtest.Empty(t))
+	_, err := migrate.New(db, okFS).Down(t.Context(), 1)
+	wantErr(t, err, "only 0 applied")
+	if tableExists(t, db, "schema_migrations") {
+		t.Error("Down created schema_migrations; only Up may")
+	}
+}
+
+// roleCounter names the roles TestStatusReadOnlyRole creates; roles are shared by every database
+// of the container.
+var roleCounter atomic.Int64
+
+// TestStatusReadOnlyRole runs Status as a role that may read schema_migrations but not create
+// tables, as the application's role is (TDD-01 §4.1).
+func TestStatusReadOnlyRole(t *testing.T) {
+	dsn := pgtest.Empty(t)
+	owner := openDB(t, dsn)
+	mustUp(t, migrate.New(owner, okFS), 1, 2, 3)
+
+	role := fmt.Sprintf("reader_%d_%d", os.Getpid(), roleCounter.Add(1))
+	for _, q := range []string{
+		"CREATE ROLE " + role + " LOGIN PASSWORD 'reader'",
+		"REVOKE CREATE ON SCHEMA public FROM PUBLIC",
+		"GRANT SELECT ON schema_migrations TO " + role,
+	} {
+		if _, err := owner.ExecContext(t.Context(), q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, q := range []string{"DROP OWNED BY " + role, "DROP ROLE " + role} {
+			if _, err := owner.ExecContext(context.Background(), q); err != nil {
+				t.Errorf("%s: %v", q, err)
+			}
+		}
+	})
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword(role, "reader")
+	r := migrate.New(openDB(t, u.String()), okFS)
+
+	states, err := r.Status(t.Context())
+	if err != nil {
+		t.Fatalf("Status as a read-only role: %v", err)
+	}
+	for _, s := range states {
+		if !s.Applied {
+			t.Errorf("state %+v; want applied", s)
+		}
+	}
+	_, err = r.Up(t.Context())
+	wantErr(t, err, "schema_migrations")
+}
+
+func TestStatusShowsChanged(t *testing.T) {
+	db := openDB(t, pgtest.Empty(t))
+	mustUp(t, migrate.New(db, okFS), 1, 2, 3)
+
+	changed := mapFS(t, okFS)
+	changed["000002_gadgets.up.sql"] = &fstest.MapFile{Data: []byte("CREATE TABLE gadgets (id bigint);")}
+	states, err := migrate.New(db, changed).Status(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]bool{}
+	for _, s := range states {
+		got[s.Version] = s.Changed
+	}
+	if want := map[int64]bool{1: false, 2: true, 3: false}; !maps.Equal(got, want) {
+		t.Errorf("changed by version = %v; want %v", got, want)
+	}
+}
+
+func TestWaitBoundsTheLock(t *testing.T) {
+	dsn := pgtest.Empty(t)
+	holder, err := openDB(t, dsn).Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Close() }()
+	if _, err := holder.ExecContext(t.Context(), "SELECT pg_advisory_lock($1)", int64(0x61757468316d6967)); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	_, err = migrate.New(openDB(t, dsn), okFS, migrate.WithWait(100*time.Millisecond)).Status(t.Context())
+	wantErr(t, err, "migration lock")
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Status took %v; want about the 100ms wait", d)
+	}
 }

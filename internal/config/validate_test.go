@@ -333,6 +333,10 @@ func TestValidateRules(t *testing.T) {
 			want: []string{"service_auth.client_credentials.token_ttl"}},
 		{name: "zero otp attempts", change: func(c *Config) { c.OTP.MaxAttempts = 0 },
 			want: []string{"otp.max_attempts"}},
+		{name: "zero database connections", change: func(c *Config) { c.Database.MaxConns = 0 },
+			want: []string{"database.max_conns"}},
+		{name: "zero acquire timeout", change: func(c *Config) { c.Database.AcquireTimeout = 0 },
+			want: []string{"database.acquire_timeout"}},
 
 		// Roles.
 		{name: "allowed role outside the catalog", change: func(c *Config) {

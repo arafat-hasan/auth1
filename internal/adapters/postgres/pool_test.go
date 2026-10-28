@@ -82,6 +82,14 @@ func TestOpenRefuses(t *testing.T) {
 					t.Errorf("error %q contains %q", msg, x)
 				}
 			}
+			probe, err := postgres.OpenProbe(dbConfig(path), env)
+			if err == nil {
+				_ = probe.Close()
+				t.Fatal("OpenProbe succeeded; want an error")
+			}
+			if err.Error() != msg {
+				t.Errorf("OpenProbe error %q; want Open's %q", err, msg)
+			}
 		})
 	}
 }
@@ -135,23 +143,49 @@ func TestOpenPoolSettings(t *testing.T) {
 
 func TestPing(t *testing.T) {
 	t.Run("reachable", func(t *testing.T) {
-		db, err := postgres.Open(dbConfig(dsnFile(t, pgtest.Empty(t))), config.EnvDevelopment)
+		probe, err := postgres.OpenProbe(dbConfig(dsnFile(t, pgtest.Empty(t))), config.EnvDevelopment)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = db.Close() }()
-		if err := postgres.Ping(db, time.Second)(context.Background()); err != nil {
+		defer func() { _ = probe.Close() }()
+		if err := postgres.Ping(probe, time.Second)(context.Background()); err != nil {
 			t.Errorf("Ping: %v", err)
 		}
 	})
-	t.Run("unreachable", func(t *testing.T) {
-		db, err := postgres.Open(dbConfig(dsnFile(t, "postgres://u:hunter2@127.0.0.1:1/x?sslmode=disable")), config.EnvDevelopment)
+	t.Run("request pool busy", func(t *testing.T) {
+		cfg := dbConfig(dsnFile(t, pgtest.Empty(t)))
+		cfg.MaxConns = 1
+		db, err := postgres.Open(cfg, config.EnvDevelopment)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = db.Close() }()
+		conn, err := db.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+
+		probe, err := postgres.OpenProbe(cfg, config.EnvDevelopment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = probe.Close() }()
+		if got := probe.Stats().MaxOpenConnections; got != 1 {
+			t.Errorf("probe MaxOpenConnections = %d, want 1", got)
+		}
+		if err := postgres.Ping(probe, time.Second)(context.Background()); err != nil {
+			t.Errorf("Ping with every request connection busy: %v", err)
+		}
+	})
+	t.Run("unreachable", func(t *testing.T) {
+		probe, err := postgres.OpenProbe(dbConfig(dsnFile(t, "postgres://u:hunter2@127.0.0.1:1/x?sslmode=disable")), config.EnvDevelopment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = probe.Close() }()
 		start := time.Now()
-		err = postgres.Ping(db, 200*time.Millisecond)(context.Background())
+		err = postgres.Ping(probe, 200*time.Millisecond)(context.Background())
 		if err == nil {
 			t.Fatal("Ping succeeded; want an error")
 		}

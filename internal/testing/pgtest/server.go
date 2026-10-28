@@ -26,15 +26,13 @@ func NewServer(t testing.TB) *Server {
 	t.Helper()
 	checkDocker(t)
 	inst, err := start()
-	if inst != nil {
-		t.Cleanup(func() {
-			_ = inst.admin.Close()
-			_ = inst.ctr.Terminate(context.Background())
-		})
-	}
 	if err != nil {
 		t.Fatalf("pgtest: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = inst.admin.Close()
+		_ = inst.ctr.Terminate(context.Background())
+	})
 	p, err := newProxy(inst.base.Host)
 	if err != nil {
 		t.Fatalf("pgtest: %v", err)

@@ -29,10 +29,24 @@ const createTable = `CREATE TABLE IF NOT EXISTS schema_migrations (
 type Runner struct {
 	db   *sql.DB
 	fsys fs.FS
+	wait time.Duration
 }
 
+// Option configures a Runner.
+type Option func(*Runner)
+
+// WithWait bounds how long a command waits for a connection and for the migration lock. Without
+// it, a command waits as long as its context allows. It does not bound the migrations themselves.
+func WithWait(d time.Duration) Option { return func(r *Runner) { r.wait = d } }
+
 // New returns a Runner for the migrations at the root of fsys.
-func New(db *sql.DB, fsys fs.FS) *Runner { return &Runner{db: db, fsys: fsys} }
+func New(db *sql.DB, fsys fs.FS, opts ...Option) *Runner {
+	r := &Runner{db: db, fsys: fsys}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
+}
 
 // State is one migration as Status reports it.
 type State struct {
@@ -41,6 +55,7 @@ type State struct {
 	Applied     bool
 	AppliedAt   time.Time // zero when pending
 	FileMissing bool      // applied, but the FS has no such migration
+	Changed     bool      // applied, but the up file no longer matches its checksum
 }
 
 // applied is a schema_migrations row.
@@ -60,7 +75,7 @@ func (a applied) base() string { return fmt.Sprintf("%06d_%s", a.version, a.name
 // it stay applied.
 func (r *Runner) Up(ctx context.Context) ([]Migration, error) {
 	var done []Migration
-	err := r.session(ctx, func(conn *sql.Conn, files []Migration, rows map[int64]applied) error {
+	err := r.session(ctx, true, func(conn *sql.Conn, files []Migration, rows map[int64]applied) error {
 		var newest int64
 		for _, a := range rows {
 			newest = max(newest, a.version)
@@ -102,7 +117,7 @@ func (r *Runner) Down(ctx context.Context, n int) ([]Migration, error) {
 		return nil, fmt.Errorf("down: count %d is below 1", n)
 	}
 	var done []Migration
-	err := r.session(ctx, func(conn *sql.Conn, files []Migration, rows map[int64]applied) error {
+	err := r.session(ctx, false, func(conn *sql.Conn, files []Migration, rows map[int64]applied) error {
 		if n > len(rows) {
 			return fmt.Errorf("down: %d requested, but only %d applied", n, len(rows))
 		}
@@ -143,15 +158,17 @@ func (r *Runner) Down(ctx context.Context, n int) ([]Migration, error) {
 	return done, err
 }
 
-// Status returns every migration, applied or pending, in version order.
+// Status returns every migration, applied or pending, in version order. It marks an applied
+// migration whose up file has changed, which Up and Down would refuse.
 func (r *Runner) Status(ctx context.Context) ([]State, error) {
 	var out []State
-	err := r.session(ctx, func(_ *sql.Conn, files []Migration, rows map[int64]applied) error {
+	err := r.session(ctx, false, func(_ *sql.Conn, files []Migration, rows map[int64]applied) error {
 		seen := map[int64]bool{}
 		for _, m := range files {
 			s := State{Version: m.Version, Name: m.Name}
 			if a, ok := rows[m.Version]; ok {
 				s.Applied, s.AppliedAt = true, a.at
+				s.Changed = checkSum(m, a) != nil
 			}
 			seen[m.Version] = true
 			out = append(out, s)
@@ -175,20 +192,28 @@ func checkSum(m Migration, a applied) error {
 	return nil
 }
 
-// session loads the migrations, takes the advisory lock on a dedicated connection, ensures the
-// schema_migrations table, reads it and calls fn. The lock is released before returning; if
-// releasing fails, the connection is discarded, which releases it too.
-func (r *Runner) session(ctx context.Context, fn func(conn *sql.Conn, files []Migration, rows map[int64]applied) error) (err error) {
+// session loads the migrations, takes the advisory lock on a dedicated connection, reads the
+// schema_migrations table and calls fn. Only when create is set does it create the table, which
+// needs the CREATE privilege; otherwise a missing table means nothing is applied, so a role that
+// may only read can report status. The lock is released before returning; if releasing fails,
+// the connection is discarded, which releases it too.
+func (r *Runner) session(ctx context.Context, create bool, fn func(conn *sql.Conn, files []Migration, rows map[int64]applied) error) (err error) {
 	files, err := Load(r.fsys)
 	if err != nil {
 		return err
 	}
-	conn, err := r.db.Conn(ctx)
+	wctx := ctx // bounds the wait for the connection and the lock
+	if r.wait > 0 {
+		var cancel context.CancelFunc
+		wctx, cancel = context.WithTimeout(ctx, r.wait)
+		defer cancel()
+	}
+	conn, err := r.db.Conn(wctx)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
-	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, lockKey); err != nil {
+	if _, err := conn.ExecContext(wctx, `SELECT pg_advisory_lock($1)`, lockKey); err != nil {
 		return fmt.Errorf("take the migration lock: %w", err)
 	}
 	defer func() {
@@ -198,8 +223,10 @@ func (r *Runner) session(ctx context.Context, fn func(conn *sql.Conn, files []Mi
 		}
 	}()
 
-	if _, err := conn.ExecContext(ctx, createTable); err != nil {
-		return fmt.Errorf("create schema_migrations: %w", err)
+	if create {
+		if _, err := conn.ExecContext(ctx, createTable); err != nil {
+			return fmt.Errorf("create schema_migrations: %w", err)
+		}
 	}
 	rows, err := readApplied(ctx, conn)
 	if err != nil {
@@ -208,7 +235,15 @@ func (r *Runner) session(ctx context.Context, fn func(conn *sql.Conn, files []Mi
 	return fn(conn, files, rows)
 }
 
+// readApplied returns the schema_migrations rows by version, none when the table does not exist.
 func readApplied(ctx context.Context, conn *sql.Conn) (map[int64]applied, error) {
+	var exists bool
+	if err := conn.QueryRowContext(ctx, `SELECT to_regclass('schema_migrations') IS NOT NULL`).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("read schema_migrations: %w", err)
+	}
+	if !exists {
+		return map[int64]applied{}, nil
+	}
 	rs, err := conn.QueryContext(ctx, `SELECT version, name, checksum, applied_at FROM schema_migrations`)
 	if err != nil {
 		return nil, fmt.Errorf("read schema_migrations: %w", err)

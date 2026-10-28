@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -29,7 +30,13 @@ var errSentinel = errors.New("sentinel")
 // itemsDB opens a pool of maxConns on a new database with an items table.
 func itemsDB(t *testing.T, maxConns int) *bun.DB {
 	t.Helper()
-	cfg := dbConfig(dsnFile(t, pgtest.DSN(t)))
+	return itemsDBAt(t, pgtest.DSN(t), maxConns)
+}
+
+// itemsDBAt is itemsDB on the database at dsn.
+func itemsDBAt(t *testing.T, dsn string, maxConns int) *bun.DB {
+	t.Helper()
+	cfg := dbConfig(dsnFile(t, dsn))
 	cfg.MaxConns = maxConns
 	db, err := postgres.Open(cfg, config.EnvDevelopment)
 	if err != nil {
@@ -206,6 +213,45 @@ func TestDoCommitFailure(t *testing.T) {
 	if !errors.As(err, &pe) || pe.Code != "23505" {
 		t.Fatalf("Do = %v; want the commit's unique violation", err)
 	}
+	var de *domain.Error
+	if errors.As(err, &de) {
+		t.Errorf("Do = %v; want no domain error for a COMMIT the server refused", err)
+	}
+}
+
+// TestDoBeginFailure has the server end an idle connection that the pool still holds, so BEGIN
+// fails on it: a database that went away, not a fault of the request.
+func TestDoBeginFailure(t *testing.T) {
+	db := itemsDB(t, 1)
+	u := newUoW(db)
+	// The pool pings a connection idle for over a second before handing it out, so the session
+	// is reused once to start that clock, then left idle past its timeout but under a second.
+	if err := u.Do(t.Context(), func(ctx context.Context) error {
+		_, err := postgres.Conn(ctx, db).ExecContext(ctx, "SET idle_session_timeout = '200ms'")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.Do(t.Context(), func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	ran := false
+	err := u.Do(t.Context(), func(context.Context) error {
+		ran = true
+		return nil
+	})
+	var de *domain.Error
+	if !errors.As(err, &de) || de.Code != domain.CodeUnavailable {
+		t.Errorf("Do = %v; want UNAVAILABLE", err)
+	}
+	if ran {
+		t.Error("fn ran without a transaction")
+	}
+	if err := u.Do(t.Context(), func(context.Context) error { return nil }); err != nil {
+		t.Errorf("Do after the broken connection: %v; want a new connection", err)
+	}
 }
 
 // holdConnection runs a Do that keeps the pool's only connection until release is closed.
@@ -268,7 +314,14 @@ func TestDoCallerCancelled(t *testing.T) {
 }
 
 func TestDoSpan(t *testing.T) {
-	db := itemsDB(t, 2)
+	dsn := pgtest.DSN(t)
+	db := itemsDBAt(t, dsn, 2)
+	u0, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The container's user and password are both "postgres", too common to search for alone.
+	secrets := []string{u0.User.String() + "@", u0.Host, "postgres://"}
 	sr := tracetest.NewSpanRecorder()
 	u := postgres.NewUnitOfWork(db, time.Second, sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr)))
 
@@ -292,8 +345,10 @@ func TestDoSpan(t *testing.T) {
 			if a.Key == "db.system.name" {
 				system = a.Value.AsString()
 			}
-			if strings.Contains(a.Value.String(), "postgres://") {
-				t.Errorf("span %d attribute %s holds a DSN", i, a.Key)
+			for _, secret := range secrets {
+				if strings.Contains(a.Value.String(), secret) {
+					t.Errorf("span %d attribute %s holds part of the DSN", i, a.Key)
+				}
 			}
 		}
 		if system != "postgresql" {

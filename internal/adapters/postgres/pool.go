@@ -26,6 +26,35 @@ const (
 // succeeds while PostgreSQL is down. Outside development it refuses a DSN that allows a
 // connection without TLS. Errors name the file, never its contents.
 func Open(cfg config.Database, env config.Environment) (*bun.DB, error) {
+	pc, err := connConfig(cfg, env)
+	if err != nil {
+		return nil, err
+	}
+	sqldb := sql.OpenDB(stdlib.GetConnector(*pc))
+	sqldb.SetMaxOpenConns(cfg.MaxConns)
+	sqldb.SetMaxIdleConns(cfg.MaxConns)
+	sqldb.SetConnMaxIdleTime(MaxConnIdleTime)
+	sqldb.SetConnMaxLifetime(MaxConnLifetime)
+	return bun.NewDB(sqldb, pgdialect.New()), nil
+}
+
+// OpenProbe builds the readiness probe's pool of one connection from the same DSN, with the same
+// checks as Open. Being apart from the request pool, it reports whether PostgreSQL answers even
+// when every request connection is busy. It does not connect.
+func OpenProbe(cfg config.Database, env config.Environment) (*sql.DB, error) {
+	pc, err := connConfig(cfg, env)
+	if err != nil {
+		return nil, err
+	}
+	sqldb := sql.OpenDB(stdlib.GetConnector(*pc))
+	sqldb.SetMaxOpenConns(1)
+	sqldb.SetMaxIdleConns(1)
+	sqldb.SetConnMaxLifetime(MaxConnLifetime)
+	return sqldb, nil
+}
+
+// connConfig reads and parses the DSN in cfg.DSNFile and applies the TLS rule.
+func connConfig(cfg config.Database, env config.Environment) (*pgx.ConnConfig, error) {
 	path := cfg.DSNFile.Path()
 	raw, err := os.ReadFile(path) //nolint:gosec // the path comes from the operator's configuration
 	if err != nil {
@@ -43,13 +72,7 @@ func Open(cfg config.Database, env config.Environment) (*bun.DB, error) {
 	if env != config.EnvDevelopment && !tlsOnly(pc) {
 		return nil, fmt.Errorf("database.dsn_file %s: sslmode must be require, verify-ca or verify-full outside development", path)
 	}
-
-	sqldb := sql.OpenDB(stdlib.GetConnector(*pc))
-	sqldb.SetMaxOpenConns(cfg.MaxConns)
-	sqldb.SetMaxIdleConns(cfg.MaxConns)
-	sqldb.SetConnMaxIdleTime(MaxConnIdleTime)
-	sqldb.SetConnMaxLifetime(MaxConnLifetime)
-	return bun.NewDB(sqldb, pgdialect.New()), nil
+	return pc, nil
 }
 
 // tlsOnly reports whether every connection attempt the config allows uses TLS. sslmode disable
@@ -66,11 +89,11 @@ func tlsOnly(pc *pgx.ConnConfig) bool {
 	return true
 }
 
-// Ping returns the readiness check: a ping of the pool bounded by timeout.
-func Ping(db *bun.DB, timeout time.Duration) func(context.Context) error {
+// Ping returns the readiness check: a ping of probe, from OpenProbe, bounded by timeout.
+func Ping(probe *sql.DB, timeout time.Duration) func(context.Context) error {
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		return db.PingContext(ctx)
+		return probe.PingContext(ctx)
 	}
 }

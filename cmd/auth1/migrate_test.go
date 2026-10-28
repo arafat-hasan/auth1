@@ -109,7 +109,7 @@ func TestMigrateCommands(t *testing.T) {
 	fsys := os.DirFS("internal/adapters/postgres/migrate/testdata/ok")
 	dsn := filepath.Join(t.TempDir(), "dsn")
 	writeFile(t, dsn, pgtest.Empty(t))
-	base := []string{"--config", "config.example.yaml", "--dsn-file", dsn}
+	base := []string{"--config", "config.example.yaml", "--dsn-file", dsn, "--wait", "30s"}
 	run := func(args ...string) string {
 		t.Helper()
 		out, err := runMigrate(t, developmentEnv, fsys, append(args, base...)...)

@@ -78,9 +78,11 @@ added with `health.Checker.Register`. Middleware reads the route pattern after r
 stay installed with `Use`; logs, spans and metric labels carry the route pattern, never the path.
 
 PostgreSQL (TDD-01 §4, §6): `postgres.Open` builds the bun pool on pgx from `database.dsn_file`
-(read at start-up, never logged; outside `development` it refuses a DSN without TLS).
+(read at start-up, never logged; outside `development` it refuses a DSN without TLS);
+`postgres.OpenProbe` builds the one-connection pool that the `/readyz` check pings.
 `internal/app.UnitOfWork` is the transaction port; `postgres.UnitOfWork` runs one `READ COMMITTED`
-transaction, a nested `Do` joins it, and an acquire timeout is `UNAVAILABLE`. Repositories take
+transaction, a nested `Do` joins it, and an acquire timeout or a connection lost before
+`COMMIT` is sent is `UNAVAILABLE`. Repositories take
 their executor from `postgres.Conn(ctx, db)`: the open transaction, else the pool. bun uses `?`
 placeholders. Migrations are plain SQL in `migrations/` (embedded as `migrations.FS`), run by
 `internal/adapters/postgres/migrate` under an advisory lock; never edit an applied one.

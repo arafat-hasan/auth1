@@ -115,18 +115,23 @@ func gate(health error, require bool) (skip, fail bool) {
 	return !require, require
 }
 
-// start runs a container tuned for tests and opens an admin connection to it.
-func start() (*instance, error) {
+// start runs a container tuned for tests and opens an admin connection to it. On an error it
+// removes the container and closes the connection itself, since the caller gets no instance.
+func start() (in *instance, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
 	ctr, err := tcpostgres.Run(ctx, Image,
 		tcpostgres.BasicWaitStrategies(),
 		testcontainers.WithCmd("postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"),
 	)
+	if ctr != nil {
+		defer func() {
+			if err != nil {
+				_ = ctr.Terminate(context.Background())
+			}
+		}()
+	}
 	if err != nil {
-		if ctr != nil {
-			_ = ctr.Terminate(context.Background())
-		}
 		return nil, fmt.Errorf("start %s: %w", Image, err)
 	}
 	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
@@ -142,6 +147,7 @@ func start() (*instance, error) {
 		return nil, err
 	}
 	if err := admin.PingContext(ctx); err != nil {
+		_ = admin.Close()
 		return nil, fmt.Errorf("ping %s: %w", Image, err)
 	}
 	return &instance{ctr: ctr, base: *u, admin: admin}, nil

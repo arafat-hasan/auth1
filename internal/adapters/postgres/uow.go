@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/uptrace/bun"
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
@@ -36,8 +37,10 @@ func NewUnitOfWork(db *bun.DB, acquireTimeout time.Duration, tp trace.TracerProv
 
 // Do runs fn in a transaction, which repositories reach through Conn. It commits once when fn
 // returns nil and rolls back when fn returns an error or panics; the panic continues after the
-// rollback. A Do inside fn joins the open transaction. When no connection is free within the
-// acquire timeout, Do returns UNAVAILABLE wrapping the cause; when ctx ends first, ctx's error.
+// rollback. A Do inside fn joins the open transaction. Do returns UNAVAILABLE wrapping the cause
+// when no connection is free within the acquire timeout, when the transaction cannot begin, or
+// when COMMIT could not be sent; when ctx ends first, ctx's error. A COMMIT that fails after it
+// was sent is returned as it is: it may have been applied, so it is not safe to retry.
 func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context) error) (err error) {
 	if _, ok := ctx.Value(txKey{}).(bun.Tx); ok {
 		return fn(ctx)
@@ -60,9 +63,10 @@ func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context) error)
 
 	tx, err := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
+		return failure(ctx, "begin transaction", err)
 	}
-	committed := false
+	// panicked stays true when fn panics; the panic then continues past the rollback by itself.
+	committed, panicked := false, true
 	defer func() {
 		if committed {
 			return
@@ -70,17 +74,21 @@ func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context) error)
 		if rerr := tx.Rollback(); rerr != nil && !errors.Is(rerr, sql.ErrTxDone) {
 			err = errors.Join(err, fmt.Errorf("roll back: %w", rerr))
 		}
-		if p := recover(); p != nil {
+		if panicked {
 			span.SetStatus(codes.Error, "panic") // the span ends in the deferred call above
-			panic(p)
 		}
 	}()
 
-	if err := fn(context.WithValue(ctx, txKey{}, tx)); err != nil {
+	err = fn(context.WithValue(ctx, txKey{}, tx))
+	panicked = false
+	if err != nil {
 		return err
 	}
 	committed = true
 	if err := tx.Commit(); err != nil {
+		if pgconn.SafeToRetry(err) {
+			return failure(ctx, "commit", err)
+		}
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
@@ -91,13 +99,19 @@ func (u *UnitOfWork) acquire(ctx context.Context) (bun.Conn, error) {
 	actx, cancel := context.WithTimeout(ctx, u.acquireTimeout)
 	defer cancel()
 	conn, err := u.db.Conn(actx)
-	if err == nil {
-		return conn, nil
+	if err != nil {
+		return bun.Conn{}, failure(ctx, "acquire database connection", err)
 	}
+	return conn, nil
+}
+
+// failure is the error of op failing with err for want of the database: ctx's error when ctx has
+// ended, otherwise UNAVAILABLE wrapping err.
+func failure(ctx context.Context, op string, err error) error {
 	if ctx.Err() != nil {
-		return bun.Conn{}, fmt.Errorf("acquire database connection: %w", ctx.Err())
+		return fmt.Errorf("%s: %w", op, ctx.Err())
 	}
-	return bun.Conn{}, fmt.Errorf("acquire database connection: %w: %w", unavailable, err)
+	return fmt.Errorf("%s: %w: %w", op, unavailable, err)
 }
 
 // Conn returns the executor for a repository: the transaction Do opened, when ctx carries one,
