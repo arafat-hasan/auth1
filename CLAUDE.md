@@ -41,13 +41,21 @@ make generate              # go generate ./...
 ./bin/auth1 version        # version, commit, Go version
 ./bin/auth1 config check --config config.example.yaml   # load and validate a configuration
 AUTH1_APP_ENVIRONMENT=development ./bin/auth1 serve --config config.example.yaml   # API on :8080, metrics on :9090
-AUTH1_APP_ENVIRONMENT=development make migrate ARGS="status --config config.example.yaml"   # also up, down [N]
+AUTH1_APP_ENVIRONMENT=development make migrate ARGS="status --config config.example.yaml --dsn-file testdata/example/secrets/db/migrator-dsn"   # also up, down [N]
 ./bin/auth1 migrate create <name>   # next numbered empty pair in migrations/
 ```
 
-The example's DSN (`testdata/example/secrets/db/dsn`) points at
-`postgres://auth1:auth1@localhost:5432/auth1` without TLS, so it needs
-`AUTH1_APP_ENVIRONMENT=development`. Tests that need PostgreSQL use Docker: they skip without it,
+The example's DSNs point at `localhost:5432/auth1` without TLS, so they need
+`AUTH1_APP_ENVIRONMENT=development`: `testdata/example/secrets/db/dsn` is `auth1_app`'s (for
+`serve`) and `migrator-dsn` is `auth1_migrator`'s (for `migrate`), each with the role's name as
+its password. A local database to match:
+
+```bash
+docker run -d --name auth1-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=auth1 postgres:18
+psql postgres://postgres:postgres@localhost:5432/auth1 -f deploy/postgres/roles.sql \
+  -c "ALTER ROLE auth1_migrator PASSWORD 'auth1_migrator'" -c "ALTER ROLE auth1_app PASSWORD 'auth1_app'"
+```
+ Tests that need PostgreSQL use Docker: they skip without it,
 unless `AUTH1_REQUIRE_DOCKER=1` (set in CI), which makes them fail.
 
 ## Layout and guards
