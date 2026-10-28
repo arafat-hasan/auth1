@@ -192,6 +192,8 @@ CREATE TABLE flows (
 CREATE INDEX flows_account_open ON flows (account_id, kind) WHERE completed_at IS NULL AND cancelled_at IS NULL;
 CREATE INDEX flows_open_expiry ON flows (expires_at) WHERE completed_at IS NULL AND cancelled_at IS NULL;
 CREATE INDEX flows_account ON flows (account_id);                  -- FK; the purge (§5)
+CREATE INDEX flows_closed ON flows (coalesce(completed_at, cancelled_at))
+    WHERE completed_at IS NOT NULL OR cancelled_at IS NOT NULL;  -- retention (§5)
 
 CREATE TABLE challenges (
     id             uuid PRIMARY KEY,
@@ -366,6 +368,7 @@ CREATE INDEX outbox_published ON outbox (published_at) WHERE published_at IS NOT
 |---|---|---|
 | Pending account of an expired flow | Identifiers retired at expiry | Rows purged 7 days later *(cfg)* |
 | Closed challenges | 30 days | Deleted |
+| Closed flows | 30 days after `completed_at` or `cancelled_at` | Deleted, after their challenges |
 | Revoked or expired sessions and their refresh tokens | 90 days | Deleted |
 | Refresh successor | Grace window | `successor_enc` set to null within a minute |
 | Used recovery codes; replaced batches | Until the next regeneration + 30 days | Deleted |
