@@ -101,7 +101,7 @@ the types and `StrictServerInterface`; `internal/http/gen/internal/routegen` wri
 operation, when a service operation (`workload` or `serviceToken`) has no `x-auth1-scope`, another
 operation has one, or the scope is undeclared. Handlers embed `gen.Stub` and are mounted with
 `server.Options.Routes = gen.Routes(si, problems)`, which answers bind failures with `422
-VALIDATION_FAILED`. API tests check exchanges with `internal/testing/apitest`
+VALIDATION_FAILED` (`413` for a body found over the limit while decoding; `problem.WriteBindError`). API tests check exchanges with `internal/testing/apitest`
 (`apitest.New(t).Serve(t, h, req)`, libopenapi-validator). vacuum and oasdiff are `tool`s in
 `tools/go.mod` (`go -C tools tool …`).
 

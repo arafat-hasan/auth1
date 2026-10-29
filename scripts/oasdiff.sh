@@ -1,11 +1,12 @@
 #!/bin/sh
-# Reports breaking changes in api/openapi.yaml against the newest v* tag (TDD-08 §10).
+# Reports breaking changes in api/openapi.yaml against the newest v* release tag (TDD-08 §10).
+# Pre-release tags (v1.0.0-rc.1) are left out: sort -V would put them after their release.
 # With no tag there is nothing to compare, and the check passes.
 set -eu
 
-tag=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' | sort -V | tail -n 1)
+tag=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' | grep -v -e '-' | sort -V | tail -n 1)
 if [ -z "$tag" ]; then
-	echo "oasdiff: no v* tag: nothing to compare"
+	echo "oasdiff: no v* release tag: nothing to compare"
 	exit 0
 fi
 

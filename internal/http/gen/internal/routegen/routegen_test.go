@@ -20,9 +20,11 @@ paths:
     delete:
       operationId: revokeMySession
       SCOPE_ON_PERSON
+      parameters:
+        - { name: sessionId, in: path, required: true, schema: { type: string, format: uuid } }
       security:
         - bearer: []
-      responses: { '204': { description: ok } }
+      responses: { '204': { description: ok }, UNPROCESSABLE }
   /v1/introspect:
     post:
       operationId: introspectToken
@@ -56,8 +58,15 @@ components:
             tokens:introspect: Introspect access tokens
 `
 
+// declares422 is what the fixture's UNPROCESSABLE marker becomes, after a comma, by default.
+const declares422 = ", '422': { description: invalid }"
+
 func spec(personScope, serviceScope string) []byte {
-	r := strings.NewReplacer("SCOPE_ON_PERSON", personScope, "SERVICE_SCOPE", serviceScope)
+	return specWith(personScope, serviceScope, declares422)
+}
+
+func specWith(personScope, serviceScope, unprocessable string) []byte {
+	r := strings.NewReplacer("SCOPE_ON_PERSON", personScope, "SERVICE_SCOPE", serviceScope, ", UNPROCESSABLE", unprocessable)
 	return []byte(r.Replace(fixture))
 }
 
@@ -82,6 +91,8 @@ func TestOperations(t *testing.T) {
 			wantErr: []string{"revokeMySession", "x-auth1-scope"}},
 		{name: "undeclared scope", spec: spec("", "x-auth1-scope: tokens:mint"),
 			wantErr: []string{"introspectToken", "tokens:mint"}},
+		{name: "parameters without 422", spec: specWith("", "x-auth1-scope: tokens:introspect", ""),
+			wantErr: []string{"revokeMySession", "422"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

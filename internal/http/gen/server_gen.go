@@ -4328,6 +4328,22 @@ func (response ResetAccountMfa409ApplicationProblemPlusJSONResponse) VisitResetA
 	return err
 }
 
+type ResetAccountMfa422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response ResetAccountMfa422ApplicationProblemPlusJSONResponse) VisitResetAccountMfaResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type SetAccountRolesRequestObject struct {
 	AccountId AccountId `json:"accountId"`
 	Params    SetAccountRolesParams
@@ -4509,6 +4525,22 @@ func (response RevokeAccountSessions404ApplicationProblemPlusJSONResponse) Visit
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeAccountSessions422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeAccountSessions422ApplicationProblemPlusJSONResponse) VisitRevokeAccountSessionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -5066,6 +5098,22 @@ func (response IntrospectToken413ApplicationProblemPlusJSONResponse) VisitIntros
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type IntrospectToken422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response IntrospectToken422ApplicationProblemPlusJSONResponse) VisitIntrospectTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -5845,6 +5893,22 @@ func (response ResendPhoneChange413ApplicationProblemPlusJSONResponse) VisitRese
 	return err
 }
 
+type ResendPhoneChange422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response ResendPhoneChange422ApplicationProblemPlusJSONResponse) VisitResendPhoneChangeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ResendPhoneChange429ApplicationProblemPlusJSONResponse struct {
 	TooManyRequestsApplicationProblemPlusJSONResponse
 }
@@ -5961,6 +6025,22 @@ func (response VerifyPhoneChange413ApplicationProblemPlusJSONResponse) VisitVeri
 	return err
 }
 
+type VerifyPhoneChange422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response VerifyPhoneChange422ApplicationProblemPlusJSONResponse) VisitVerifyPhoneChangeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type RegenerateRecoveryCodesRequestObject struct {
 	Body *RegenerateRecoveryCodesJSONRequestBody
 }
@@ -6053,6 +6133,22 @@ func (response RegenerateRecoveryCodes413ApplicationProblemPlusJSONResponse) Vis
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RegenerateRecoveryCodes422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response RegenerateRecoveryCodes422ApplicationProblemPlusJSONResponse) VisitRegenerateRecoveryCodesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -6208,6 +6304,22 @@ func (response RevokeMySession404ApplicationProblemPlusJSONResponse) VisitRevoke
 	return err
 }
 
+type RevokeMySession422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeMySession422ApplicationProblemPlusJSONResponse) VisitRevokeMySessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type RemoveTotpRequestObject struct {
 	Body *RemoveTotpJSONRequestBody
 }
@@ -6268,6 +6380,22 @@ func (response RemoveTotp413ApplicationProblemPlusJSONResponse) VisitRemoveTotpR
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveTotp422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response RemoveTotp422ApplicationProblemPlusJSONResponse) VisitRemoveTotpResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -6383,6 +6511,22 @@ func (response StartTotpEnrolment413ApplicationProblemPlusJSONResponse) VisitSta
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartTotpEnrolment422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response StartTotpEnrolment422ApplicationProblemPlusJSONResponse) VisitStartTotpEnrolmentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -6518,6 +6662,22 @@ func (response ConfirmTotpEnrolment413ApplicationProblemPlusJSONResponse) VisitC
 	return err
 }
 
+type ConfirmTotpEnrolment422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response ConfirmTotpEnrolment422ApplicationProblemPlusJSONResponse) VisitConfirmTotpEnrolmentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ConfirmTotpEnrolment429ApplicationProblemPlusJSONResponse struct {
 	TooManyRequestsApplicationProblemPlusJSONResponse
 }
@@ -6633,6 +6793,22 @@ func (response StartTotpReplacement413ApplicationProblemPlusJSONResponse) VisitS
 	return err
 }
 
+type StartTotpReplacement422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response StartTotpReplacement422ApplicationProblemPlusJSONResponse) VisitStartTotpReplacementResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type StartTotpReplacement429ApplicationProblemPlusJSONResponse struct {
 	TooManyRequestsApplicationProblemPlusJSONResponse
 }
@@ -6733,6 +6909,22 @@ func (response ConfirmTotpReplacement413ApplicationProblemPlusJSONResponse) Visi
 	return err
 }
 
+type ConfirmTotpReplacement422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response ConfirmTotpReplacement422ApplicationProblemPlusJSONResponse) VisitConfirmTotpReplacementResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type IssueServiceTokenRequestObject struct {
 	Body *IssueServiceTokenFormdataRequestBody
 }
@@ -6821,6 +7013,22 @@ func (response IssueServiceToken413ApplicationProblemPlusJSONResponse) VisitIssu
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type IssueServiceToken422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response IssueServiceToken422ApplicationProblemPlusJSONResponse) VisitIssueServiceTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -6961,6 +7169,22 @@ func (response StartPasswordReset413ApplicationProblemPlusJSONResponse) VisitSta
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartPasswordReset422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response StartPasswordReset422ApplicationProblemPlusJSONResponse) VisitStartPasswordResetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -7380,6 +7604,22 @@ func (response VerifyRegistrationResume413ApplicationProblemPlusJSONResponse) Vi
 	return err
 }
 
+type VerifyRegistrationResume422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response VerifyRegistrationResume422ApplicationProblemPlusJSONResponse) VisitVerifyRegistrationResumeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type VerifyRegistrationResume429ApplicationProblemPlusJSONResponse struct {
 	TooManyRequestsApplicationProblemPlusJSONResponse
 }
@@ -7490,6 +7730,22 @@ func (response CompleteRegistration413ApplicationProblemPlusJSONResponse) VisitC
 	return err
 }
 
+type CompleteRegistration422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteRegistration422ApplicationProblemPlusJSONResponse) VisitCompleteRegistrationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ResendRegistrationVerificationRequestObject struct {
 	FlowId FlowId `json:"flowId"`
 	Body   *ResendRegistrationVerificationJSONRequestBody
@@ -7535,6 +7791,22 @@ func (response ResendRegistrationVerification413ApplicationProblemPlusJSONRespon
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResendRegistrationVerification422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response ResendRegistrationVerification422ApplicationProblemPlusJSONResponse) VisitResendRegistrationVerificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -7660,6 +7932,22 @@ func (response VerifyRegistrationCode413ApplicationProblemPlusJSONResponse) Visi
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type VerifyRegistrationCode422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response VerifyRegistrationCode422ApplicationProblemPlusJSONResponse) VisitVerifyRegistrationCodeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -7958,6 +8246,22 @@ func (response CompleteSignIn413ApplicationProblemPlusJSONResponse) VisitComplet
 	return err
 }
 
+type CompleteSignIn422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response CompleteSignIn422ApplicationProblemPlusJSONResponse) VisitCompleteSignInResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CompleteSignIn429ApplicationProblemPlusJSONResponse struct {
 	TooManyRequestsApplicationProblemPlusJSONResponse
 }
@@ -8037,6 +8341,22 @@ func (response StartEnrolment413ApplicationProblemPlusJSONResponse) VisitStartEn
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartEnrolment422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response StartEnrolment422ApplicationProblemPlusJSONResponse) VisitStartEnrolmentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -8156,6 +8476,22 @@ func (response ConfirmEnrolment413ApplicationProblemPlusJSONResponse) VisitConfi
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConfirmEnrolment422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response ConfirmEnrolment422ApplicationProblemPlusJSONResponse) VisitConfirmEnrolmentResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -8374,6 +8710,22 @@ func (response VerifySignInOtp413ApplicationProblemPlusJSONResponse) VisitVerify
 	return err
 }
 
+type VerifySignInOtp422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response VerifySignInOtp422ApplicationProblemPlusJSONResponse) VisitVerifySignInOtpResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type VerifySignInOtp429ApplicationProblemPlusJSONResponse struct {
 	TooManyRequestsApplicationProblemPlusJSONResponse
 }
@@ -8453,6 +8805,22 @@ func (response RefreshSession413ApplicationProblemPlusJSONResponse) VisitRefresh
 	return err
 }
 
+type RefreshSession422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response RefreshSession422ApplicationProblemPlusJSONResponse) VisitRefreshSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ConfirmVerificationLinkRequestObject struct {
 	Body *ConfirmVerificationLinkJSONRequestBody
 }
@@ -8519,6 +8887,22 @@ func (response ConfirmVerificationLink413ApplicationProblemPlusJSONResponse) Vis
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConfirmVerificationLink422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response ConfirmVerificationLink422ApplicationProblemPlusJSONResponse) VisitConfirmVerificationLinkResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }

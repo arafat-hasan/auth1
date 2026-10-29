@@ -30,7 +30,8 @@ type op struct {
 
 // operations reads the served operations of an OpenAPI document, sorted by id, and checks the
 // scope rules: a service operation has an x-auth1-scope, no other operation has one, and every
-// scope is one of the serviceToken scheme's declared scopes. Webhooks are left out: auth1 sends
+// scope is one of the serviceToken scheme's declared scopes. An operation that takes parameters
+// or a body must also declare the 422 that a binding failure answers. Webhooks are left out: auth1 sends
 // them, it does not serve them.
 func operations(spec []byte) ([]op, error) {
 	doc, err := libopenapi.NewDocument(spec)
@@ -75,6 +76,13 @@ func operations(spec []byte) ([]op, error) {
 			slices.Sort(cur.Security)
 			if n, ok := o.Extensions.Get(scopeExtension); ok && n != nil {
 				cur.Scope = n.Value
+			}
+
+			// gen.Routes answers a parameter or body it cannot bind with 422, so the operation must
+			// declare it.
+			binds := len(o.Parameters) > 0 || len(item.Parameters) > 0 || o.RequestBody != nil
+			if binds && (o.Responses == nil || o.Responses.Codes.GetOrZero("422") == nil) {
+				errs = append(errs, fmt.Errorf("%s: takes parameters or a body but does not declare 422", cur.ID))
 			}
 
 			service := slices.ContainsFunc(cur.Security, func(s string) bool { return slices.Contains(serviceSchemes, s) })

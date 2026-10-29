@@ -20,6 +20,10 @@ const ContentType = "application/problem+json"
 // unavailableDetail is the detail of an error that is not a domain.Error.
 const unavailableDetail = "The service is temporarily unavailable."
 
+// unboundDetail is the detail of a request the generated code cannot bind. The binding error is
+// not shown: it names Go types and repeats the caller's input.
+const unboundDetail = "The request does not match the API contract."
+
 // statuses is SDD §10: the HTTP status of each code.
 var statuses = map[domain.Code]int{
 	domain.CodeValidationFailed:         http.StatusUnprocessableEntity,
@@ -125,6 +129,20 @@ func (pw *Writer) Write(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	w.WriteHeader(b.Status)
 	_ = json.NewEncoder(w).Encode(b) // the status is sent; a failed write cannot be reported
+}
+
+// WriteBindError renders a request the generated code cannot bind (a path, query or header
+// parameter, or a body it cannot decode). A body that went past the limit while it was decoded
+// renders as 413, like any *http.MaxBytesError; any other binding error renders as 422
+// VALIDATION_FAILED with a fixed detail, and is logged at debug level with the request id.
+func (pw *Writer) WriteBindError(w http.ResponseWriter, r *http.Request, err error) {
+	if me := (*http.MaxBytesError)(nil); errors.As(err, &me) {
+		pw.Write(w, r, err)
+		return
+	}
+	pw.logger.LogAttrs(r.Context(), slog.LevelDebug, "request not bound",
+		telemetry.RequestID(requestid.From(r.Context())), telemetry.Err(err))
+	pw.Write(w, r, &domain.Error{Code: domain.CodeValidationFailed, Detail: unboundDetail})
 }
 
 // WriteNotImplemented renders the 501 of an operation that has no handler yet. The problem has no

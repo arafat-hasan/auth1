@@ -98,17 +98,22 @@ func TestRoutesNotImplemented(t *testing.T) {
 }
 
 // TestRoutesBindError checks that a request the generated code cannot bind answers a
-// VALIDATION_FAILED problem, not the generator's plain-text 400.
+// VALIDATION_FAILED problem, not the generator's plain-text 400, and that a body found to be over
+// the limit only while it is decoded (no Content-Length) still answers 413.
 func TestRoutesBindError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name, method, path, body string
+		chunked                  bool // send no Content-Length, so the limit is found while decoding
+		want                     int
 	}{
-		{name: "path parameter", method: http.MethodDelete, path: "/v1/me/sessions/not-a-uuid"},
-		{name: "header parameter", method: http.MethodPost,
-			path: "/v1/accounts/0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b/sessions/revoke"}, // no Idempotency-Key
-		{name: "JSON body", method: http.MethodPost, path: "/v1/sessions", body: "{"},
+		{name: "path parameter", method: http.MethodDelete, path: "/v1/me/sessions/not-a-uuid", want: http.StatusUnprocessableEntity},
+		{name: "header parameter", method: http.MethodPost, // no Idempotency-Key
+			path: "/v1/accounts/0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b/sessions/revoke", want: http.StatusUnprocessableEntity},
+		{name: "JSON body", method: http.MethodPost, path: "/v1/sessions", body: "{", want: http.StatusUnprocessableEntity},
+		{name: "chunked body over the limit", method: http.MethodPost, path: "/v1/sessions", chunked: true,
+			body: `{"client_id":"` + strings.Repeat("a", server.MaxBodyBytes) + `"}`, want: http.StatusRequestEntityTooLarge},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -116,11 +121,14 @@ func TestRoutesBindError(t *testing.T) {
 			h, _ := router(t, "")
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", "application/json")
+			if tt.chunked {
+				req.ContentLength = -1
+			}
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusUnprocessableEntity {
-				t.Errorf("status %d, want 422: %s", rec.Code, rec.Body)
+			if rec.Code != tt.want {
+				t.Errorf("status %d, want %d: %s", rec.Code, tt.want, rec.Body)
 			}
 			var body struct{ Code string }
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
