@@ -3,9 +3,9 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Version | 0.3 |
-| Date | 2026-10-27 |
-| SDD | [design.md](../design.md) 0.5: D-1, D-18, D-19, §6, §13, §14, §15 |
+| Version | 0.4 |
+| Date | 2026-10-29 |
+| SDD | [design.md](../design.md) 0.8: D-1, D-18, D-19, §6, §13, §14, §15 |
 | Owner | Arafat Hasan |
 
 The binary and its commands, code layout, configuration, secrets, jobs, observability, runbooks,
@@ -422,6 +422,6 @@ On a release tag: the e2e suite, the image build and an SBOM.
 
 ## 11. To be detailed
 
-- The OpenAPI code generator. Go generators' support for OpenAPI 3.1 varies. Proposal: generate types and a Chi server interface with `oapi-codegen`, and keep `api/openapi.yaml` within the subset it supports; or move the contract to 3.0.3 if that subset is too narrow. Decide with the first implementation step (SDD O-6).
+- The OpenAPI code generator, decided (SDD D-19, closes O-6): `oapi-codegen` v2 (from v2.8.1) generates the types and a strict Chi server interface into `internal/http/gen`, from `api/openapi.yaml` 3.1 unchanged. It supports the 3.1 constructs the contract uses (`webhooks`, `const`, `examples` arrays). `output-options.skip-prune` is on, because pruning does not follow references from `webhooks` and would drop their body schemas; the webhook, which auth1 sends, is also generated as an inbound receiver that nothing mounts. `oneOf` schemas become union types with accessors. Rejected: moving to 3.0.3, which would lose `webhooks` and `const` for no gain; `ogen`, which does not implement the `mutualTLS` scheme (`workload`) and brings its own router instead of Chi.
 - Runbook texts.
 - Dashboards.
