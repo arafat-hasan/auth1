@@ -193,7 +193,7 @@ func MarshalState(s State) ([]byte, error) {
 		return nil, fmt.Errorf("%w: nil", ErrStateInvalid)
 	}
 	if err := s.validate(); err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", ErrStateInvalid, s.Kind(), err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrStateInvalid, s.Kind(), err)
 	}
 	switch v := s.(type) {
 	case RegistrationState:
@@ -206,7 +206,7 @@ func MarshalState(s State) ([]byte, error) {
 	}
 	data, err := json.Marshal(s)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", ErrStateInvalid, s.Kind(), err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrStateInvalid, s.Kind(), err)
 	}
 	return data, nil
 }
@@ -245,7 +245,7 @@ func UnmarshalState(k Kind, data []byte) (State, error) {
 		return nil, fmt.Errorf("%w: unknown kind %q", ErrStateInvalid, k)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", ErrStateInvalid, k, err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrStateInvalid, k, err)
 	}
 	return s, nil
 }
