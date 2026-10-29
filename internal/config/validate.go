@@ -22,6 +22,7 @@ func (c *Config) Validate() error {
 	v.files()
 	v.ranges()
 	v.floors()
+	v.argon2()
 	v.productionOnly()
 	v.enums()
 	v.clients()
@@ -166,9 +167,10 @@ func (v *validator) optionalFile(path, file string) {
 }
 
 // ranges refuses a negative number anywhere, and zero for the settings whose floor is only an
-// upper bound, where zero would mean an unusable lifetime or no attempts at all, and for the
-// database pool, where zero would mean no limit on connections or no wait for one. These apply in
-// every environment.
+// upper bound, where zero would mean an unusable lifetime or no attempts at all, for the database
+// pool, where zero would mean no limit on connections or no wait for one, and for the Argon2id
+// settings, where it would mean no hash, no slot or no wait for one. These apply in every
+// environment.
 func (v *validator) ranges() {
 	for path, val := range flatten(*v.c) {
 		var negative bool
@@ -190,6 +192,7 @@ func (v *validator) ranges() {
 		"links.reset_ttl":                           c.Links.ResetTTL,
 		"service_auth.client_credentials.token_ttl": c.ServiceAuth.ClientCredentials.TokenTTL,
 		"database.acquire_timeout":                  c.Database.AcquireTimeout,
+		"passwords.argon2.queue_timeout":            c.Passwords.Argon2.QueueTimeout,
 	} {
 		if d == 0 {
 			v.add(path, "must be above 0")
@@ -200,6 +203,34 @@ func (v *validator) ranges() {
 	}
 	if c.Database.MaxConns == 0 {
 		v.add("database.max_conns", "must be above 0")
+	}
+	a := c.Passwords.Argon2
+	for path, zero := range map[string]bool{
+		"passwords.argon2.memory":         a.Memory == 0,
+		"passwords.argon2.iterations":     a.Iterations == 0,
+		"passwords.argon2.parallelism":    a.Parallelism == 0,
+		"passwords.argon2.max_concurrent": a.MaxConcurrent == 0,
+	} {
+		if zero {
+			v.add(path, "must be above 0")
+		}
+	}
+}
+
+// argon2 refuses Argon2id parameters beyond what a stored hash may carry (TDD-03 §1.3), so that
+// every hash written can be verified. They apply in every environment.
+func (v *validator) argon2() {
+	a := v.c.Passwords.Argon2
+	if a.Memory > GiB {
+		v.add("passwords.argon2.memory", "%s is above the bound of at most %s", a.Memory, GiB)
+	} else if a.Memory%KiB != 0 {
+		v.add("passwords.argon2.memory", "%s is not a whole number of KiB", a.Memory)
+	}
+	if a.Iterations > 16 {
+		v.add("passwords.argon2.iterations", "%d is above the bound of at most 16", a.Iterations)
+	}
+	if a.Parallelism > 16 {
+		v.add("passwords.argon2.parallelism", "%d is above the bound of at most 16", a.Parallelism)
 	}
 }
 
@@ -224,10 +255,12 @@ func (v *validator) floors() {
 	atMost("tokens.refresh_reuse_grace", c.Tokens.RefreshReuseGrace, 60*time.Second)
 	atLeast("passwords.min_length", c.Passwords.MinLength, 8)
 	atLeast("passwords.max_length", c.Passwords.MaxLength, 64)
-	if m := c.Passwords.Argon2.Memory; m >= 0 && m < 19*MiB {
+	if m := c.Passwords.Argon2.Memory; m > 0 && m < 19*MiB { // zero and below are the range check's
 		v.add("passwords.argon2.memory", "%s is below the floor of at least %s", c.Passwords.Argon2.Memory, 19*MiB)
 	}
-	atLeast("passwords.argon2.iterations", c.Passwords.Argon2.Iterations, 2)
+	if c.Passwords.Argon2.Iterations != 0 { // zero is the range check's to report
+		atLeast("passwords.argon2.iterations", c.Passwords.Argon2.Iterations, 2)
+	}
 	atLeast("otp.length", c.OTP.Length, 6)
 	if c.OTP.MaxAttempts > 5 {
 		v.add("otp.max_attempts", "%d is above the floor of at most 5", c.OTP.MaxAttempts)

@@ -337,6 +337,29 @@ func TestValidateRules(t *testing.T) {
 			want: []string{"database.max_conns"}},
 		{name: "zero acquire timeout", change: func(c *Config) { c.Database.AcquireTimeout = 0 },
 			want: []string{"database.acquire_timeout"}},
+		{name: "zero argon2 memory", change: func(c *Config) { c.Passwords.Argon2.Memory = 0 },
+			want: []string{"passwords.argon2.memory"}},
+		{name: "zero argon2 iterations", change: func(c *Config) { c.Passwords.Argon2.Iterations = 0 },
+			want: []string{"passwords.argon2.iterations"}},
+		{name: "zero argon2 parallelism", change: func(c *Config) { c.Passwords.Argon2.Parallelism = 0 },
+			want: []string{"passwords.argon2.parallelism"}},
+		{name: "zero argon2 max concurrent", change: func(c *Config) { c.Passwords.Argon2.MaxConcurrent = 0 },
+			want: []string{"passwords.argon2.max_concurrent"}},
+		{name: "zero argon2 queue timeout", change: func(c *Config) { c.Passwords.Argon2.QueueTimeout = 0 },
+			want: []string{"passwords.argon2.queue_timeout"}},
+
+		// Argon2id bounds a stored hash may carry (TDD-03 §1.3), in every environment.
+		{name: "argon2 memory 1GiB", change: func(c *Config) { c.Passwords.Argon2.Memory = GiB }},
+		{name: "argon2 memory above 1GiB", change: func(c *Config) { c.Passwords.Argon2.Memory = GiB + KiB },
+			want: []string{"passwords.argon2.memory"}},
+		{name: "argon2 memory not whole KiB", change: func(c *Config) { c.Passwords.Argon2.Memory = 64*MiB + 1 },
+			want: []string{"passwords.argon2.memory"}},
+		{name: "argon2 iterations 16", change: func(c *Config) { c.Passwords.Argon2.Iterations = 16 }},
+		{name: "argon2 iterations 17", change: func(c *Config) { c.Passwords.Argon2.Iterations = 17 },
+			want: []string{"passwords.argon2.iterations"}},
+		{name: "argon2 parallelism 16", change: func(c *Config) { c.Passwords.Argon2.Parallelism = 16 }},
+		{name: "argon2 parallelism 17", change: func(c *Config) { c.Passwords.Argon2.Parallelism = 17 },
+			want: []string{"passwords.argon2.parallelism"}},
 
 		// Roles.
 		{name: "allowed role outside the catalog", change: func(c *Config) {
