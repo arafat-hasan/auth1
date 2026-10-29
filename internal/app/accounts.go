@@ -68,4 +68,24 @@ type Accounts interface {
 	// Activate moves a pending account that has a password to active (registration and
 	// invitation completion). Any other account is an error: activation never breaks I-17.
 	Activate(ctx context.Context, accountID uuid.UUID) error
+
+	// TOTPFactor returns the account's TOTP factor with its secret decrypted; NOT_FOUND when it
+	// has none.
+	TOTPFactor(ctx context.Context, accountID uuid.UUID) (account.TOTPFactor, error)
+	// StartTOTP stores secret as the account's unconfirmed factor, replacing an unconfirmed one
+	// (TDD-03 §4). It reports false, changing nothing, when the account has a confirmed factor.
+	StartTOTP(ctx context.Context, accountID uuid.UUID, secret []byte) (bool, error)
+	// ConfirmTOTP confirms the unconfirmed factor, now, with step accepted (TDD-03 §4). It
+	// reports false when there is no unconfirmed factor or step is not after its last step.
+	ConfirmTOTP(ctx context.Context, accountID uuid.UUID, step int64) (bool, error)
+	// AcceptTOTPStep records step as accepted on the confirmed factor (TDD-03 §3.1). It reports
+	// false when there is no confirmed factor or step is not after the last accepted one: the
+	// code was used already (I-19), and the caller treats it as wrong.
+	AcceptTOTPStep(ctx context.Context, accountID uuid.UUID, step int64) (bool, error)
+	// ReplaceTOTP replaces the confirmed factor's secret, confirmed now with step accepted
+	// (TDD-03 §5.2). It reports false when there is no confirmed factor or step is not after the
+	// last accepted one, so no step is accepted twice across the replacement (I-19).
+	ReplaceTOTP(ctx context.Context, accountID uuid.UUID, secret []byte, step int64) (bool, error)
+	// DeleteTOTP deletes the account's factor, if any.
+	DeleteTOTP(ctx context.Context, accountID uuid.UUID) error
 }
