@@ -44,7 +44,7 @@ The columns behind this (`state`, `pending_secret`, `close_reason`, `attempts`) 
 
 | Kind | Generation | Stored |
 |---|---|---|
-| OTP | 6 digits *(cfg, ≥ 6)*, uniform from `crypto/rand` (rejection sampling, no modulo bias) | HMAC-SHA256 under the MAC key; encrypted copy while open |
+| OTP | 6 digits *(cfg, ≥ 6)*, uniform from `crypto/rand` (rejection sampling, no modulo bias) | `HMAC-SHA256(mac_key, "otp|" ‖ challenge_id ‖ "|" ‖ code)` (TDD-01 §3.3); encrypted copy while open |
 | Link token | 32 random bytes, base64url | SHA-256; encrypted copy while open |
 | Handle | 32 random bytes, base64url | SHA-256 only |
 

@@ -72,8 +72,8 @@ text, and the policy is validated at start-up against the registry.
 |---|---|
 | Algorithm | AES-256-GCM, 96-bit random nonce |
 | Format | `0x01` (format version) ‖ key id (2 bytes, big-endian) ‖ nonce (12) ‖ ciphertext ‖ tag (16) |
-| Associated data | `auth1|<table>|<column>|<row id>`. A ciphertext moved to another row or column fails to open |
-| Keyring | File `encryption.keyring_file`: a list of `{id, key (base64, 32 bytes), state: active|decrypt}`. Exactly one `active` |
+| Associated data | `auth1|<table>|<column>|<row id>`. The row id is the row's primary key: its uuid in canonical lower-case hyphenated form, or, for `refresh_tokens` (keyed by `token_hash`), the lower-case hex of `token_hash`. A ciphertext moved to another row or column fails to open |
+| Keyring | File `encryption.keyring_file`: a YAML list `keys:` of `{id (1…65535, unique), key (base64, 32 bytes), state: active|decrypt}`, as the signing keyring (TDD-04 §5.1). Exactly one `active` |
 | Rotation | 1) add the key as `decrypt` to every replica; 2) make it `active` (old one `decrypt`); 3) `auth1 crypto reencrypt` rewrites every field under the new key in batches; 4) remove the old key |
 | Encrypted columns | `accounts.display_name`, `identifiers.value`, `challenges.secret`, `challenges.target_value`, `flows.pending_secret`, `totp_factors.secret`, `refresh_tokens.successor_enc` |
 
@@ -90,10 +90,12 @@ text, and the policy is validated at start-up against the registry.
 
 | Value | Stored as | Key |
 |---|---|---|
-| OTP | HMAC-SHA256 | `encryption.mac_key_file` |
-| Recovery code | HMAC-SHA256 | `encryption.mac_key_file` (domain-separated: prefix `rcode|`) |
+| OTP | HMAC-SHA256 | `encryption.mac_key_file` (domain-separated: `"otp|" ‖ challenge_id ‖ "|" ‖ code`) |
+| Recovery code | HMAC-SHA256 | `encryption.mac_key_file` (domain-separated: `"rcode|" ‖ account_id ‖ "|" ‖ code`, TDD-03 §3.2) |
 | Link token, flow handle, refresh token | SHA-256 | None: 256 random bits need no key |
 | Password | Argon2id over a peppered HMAC (TDD-03) | `passwords.pepper_keyring_file` |
+
+Ids inside a MAC input are in canonical lower-case hyphenated form.
 
 ## 4. Schema `000001`
 
