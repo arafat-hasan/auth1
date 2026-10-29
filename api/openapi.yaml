@@ -1534,7 +1534,7 @@ components:
             required: [field, code]
             properties:
               field: { type: string }
-              code: { type: string }
+              code: { type: string, description: 'One of required, not_allowed, unknown, not_future (SDD §10)' }
 
     AccountStatus:
       type: string
