@@ -51,7 +51,7 @@ func checkConfig(cmd *cobra.Command, path string, environ []string) error {
 		return err
 	}
 	if len(problems) == 0 {
-		_, problems = loadCryptoKeys(cfg.Encryption, slog.New(slog.DiscardHandler))
+		_, problems = loadCryptoKeys(cfg, slog.New(slog.DiscardHandler))
 		problems = append(problems, keyringProblems(cfg)...)
 	}
 	out := cmd.OutOrStdout()
