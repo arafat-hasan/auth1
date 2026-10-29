@@ -42,10 +42,8 @@ func ID(n int) uuid.UUID {
 		panic("fakes: ID(n) needs n >= 1")
 	}
 	var id uuid.UUID
-	ms := uint64(idBase) + uint64(n)
-	for i := range 6 {
-		id[i] = byte(ms >> (40 - 8*i))
-	}
+	// unix_ts_ms shifted by 16 bits fills bytes 0–5 and leaves bytes 6 and 7 zero.
+	binary.BigEndian.PutUint64(id[:8], (uint64(idBase)+uint64(n))<<16)
 	id[6] = 0x70 // version 7; rand_a is 0
 	binary.BigEndian.PutUint64(id[8:], uint64(n))
 	id[8] = id[8]&0x3f | 0x80 // variant 10
