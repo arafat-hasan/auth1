@@ -286,6 +286,9 @@ func TestNotPromotableNoPrevious(t *testing.T) {
 	if got := publishedKids(t, k); len(got) != 1 || got[0] != kidOf(t, r[0]) {
 		t.Errorf("published %v, want the new key", got)
 	}
+	if !strings.Contains(e.logs.String(), `"msg":"signing key not promotable"`) {
+		t.Errorf("no key_not_promotable log in %s", e.logs.String())
+	}
 
 	// The previous key is gone from the file: the same.
 	e.promotable(t, kidOf(t, r[0]))
