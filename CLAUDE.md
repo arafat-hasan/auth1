@@ -129,5 +129,17 @@ container of its own, without the roles, that the test can stop and start. A pac
 shared container when the tests end, because the testcontainers reaper (Ryuk) cannot be relied on:
 on a host whose `docker-proxy` does not pass on the client's disconnect, Ryuk never reaps.
 
+Crypto (TDD-01 §3, TDD-08 §4): the ports are `app.FieldCrypto` (`Seal` / `Open` at an
+`app.Place`, built with `app.NewPlace` or, for `refresh_tokens`, `app.NewKeyPlace`),
+`app.BlindIndex` and `app.MAC`; callers tell failures apart with `errors.Is` on `app.ErrPlaceInvalid`,
+`app.ErrCiphertextInvalid`, `app.ErrUnknownKey` and `app.ErrBlindIndexType`.
+`internal/adapters/crypto` implements them, with `crypto.SHA256` for tokens and handles. Keyrings
+are `ParseKeyring(data, otherState)` (a `keys:` list of `{id, key, state}`, one `active`; the
+field keyring's other state is `decrypt`); `WatchedKeyring` holds the field keyring behind an atomic
+pointer and its `Run` re-reads the file every 30 s, keeping the last good one when the file is bad.
+`Key` and `Keyring` redact themselves under `fmt` and `slog`; never take key bytes out of them
+for logging. `cmd/auth1/keys.go` loads the keyring and key files for `config check` and `serve`.
+The example's `fields/` and `mac/mac.key` are public development keys (`testdata/example/README.md`).
+
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
