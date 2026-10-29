@@ -33,9 +33,11 @@ type Options struct {
 type Hasher struct {
 	params  Params
 	peppers crypto.KeyringSource
+	dummy   phc // made at New with params under the then active pepper key
 }
 
-// New returns a Hasher. Parameters outside the bounds a stored hash may have (8 KiB per lane to
+// New returns a Hasher, after computing its dummy hash with the configured parameters, so it
+// takes one hash's time. Parameters outside the bounds a stored hash may have (8 KiB per lane to
 // 1 GiB, 1 to 16 iterations, 1 to 16 lanes), no slot, no wait or no keyring are refused.
 func New(o Options) (*Hasher, error) {
 	if err := o.Params.validate(); err != nil {
@@ -49,7 +51,12 @@ func New(o Options) (*Hasher, error) {
 	case o.Peppers == nil:
 		return nil, errors.New("argon2id: no pepper keyring")
 	}
-	return &Hasher{params: o.Params, peppers: o.Peppers}, nil
+	_, key := o.Peppers.Current().Active()
+	dummy, err := newDummy(key, o.Params)
+	if err != nil {
+		return nil, err
+	}
+	return &Hasher{params: o.Params, peppers: o.Peppers, dummy: dummy}, nil
 }
 
 // Hash implements app.PasswordHasher.
