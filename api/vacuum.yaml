@@ -1,0 +1,8 @@
+# vacuum ruleset for api/openapi.yaml (TDD-08 §10): the recommended rules, less the ones the
+# contract breaks on purpose. Errors fail CI; warnings are reported.
+extends: [[vacuum:oas, recommended]]
+rules:
+  # The wire format is snake_case, as in the OAuth and JOSE RFCs it follows.
+  camel-case-properties: off
+  # removeTotp takes the reauthentication body on DELETE (TDD-03).
+  no-request-body: off

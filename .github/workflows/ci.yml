@@ -18,7 +18,10 @@ jobs:
           go-version-file: go.mod
 
       - name: Tidy
-        run: go mod tidy -diff
+        run: go mod tidy -diff && go -C tools mod tidy -diff
+
+      - name: Generated code
+        run: make generate && git diff --exit-code && test -z "$(git status --porcelain)"
 
       - name: Build
         run: make build && ./bin/auth1 version
@@ -41,3 +44,14 @@ jobs:
 
       - name: Vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Contract lint
+        run: make spec-lint
+
+      - name: Breaking changes
+        continue-on-error: true # warn-only until v1.0.0 (TDD-08 §10)
+        run: make spec-diff

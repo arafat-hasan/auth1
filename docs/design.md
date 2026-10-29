@@ -4,11 +4,11 @@
 |---|---|
 | Document | Software Design Description (SDD). High level: *what* auth1 is and *why* it is built this way |
 | Status | Draft |
-| Version | 0.7 (design of auth1 1.0) |
-| Date | 2026-10-28 |
+| Version | 0.9 (design of auth1 1.0) |
+| Date | 2026-10-29 |
 | Owner | Arafat Hasan |
 | Detailed designs | [`docs/tdd/`](tdd/): TDD-01 … TDD-08 (§16) |
-| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.6 |
+| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.9 |
 | Depends on | PostgreSQL 18, Redis, an AMQP 0-9-1 broker, a workload-identity source (a service mesh, or client credentials), a message-delivery service or provider |
 
 auth1 is an identity service: accounts, credentials, second factors, identifier verification,
@@ -781,6 +781,7 @@ The full table is in TDD-07. The principles:
 | Retention *(cfg)* | Expired registrations and invitations: identifiers retired at expiry; rows purged 7 days later. Closed challenges and closed flows: 30 days. Revoked sessions and their refresh tokens: 90 days. Idempotency keys: 24 h. Published outbox rows: 7 days. Audit: kept, monthly partitions; IP and user agent cleared after 90 days. Deleted accounts: kept encrypted and released from uniqueness; erasure on request is an operator command (O-2) |
 | Backup and restore | The platform's point-in-time recovery (A-7). After any restore to an earlier point, the runbook revokes every session (`auth1 sessions revoke-all`), because the restored rows may bring back revoked sessions or used refresh tokens |
 | Jobs | Outbox relay; flow expiry; erasing grace successors; purges; clearing audit IPs; creating audit partitions; re-encryption on request |
+| Contract tooling | `api/openapi.yaml` stays OpenAPI 3.1. `oapi-codegen` v2 generates the types and the Chi server interface from it as it is; route metadata, with each operation's `x-auth1-scope`, is generated from the same document. CI fails on stale generated code and on contract lint errors (vacuum; the AsyncAPI CLI), and runs `oasdiff` against the last release tag, warn-only until `v1.0.0` |
 
 *Detail: TDD-08.*
 
@@ -1014,7 +1015,10 @@ The other flows are in TDD-02 and TDD-03.
 with a flow handle and its expiry.
 
 **Outside the table:** a request body over 64 KiB (TDD-07 §7) answers 413 with `VALIDATION_FAILED`,
-whatever the method; the contract lists 413 only on the operations that take a body. An unknown path or unsupported method answers 404 with `NOT_FOUND`. `Retry-After` and `retry_after`
+whatever the method; the contract lists 413 only on the operations that take a body. A parameter
+or body that does not bind to its schema (a malformed path id, a missing required header, JSON that
+does not decode) answers 422 `VALIDATION_FAILED` with a fixed detail and no `errors`, before any
+use case runs; the contract lists 422 on every operation that takes parameters or a body. An unknown path or unsupported method answers 404 with `NOT_FOUND`. `Retry-After` and `retry_after`
 are sent only when the error carries a wait; an unexpected failure answers `UNAVAILABLE` without
 them.
 
@@ -1213,7 +1217,6 @@ The build order is part of the implementation plan, written after the TDDs are a
 | O-3 | Final Argon2id parameters and replica sizing | Set from the load test (§15) on the target hardware | auth1 owner |
 | O-4 | OpenID Connect, third-party and cross-site clients | Authorization code + PKCE on the same sessions and keys; resource-scoped audiences | auth1 owner |
 | O-5 | WebAuthn / passkeys | A second-factor type beside TOTP after 1.0; later a first factor | auth1 owner |
-| O-6 | Contract tooling: the OpenAPI code generator's support for 3.1, and contract linting in CI | Decide with the first implementation step (TDD-08 §11). The contracts were aligned with 0.4 by hand and checked for references, scopes and example validity | auth1 owner |
 | O-7 | A cap on concurrent sessions per account | None in 1.0; revisit if a product asks | auth1 owner |
 | O-8 | Bot defence on registration and sign-in | A port with no adapter in 1.0; a product may plug a CAPTCHA or risk service later | auth1 owner |
 
@@ -1228,3 +1231,5 @@ The build order is part of the implementation plan, written after the TDDs are a
 | 0.5 | 2026-10-27 | The product-word rule (D-1, C-2) is a design rule kept by review; the CI guard and the *Guard* test level are removed |
 | 0.6 | 2026-10-27 | §10: a body over 64 KiB answers 413 `VALIDATION_FAILED`, an unknown route 404 `NOT_FOUND`; `Retry-After` only when the error carries a wait. `api/openapi.yaml` gains the `PayloadTooLarge` response on every operation with a body |
 | 0.7 | 2026-10-28 | D-19 retention: closed flows are deleted 30 days after they close, like closed challenges; before, nothing removed them |
+| 0.8 | 2026-10-29 | D-19 contract tooling: the contract stays OpenAPI 3.1, generated with `oapi-codegen` v2; lint and `oasdiff` in CI (closes O-6) |
+| 0.9 | 2026-10-29 | §10: a parameter or body that does not bind answers 422 `VALIDATION_FAILED` without `errors`. `api/openapi.yaml` gains the `Unprocessable` response on every operation that takes parameters or a body |

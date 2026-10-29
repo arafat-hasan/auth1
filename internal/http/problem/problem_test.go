@@ -220,3 +220,86 @@ func TestUnknownDomainCode(t *testing.T) {
 		t.Errorf("not logged: %s", logs.String())
 	}
 }
+
+// TestWriteNotImplemented checks the 501 of an operation with no handler yet: a problem with no
+// code, because the SDD §10 catalogue has none for it.
+func TestWriteNotImplemented(t *testing.T) {
+	t.Parallel()
+
+	pw := New(slog.New(slog.DiscardHandler))
+	rec := httptest.NewRecorder()
+	pw.WriteNotImplemented(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rec.Code != http.StatusNotImplemented {
+		t.Errorf("status %d, want 501", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != ContentType {
+		t.Errorf("Content-Type %q, want %q", got, ContentType)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not JSON: %v: %s", err, rec.Body)
+	}
+	want := map[string]any{"type": "about:blank", "title": "Not Implemented", "status": float64(501)}
+	if diff := cmp.Diff(want, body); diff != "" {
+		t.Errorf("body (-want +got):\n%s", diff)
+	}
+}
+
+// TestWriteBindError checks a request the generated code cannot bind: 422 VALIDATION_FAILED with
+// a fixed detail and the cause logged at debug level, or 413 when the body went past the limit.
+func TestWriteBindError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantDetail string
+		wantLog    bool
+	}{
+		{name: "binding error", err: errors.New("invalid format for parameter sessionId: secret-input"),
+			wantStatus: http.StatusUnprocessableEntity, wantDetail: "The request does not match the API contract.", wantLog: true},
+		{name: "body over the limit", err: fmt.Errorf("can't decode JSON body: %w", &http.MaxBytesError{Limit: 65536}),
+			wantStatus: http.StatusRequestEntityTooLarge, wantDetail: "The request body exceeds 65536 bytes."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs bytes.Buffer
+			pw := New(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			h := requestid.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				pw.WriteBindError(w, r, tt.err)
+			}))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/x", nil))
+
+			var body map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not JSON: %v: %s", err, rec.Body)
+			}
+			if rec.Code != tt.wantStatus || body["code"] != "VALIDATION_FAILED" || body["detail"] != tt.wantDetail {
+				t.Errorf("got %d %v %q, want %d VALIDATION_FAILED %q", rec.Code, body["code"], body["detail"], tt.wantStatus, tt.wantDetail)
+			}
+			if strings.Contains(rec.Body.String(), "secret-input") {
+				t.Error("the binding error reached the response")
+			}
+			if !tt.wantLog {
+				if logs.Len() != 0 {
+					t.Errorf("logged: %s", logs.String())
+				}
+				return
+			}
+			var line map[string]any
+			if err := json.Unmarshal(logs.Bytes(), &line); err != nil {
+				t.Fatalf("log is not one JSON line: %v: %s", err, logs.String())
+			}
+			if line["level"] != "DEBUG" || line["error"] != tt.err.Error() {
+				t.Errorf("log line %v", line)
+			}
+			if line["request_id"] != rec.Header().Get(requestid.Header) || line["request_id"] == "" {
+				t.Errorf("log request_id %v, response %q", line["request_id"], rec.Header().Get(requestid.Header))
+			}
+		})
+	}
+}

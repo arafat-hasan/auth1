@@ -1,0 +1,10 @@
+# oapi-codegen configuration for api/openapi.yaml (TDD-08 §11).
+package: gen
+output: server_gen.go
+generate:
+  models: true
+  chi-server: true
+  strict-server: true
+output-options:
+  # Pruning does not follow references from webhooks and would drop their body schemas.
+  skip-prune: true
