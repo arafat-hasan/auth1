@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
 	"github.com/arafat-hasan/auth1/internal/http/health"
@@ -95,6 +96,11 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	slog.SetDefault(logger)
 	otel.SetTextMapPropagator(tel.Propagator())
 
+	keys, problems := loadCryptoKeys(cfg.Encryption, logger)
+	if len(problems) > 0 {
+		return printProblems(cmd.ErrOrStderr(), problems)
+	}
+
 	// The pools connect on first use, so serve starts while PostgreSQL is down; /readyz reports it
 	// through a probe pool of its own, so busy request connections do not fail readiness. They
 	// close after the servers have shut down (deferred after telemetry, so they close first).
@@ -144,7 +150,13 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		RequestDuration: duration,
 		Health:          checks,
 	})
-	return server.Run(ctx, logger, []server.Listener{
+
+	// The keyring poller runs until the servers have stopped. It returns only when its context
+	// ends, so it never stops the servers.
+	pollCtx, stopPolling := context.WithCancel(ctx)
+	g, gctx := errgroup.WithContext(pollCtx)
+	g.Go(func() error { return keys.fields.Run(gctx) })
+	err = server.Run(ctx, logger, []server.Listener{
 		{Name: "http", Listener: listeners[0], Handler: router},
 		{Name: "metrics", Listener: listeners[1], Handler: tel.MetricsHandler()},
 	}, server.Shutdown{
@@ -152,6 +164,8 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		DrainDelay: deps.drainDelay,
 		Timeout:    deps.shutdownTimeout,
 	})
+	stopPolling()
+	return errors.Join(err, g.Wait())
 }
 
 // bind opens the API and metrics listeners. If one fails, it closes those already open.

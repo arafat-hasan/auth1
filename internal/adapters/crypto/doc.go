@@ -1,3 +1,7 @@
-// Package crypto implements field encryption, blind indexes, MACs and the Argon2id password
-// hasher (TDD-01 §3, TDD-03 §1).
+// Package crypto implements field encryption, blind indexes, MACs and the SHA-256 helper
+// (TDD-01 §3), with the keys and keyrings they use (TDD-08 §4), and the Argon2id password hasher
+// (TDD-03 §1).
+//
+// Keys and keyrings never show key bytes when formatted or logged, and no error names a key,
+// a plaintext or a row (G-6).
 package crypto
