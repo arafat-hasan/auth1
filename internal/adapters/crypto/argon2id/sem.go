@@ -11,8 +11,8 @@ import (
 // run waits for a hashing slot, then computes Argon2id for password with params, salt and key
 // (SDD D-7, TDD-03 §1.4 step 1). With every slot taken for QueueTimeout it returns
 // app.ErrOverloaded, counted in auth1_hash_rejected_total; if ctx ends first, ctx's error. The
-// wait is recorded in auth1_hash_queue_seconds either way, and the computation alone in
-// auth1_hash_duration_seconds.
+// wait is recorded in auth1_hash_queue_seconds when a slot is taken or the wait times out, not
+// when ctx ends it; the computation alone is recorded in auth1_hash_duration_seconds.
 func (h *Hasher) run(ctx context.Context, key crypto.Key, params Params, salt, password []byte) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
