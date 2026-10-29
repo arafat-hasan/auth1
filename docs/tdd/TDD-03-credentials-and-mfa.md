@@ -39,6 +39,10 @@ The pepper keyring (`passwords.pepper_keyring_file`) has the same shape as the f
 | `max_concurrent` (per replica) | 4 | 1 |
 | `queue_timeout` | 2 s | — |
 
+A stored hash's parameters are bounded too: memory at most 1 GiB, iterations and parallelism at
+most 16. A PHC string beyond them is refused as invalid before anything is allocated, so a corrupt
+row cannot exhaust memory, and the configuration may not exceed them (TDD-08 §3.1).
+
 The final values come from the load test (SDD O-3). Target: 100–250 ms per hash on the production
 CPU, with `max_concurrent × memory` within the pod's memory limit plus headroom.
 
@@ -242,6 +246,8 @@ Answer `204`. The next sign-in on a `required` client leads to enrolment; on an 
 | Password | Recovery code | `["pwd","rcode","mfa"]` |
 | SMS code | TOTP | `["sms","otp","mfa"]` |
 | Email code | TOTP | `["email","otp","mfa"]` |
+| SMS code | Recovery code | `["sms","rcode","mfa"]` |
+| Email code | Recovery code | `["email","rcode","mfa"]` |
 | Any | Enrolment confirmation | As with TOTP |
 
 The session keeps its `amr` and `auth_time`; every token issued from it repeats them.

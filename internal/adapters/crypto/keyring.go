@@ -19,6 +19,7 @@ import (
 const (
 	StateActive  = "active"
 	StateDecrypt = "decrypt" // the field keyring's other state (TDD-01 §3.1)
+	StateVerify  = "verify"  // the pepper keyring's other state (TDD-03 §1.1)
 )
 
 // Keyring is an immutable set of keys with ids, exactly one of them active (TDD-01 §3.1,

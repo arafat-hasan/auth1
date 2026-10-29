@@ -4,7 +4,7 @@
 |---|---|
 | Document | Software Design Description (SDD). High level: *what* auth1 is and *why* it is built this way |
 | Status | Draft |
-| Version | 0.11 (design of auth1 1.0) |
+| Version | 0.12 (design of auth1 1.0) |
 | Date | 2026-10-29 |
 | Owner | Arafat Hasan |
 | Detailed designs | [`docs/tdd/`](tdd/): TDD-01 … TDD-08 (§16) |
@@ -343,7 +343,7 @@ flow's handle or link token, which are separate 256-bit random values.
 ### D-4. Flows and challenges
 
 Every multi-step interaction is a **flow**, stored in PostgreSQL. Kinds: `registration`,
-`invitation`, `sign_in`, `password_reset`, `email_change`, `phone_change`. A flow has a kind, an
+`invitation`, `sign_in`, `password_reset`, `email_change`, `phone_change`, `totp_replacement`. A flow has a kind, an
 account, a client, a handle, non-secret state (for example the first factor already passed) and an
 expiry.
 
@@ -1239,3 +1239,4 @@ The build order is part of the implementation plan, written after the TDDs are a
 | 0.9 | 2026-10-29 | §10: a parameter or body that does not bind answers 422 `VALIDATION_FAILED` without `errors`. `api/openapi.yaml` gains the `Unprocessable` response on every operation that takes parameters or a body |
 | 0.10 | 2026-10-29 | §8.1: `banned → banned` changes the reason, like `suspended → suspended`; before, it was a no-op and a repeated ban kept the old reason |
 | 0.11 | 2026-10-29 | §10: the codes of a `VALIDATION_FAILED` field error (`required`, `not_allowed`, `unknown`, `not_future`); before, the code was free text |
+| 0.12 | 2026-10-29 | D-4 lists the `totp_replacement` flow kind, which TDD-02 §2.1 and the schema already have |
