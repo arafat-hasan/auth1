@@ -170,8 +170,7 @@ func (r *Accounts) ApplyStatus(ctx context.Context, id uuid.UUID, d account.Deci
 	if !d.Changed {
 		return nil
 	}
-	effects := d.Effects.EraseCredentials || d.Effects.ReleaseIdentifiers
-	if effects && !inTx(ctx) {
+	if !inTx(ctx) {
 		return fmt.Errorf("apply account status: %w", ErrNoTransaction)
 	}
 	res, err := Conn(ctx, r.db).ExecContext(ctx, `

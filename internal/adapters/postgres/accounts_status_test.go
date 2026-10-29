@@ -105,7 +105,9 @@ func TestApplyStatusNoop(t *testing.T) {
 	if !got.StatusChangedAt.Equal(before.StatusChangedAt) {
 		t.Errorf("status_changed_at moved on a no-op")
 	}
-	err = e.repo.ApplyStatus(t.Context(), e.ids.New(), account.Decision{Changed: true, Status: account.StatusActive})
+	err = e.uow.Do(t.Context(), func(ctx context.Context) error {
+		return e.repo.ApplyStatus(ctx, e.ids.New(), account.Decision{Changed: true, Status: account.StatusActive})
+	})
 	checkCode(t, err, domain.CodeNotFound)
 }
 
@@ -144,18 +146,26 @@ func TestApplyStatusDeleteErases(t *testing.T) {
 	}
 }
 
-// TestApplyStatusEffectsOutsideTransaction checks that a Decision with effects, which writes
-// several tables, is refused outside UnitOfWork.Do.
-func TestApplyStatusEffectsOutsideTransaction(t *testing.T) {
+// TestApplyStatusOutsideTransaction checks that a change is refused outside UnitOfWork.Do: it
+// was decided from the status read under the account's lock, which only a transaction holds.
+func TestApplyStatusOutsideTransaction(t *testing.T) {
 	t.Parallel()
 	e := accountsDB(t)
 	na := e.activeAccount(t, "")
-	d, err := account.Transition(account.StatusActive, account.Change{To: account.StatusDeleted}, reasons, time.Now())
-	if err != nil {
-		t.Fatal(err)
+	for _, change := range []account.Change{
+		{To: account.StatusSuspended, ReasonCode: "abuse"}, // no effects
+		{To: account.StatusDeleted},                        // effects
+	} {
+		d, err := account.Transition(account.StatusActive, change, reasons, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.repo.ApplyStatus(t.Context(), na.ID, d); !errors.Is(err, postgres.ErrNoTransaction) {
+			t.Errorf("ApplyStatus to %s outside Do: %v", change.To, err)
+		}
 	}
-	if err := e.repo.ApplyStatus(t.Context(), na.ID, d); !errors.Is(err, postgres.ErrNoTransaction) {
-		t.Errorf("ApplyStatus with effects outside Do: %v", err)
+	if got, err := e.repo.Get(t.Context(), na.ID); err != nil || got.Status != account.StatusActive {
+		t.Errorf("status = %s, %v; want active", got.Status, err)
 	}
 }
 

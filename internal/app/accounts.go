@@ -33,7 +33,8 @@ type Accounts interface {
 	// ApplyStatus stores the status change d decided by account.Transition; NOT_FOUND when there
 	// is no account. An unchanged d writes nothing. Of d's effects it applies those inside the
 	// aggregate, EraseCredentials and ReleaseIdentifiers; the caller applies RevokeSessions and
-	// CancelFlows through their repositories. With effects, it runs inside UnitOfWork.Do.
+	// CancelFlows through their repositories. A change runs inside UnitOfWork.Do, under the lock
+	// GetForUpdate took to read the status it was decided from.
 	ApplyStatus(ctx context.Context, id uuid.UUID, d account.Decision) error
 
 	// Identifiers returns the account's current identifiers, decrypted, sorted by type: at most
