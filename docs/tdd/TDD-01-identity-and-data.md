@@ -14,7 +14,7 @@ rules.
 
 ## 1. Record ids
 
-- **UUIDv7** (RFC 9562) for every id column, generated in Go through an `IdGenerator` port. The default adapter uses `github.com/google/uuid` (`uuid.NewV7()`), which is monotonic within a millisecond in one process.
+- **UUIDv7** (RFC 9562) for every id column, generated in Go through an `IDGenerator` port. The default adapter (`internal/adapters/system`) uses `github.com/google/uuid` (`uuid.NewV7()`), which is monotonic within a millisecond in one process.
 - Tests inject a deterministic generator.
 - Columns are `uuid`. No `DEFAULT` in the schema *(guideline: a `DEFAULT uuidv7()` from PostgreSQL 18 may be added as a safety net, but the application always supplies the id)*.
 - **No id is a capability** (SDD I-20). Handlers never authorise on possession of an id alone.

@@ -45,6 +45,7 @@ internal/
     delivery/              notification, direct, capture
     crypto/                field crypto, blind index, MACs, Argon2id hasher
     keyring/               signing keyring, JWKS
+    system/                clock (UTC), UUIDv7 ids
   http/
     gen/                   generated server and types
     handlers/              thin: decode → use case → encode
