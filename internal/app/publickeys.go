@@ -6,7 +6,7 @@ import "crypto"
 type PublicKey struct {
 	Kid string           // RFC 7638 thumbprint
 	Alg string           // RS256 or ES256; the only algorithm a token with this kid may use
-	Key crypto.PublicKey // *rsa.PublicKey or *ecdsa.PublicKey
+	Key crypto.PublicKey // *rsa.PublicKey or *ecdsa.PublicKey; shared with the keyring, never modified
 }
 
 // PublicKeys is the published key set: the JWKS, and the keys a token may be verified with.

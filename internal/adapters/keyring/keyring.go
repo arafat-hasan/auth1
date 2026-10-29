@@ -148,7 +148,8 @@ func (k *Keyring) sync(ctx context.Context) error {
 	return nil
 }
 
-// decide runs the three steps and the JWKS window against the store.
+// decide runs the three steps and the JWKS window against the store. The signing key is always
+// published.
 func (k *Keyring) decide(ctx context.Context, f *File) (*state, error) {
 	recs := make([]app.SigningKeyRecord, len(f.Keys))
 	for i, key := range f.Keys {
@@ -178,6 +179,10 @@ func (k *Keyring) decide(ctx context.Context, f *File) (*state, error) {
 			return nil, err
 		}
 		if i := slices.IndexFunc(f.Keys, func(key Key) bool { return key.Kid == prev }); i >= 0 {
+			// It signs, so its retirement window starts only once it stops.
+			if err := k.store.KeepSigning(ctx, prev); err != nil {
+				return nil, err
+			}
 			signer = &f.Keys[i]
 		}
 		k.o.Logger.ErrorContext(ctx, "signing key not promotable",
@@ -204,7 +209,8 @@ func (k *Keyring) decide(ctx context.Context, f *File) (*state, error) {
 
 	s := &state{signer: signer, byKid: map[string]app.PublicKey{}}
 	for _, key := range f.Keys {
-		if key.State == StateRetired && !slices.Contains(inWindow, key.Kid) {
+		signs := signer != nil && key.Kid == signer.Kid
+		if key.State == StateRetired && !signs && !slices.Contains(inWindow, key.Kid) {
 			continue
 		}
 		pk := app.PublicKey{Kid: key.Kid, Alg: key.Alg, Key: key.Public}

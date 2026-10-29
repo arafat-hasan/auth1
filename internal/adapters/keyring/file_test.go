@@ -132,6 +132,8 @@ func TestLoadRefuses(t *testing.T) {
 			want: ": keys[1]: private_key_file: cannot parse the PRIVATE KEY"},
 		{name: "unknown field", yaml: "keys:\n  - alg: RS256\n    state: active\n    privat_key_file: k.pem\n",
 			want: "field privat_key_file not found"},
+		{name: "two YAML documents", yaml: "keys: []\n---\nkeys:\n  - alg: RS256\n    state: active\n    private_key_file: k.pem\n",
+			want: ": more than one YAML document"},
 		{name: "no private_key_file", yaml: "keys:\n  - alg: RS256\n    state: active\n",
 			want: ": keys[0]: private_key_file is required"},
 	}

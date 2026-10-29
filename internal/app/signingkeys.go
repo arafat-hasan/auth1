@@ -19,10 +19,13 @@ type SigningKeyStore interface {
 	// time (step 1).
 	Publish(ctx context.Context, keys []SigningKeyRecord) error
 	// Activate reports whether kid was first published at least minPublish ago. When it was, kid
-	// may sign: its activated_at is set if it is null and its retired_at is cleared (step 2).
+	// may sign: its activated_at is set to now and its retired_at is cleared (step 2).
 	Activate(ctx context.Context, kid string, minPublish time.Duration) (bool, error)
+	// KeepSigning records that kid, the previously active key, still signs while the active key
+	// waits: its activated_at is set to now and its retired_at is cleared (step 2).
+	KeepSigning(ctx context.Context, kid string) error
 	// LatestActivated returns the key among kids with the latest activated_at, or "" when none of
-	// them has signed: the previously active key of step 2.
+	// them has signed: the key that signed last, the previously active key of step 2.
 	LatestActivated(ctx context.Context, kids []string) (string, error)
 	// Retire sets retired_at, now, for each of kids that has none (step 3).
 	Retire(ctx context.Context, kids []string) error

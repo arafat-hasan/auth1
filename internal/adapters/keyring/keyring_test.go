@@ -297,6 +297,82 @@ func TestNotPromotableNoPrevious(t *testing.T) {
 	}
 }
 
+// TestFallbackAfterRollback: K1 signs, then K2, then K1 again (a rollback); a new key set active
+// without the wait falls back to K1, the key that signed last, and K1 stays published while it
+// signs although K2's earlier retirement has left its window.
+func TestFallbackAfterRollback(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	r := rsaKeys()
+	k1, k2, k3 := kidOf(t, r[0]), kidOf(t, r[1]), kidOf(t, r[2])
+	window := (accessTTL + retiredGrace).Seconds()
+	e.write(t, []spec{{alg: AlgRS256, state: StateActive, key: r[0]}})
+	k := e.replica(t)
+	e.promotable(t, k1)
+	reload(t, k)
+
+	e.write(t, []spec{{alg: AlgRS256, state: StateRetired, key: r[0]}, {alg: AlgRS256, state: StateActive, key: r[1]}})
+	reload(t, k)
+	e.promotable(t, k2)
+	reload(t, k)
+	if got := signedKid(t, k); got != k2 {
+		t.Fatalf("after the rotation: signed with %s, want K2", got)
+	}
+
+	e.write(t, []spec{{alg: AlgRS256, state: StateActive, key: r[0]}, {alg: AlgRS256, state: StateRetired, key: r[1]}})
+	reload(t, k)
+	if got := signedKid(t, k); got != k1 {
+		t.Fatalf("after the rollback: signed with %s, want K1", got)
+	}
+	e.exec(t, "UPDATE signing_keys SET retired_at = now() - make_interval(secs => ?) WHERE kid = ?", window+60, k2)
+
+	e.write(t, []spec{
+		{alg: AlgRS256, state: StateRetired, key: r[0]},
+		{alg: AlgRS256, state: StateRetired, key: r[1]},
+		{alg: AlgRS256, state: StateActive, key: r[2]},
+	})
+	reload(t, k)
+	if got := signedKid(t, k); got != k1 {
+		t.Errorf("new key not promotable: signed with %s, want K1, the key that signed last", got)
+	}
+	if got := publishedKids(t, k); len(got) != 2 || got[0] != k1 || got[1] != k3 {
+		t.Errorf("published %v, want [K1 K3]", got)
+	}
+}
+
+// TestFallbackSignerPublished: the previous key keeps signing although it was retired long
+// enough ago to have left the JWKS; it is published again, and its window starts only once it
+// stops signing.
+func TestFallbackSignerPublished(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	r := rsaKeys()
+	k1, k3 := kidOf(t, r[0]), kidOf(t, r[2])
+	e.write(t, []spec{{alg: AlgRS256, state: StateActive, key: r[0]}})
+	k := e.replica(t)
+	e.promotable(t, k1)
+	reload(t, k)
+	e.exec(t, "UPDATE signing_keys SET retired_at = now() - interval '1 day' WHERE kid = ?", k1)
+
+	e.write(t, []spec{{alg: AlgRS256, state: StateRetired, key: r[0]}, {alg: AlgRS256, state: StateActive, key: r[2]}})
+	reload(t, k)
+	if got := signedKid(t, k); got != k1 {
+		t.Fatalf("signed with %s, want K1", got)
+	}
+	if _, ok := e.retiredAt(t, k1); ok {
+		t.Error("K1 has retired_at while it still signs")
+	}
+
+	e.promotable(t, k3)
+	reload(t, k)
+	if got := signedKid(t, k); got != k3 {
+		t.Errorf("K3 promotable: signed with %s, want K3", got)
+	}
+	if _, ok := k.Key(k1); !ok {
+		t.Error("K1 left the JWKS as soon as it stopped signing, want its full window")
+	}
+}
+
 // TestRetiredLeavesJWKS: a retired key stays published until access TTL + 5 min after its
 // retirement, and not after.
 func TestRetiredLeavesJWKS(t *testing.T) {

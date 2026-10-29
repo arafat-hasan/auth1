@@ -138,8 +138,8 @@ func Load(path string) (*File, error) {
 	return src.parse()
 }
 
-// read reads the keyring file, strictly (an unknown field is an error), and each PEM file. A
-// relative private_key_file is relative to the keyring file's directory.
+// read reads the keyring file, strictly (an unknown field or a second YAML document is an error),
+// and each PEM file. A relative private_key_file is relative to the keyring file's directory.
 func read(path string) (*source, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // the configured keyring file
 	if err != nil {
@@ -152,6 +152,9 @@ func read(path string) (*source, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("signing keyring %s: %w", path, err)
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("signing keyring %s: more than one YAML document", path)
 	}
 	h := sha256.New()
 	writeChunk(h, raw)

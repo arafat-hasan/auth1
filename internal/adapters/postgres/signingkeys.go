@@ -52,7 +52,7 @@ func (s *SigningKeys) Publish(ctx context.Context, keys []app.SigningKeyRecord) 
 func (s *SigningKeys) Activate(ctx context.Context, kid string, minPublish time.Duration) (bool, error) {
 	var got string
 	err := Conn(ctx, s.db).QueryRowContext(ctx, `
-		UPDATE signing_keys SET activated_at = coalesce(activated_at, now()), retired_at = NULL
+		UPDATE signing_keys SET activated_at = now(), retired_at = NULL
 		WHERE kid = ? AND first_published_at <= now() - make_interval(secs => ?)
 		RETURNING kid`, kid, seconds(minPublish)).Scan(&got)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -62,6 +62,16 @@ func (s *SigningKeys) Activate(ctx context.Context, kid string, minPublish time.
 		return false, fmt.Errorf("activate signing key: %w", err)
 	}
 	return true, nil
+}
+
+// KeepSigning implements app.SigningKeyStore.
+func (s *SigningKeys) KeepSigning(ctx context.Context, kid string) error {
+	_, err := Conn(ctx, s.db).ExecContext(ctx,
+		"UPDATE signing_keys SET activated_at = now(), retired_at = NULL WHERE kid = ?", kid)
+	if err != nil {
+		return fmt.Errorf("keep the previous signing key: %w", err)
+	}
+	return nil
 }
 
 // LatestActivated implements app.SigningKeyStore.

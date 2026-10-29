@@ -119,7 +119,7 @@ func TestActivateUsesDatabaseClock(t *testing.T) {
 	}
 }
 
-func TestActivateKeepsFirstActivation(t *testing.T) {
+func TestActivateRefreshesActivation(t *testing.T) {
 	t.Parallel()
 	store, su := signingKeysDB(t)
 	ctx := t.Context()
@@ -128,16 +128,40 @@ func TestActivateKeepsFirstActivation(t *testing.T) {
 	}
 	exec(t, su, `UPDATE signing_keys SET first_published_at = now() - interval '2 hours',
 		activated_at = now() - interval '1 hour', retired_at = now() - interval '30 min'`)
-	first := row(t, su, "k1").activated.Time
+	before := row(t, su, "k1").activated.Time
 	if ok, err := store.Activate(ctx, "k1", time.Minute); err != nil || !ok {
 		t.Fatalf("Activate = %v, %v", ok, err)
 	}
 	r := row(t, su, "k1")
-	if !r.activated.Time.Equal(first) {
-		t.Errorf("activated_at = %v, want the first activation %v", r.activated.Time, first)
+	if !r.activated.Time.After(before.Add(59 * time.Minute)) {
+		t.Errorf("activated_at = %v, want now, not the earlier %v", r.activated.Time, before)
 	}
 	if r.retired.Valid {
 		t.Errorf("retired_at = %v, want it cleared for a key that signs again", r.retired.Time)
+	}
+}
+
+func TestKeepSigning(t *testing.T) {
+	t.Parallel()
+	store, su := signingKeysDB(t)
+	ctx := t.Context()
+	if err := store.Publish(ctx, []app.SigningKeyRecord{{Kid: "k1", Alg: "RS256"}, {Kid: "k2", Alg: "RS256"}}); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, su, `UPDATE signing_keys SET activated_at = now() - interval '1 day', retired_at = now() - interval '1 hour'`)
+	before := row(t, su, "k1").activated.Time
+	if err := store.KeepSigning(ctx, "k1"); err != nil {
+		t.Fatal(err)
+	}
+	r := row(t, su, "k1")
+	if !r.activated.Time.After(before.Add(23 * time.Hour)) {
+		t.Errorf("activated_at = %v, want now", r.activated.Time)
+	}
+	if r.retired.Valid {
+		t.Errorf("retired_at = %v, want it cleared for a key that still signs", r.retired.Time)
+	}
+	if r2 := row(t, su, "k2"); !r2.retired.Valid || !r2.activated.Time.Equal(before) {
+		t.Error("k2 changed, want only the key named")
 	}
 }
 
