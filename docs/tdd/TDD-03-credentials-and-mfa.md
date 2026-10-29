@@ -242,6 +242,8 @@ Answer `204`. The next sign-in on a `required` client leads to enrolment; on an 
 | Password | Recovery code | `["pwd","rcode","mfa"]` |
 | SMS code | TOTP | `["sms","otp","mfa"]` |
 | Email code | TOTP | `["email","otp","mfa"]` |
+| SMS code | Recovery code | `["sms","rcode","mfa"]` |
+| Email code | Recovery code | `["email","rcode","mfa"]` |
 | Any | Enrolment confirmation | As with TOTP |
 
 The session keeps its `amr` and `auth_time`; every token issued from it repeats them.
