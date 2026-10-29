@@ -189,7 +189,9 @@ func TestEnd(t *testing.T) {
 		{"exhausted", exhausted, t0, EndExhausted},
 		{"exhausted but not yet closed", Challenge{Attempts: 3, MaxAttempts: 3, ExpiresAt: expires}, t0, EndExhausted},
 		{"expired", expired, expires.Add(time.Minute), EndExpired},
-		{"closed early", closedEarly, t0.Add(2 * time.Minute), EndExpired},
+		{"closed early", closedEarly, t0.Add(2 * time.Minute), EndClosed},
+		{"closed early, read after expires_at", closedEarly, expires.Add(time.Hour), EndClosed},
+		{"closed by the expiry job at expires_at", expired, expires, EndExpired},
 	}
 	for _, tt := range tests {
 		if got := tt.c.End(tt.now); got != tt.want {

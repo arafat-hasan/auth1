@@ -22,7 +22,7 @@ const (
 	NewChallenge ResendOutcome = "new_challenge" // open a new challenge with a new secret
 	TooSoon      ResendOutcome = "too_soon"      // RESEND_TOO_SOON until resend_after has passed
 	Cooldown     ResendOutcome = "cooldown"      // RESEND_TOO_SOON until the cooldown ends
-	Used         ResendOutcome = "used"          // the challenge was consumed: CHALLENGE_CLOSED
+	Refused      ResendOutcome = "refused"       // consumed, or closed with its flow: CHALLENGE_CLOSED
 )
 
 // Resend is the decision on a resend request.
@@ -34,7 +34,8 @@ type Resend struct {
 // DecideResend decides a resend of c at now (TDD-02 §2.4). An open challenge is reused, unless it
 // was sent less than ResendAfter ago. An expired one is replaced by a new challenge; the caller
 // closes it first if it is still open. An exhausted one is refused until Cooldown has passed since
-// it closed (from now, if the caller has not closed it yet), then replaced. A consumed one is refused.
+// it closed (from now, if the caller has not closed it yet), then replaced. A consumed one, or one
+// closed with its flow, is refused.
 func DecideResend(c Challenge, now time.Time, r ResendRules) Resend {
 	switch c.End(now) {
 	case EndOpen:
@@ -53,8 +54,8 @@ func DecideResend(c Challenge, now time.Time, r ResendRules) Resend {
 			return Resend{Outcome: Cooldown, RetryAfter: ceilSecond(wait)}
 		}
 		return Resend{Outcome: NewChallenge}
-	case EndConsumed:
-		return Resend{Outcome: Used}
+	case EndConsumed, EndClosed:
+		return Resend{Outcome: Refused}
 	default:
 		return Resend{Outcome: NewChallenge}
 	}
@@ -66,12 +67,12 @@ func ceilSecond(d time.Duration) time.Duration {
 }
 
 // Err returns the error to answer: nil for Reuse and NewChallenge, RESEND_TOO_SOON with
-// RetryAfter for TooSoon and Cooldown, and CHALLENGE_CLOSED for Used.
+// RetryAfter for TooSoon and Cooldown, and CHALLENGE_CLOSED for Refused.
 func (r Resend) Err() error {
 	switch r.Outcome {
 	case Reuse, NewChallenge:
 		return nil
-	case Used:
+	case Refused:
 		return challengeClosed()
 	default:
 		return &domain.Error{Code: domain.CodeResendTooSoon, Detail: "wait before asking for another code", RetryAfter: r.RetryAfter}

@@ -11,7 +11,6 @@ import (
 type Challenge struct {
 	Attempts    int
 	MaxAttempts int
-	Sends       int
 	LastSentAt  *time.Time
 	ExpiresAt   time.Time
 	ClosedAt    *time.Time
@@ -27,7 +26,8 @@ const (
 	EndOpen      End = "open"      // open and before expires_at
 	EndConsumed  End = "consumed"  // used: consumed_at is set
 	EndExhausted End = "exhausted" // unconsumed with attempts at max_attempts
-	EndExpired   End = "expired"   // any other closed one, or open at or past expires_at
+	EndExpired   End = "expired"   // open at or past expires_at, or closed then (by the expiry job)
+	EndClosed    End = "closed"    // closed before expires_at unused: its flow closed (TDD-02 §2.1)
 )
 
 // End returns how c stands at now. An open challenge expires at expires_at itself, as the flow
@@ -38,6 +38,8 @@ func (c Challenge) End(now time.Time) End {
 		return EndConsumed
 	case c.Attempts >= c.MaxAttempts:
 		return EndExhausted // closed, or about to be: Verify refuses it either way
+	case c.ClosedAt != nil && c.ClosedAt.Before(c.ExpiresAt):
+		return EndClosed
 	case c.ClosedAt != nil || !now.Before(c.ExpiresAt):
 		return EndExpired
 	default:
