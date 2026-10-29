@@ -52,7 +52,8 @@ type Accounts interface {
 	AddIdentifier(ctx context.Context, accountID uuid.UUID, id account.NewIdentifier) error
 	// VerifyIdentifier marks the current, unverified identifier id verified now; NOT_FOUND when
 	// there is no such identifier, and IDENTIFIER_TAKEN when another account holds its value
-	// verified (I-1, T-1).
+	// verified (I-1, T-1). After IDENTIFIER_TAKEN, here or from AddIdentifier, the transaction
+	// stays usable, so the use case can still consume the challenge (TDD-02 §3).
 	VerifyIdentifier(ctx context.Context, id uuid.UUID) error
 	// RetireIdentifier retires the current identifier id now, releasing its value; NOT_FOUND
 	// when there is no current identifier id.

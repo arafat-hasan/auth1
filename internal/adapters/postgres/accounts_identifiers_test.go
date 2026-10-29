@@ -52,6 +52,54 @@ func TestT1SecondVerificationTaken(t *testing.T) {
 	}
 }
 
+// TestIdentifierTakenKeepsTransaction checks that IDENTIFIER_TAKEN leaves the use case's
+// transaction usable: on it the use case still consumes the challenge and commits (TDD-02 §3).
+// Here it bumps the version instead, which must be committed.
+func TestIdentifierTakenKeepsTransaction(t *testing.T) {
+	t.Parallel()
+	e := accountsDB(t)
+	first, second := e.newAccount(phone, ""), e.newAccount(phone, "")
+	e.create(t, first)
+	e.create(t, second)
+	if err := e.verify(t, first.Identifiers[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		name  string
+		taken func(ctx context.Context) error
+	}{
+		{"verify", func(ctx context.Context) error { return e.repo.VerifyIdentifier(ctx, second.Identifiers[0].ID) }},
+		{"add verified", func(ctx context.Context) error {
+			if err := e.repo.RetireIdentifier(ctx, second.Identifiers[0].ID); err != nil {
+				return err
+			}
+			return e.repo.AddIdentifier(ctx, second.ID, account.NewIdentifier{ID: e.ids.New(), Type: "phone", Value: phone, Verified: true})
+		}},
+	} {
+		before, err := e.repo.Get(t.Context(), second.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.do(t, func(ctx context.Context) error {
+			checkCode(t, c.taken(ctx), domain.CodeIdentifierTaken)
+			_, err := e.repo.BumpVersion(ctx, second.ID, 1)
+			return err
+		})
+		after, err := e.repo.Get(t.Context(), second.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.Version != before.Version+1 {
+			t.Errorf("%s: version %d after the transaction, want %d", c.name, after.Version, before.Version+1)
+		}
+	}
+	// The retirement in "add verified" committed with the bump, and the refused insert did not.
+	if ids, err := e.repo.Identifiers(t.Context(), second.ID); err != nil || len(ids) != 0 {
+		t.Errorf("second's identifiers = %v, %v; want none", ids, err)
+	}
+}
+
 func TestFindCurrentReturnsEveryPendingHolder(t *testing.T) {
 	t.Parallel()
 	e := accountsDB(t)

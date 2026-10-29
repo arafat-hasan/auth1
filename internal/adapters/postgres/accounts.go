@@ -92,10 +92,13 @@ func (r *Accounts) insertIdentifier(ctx context.Context, accountID uuid.UUID, id
 	if err != nil {
 		return fmt.Errorf("store identifier: %w", err)
 	}
-	if _, err := Conn(ctx, r.db).ExecContext(ctx, `
-		INSERT INTO identifiers (id, account_id, type, value, value_bidx, verified_at, created_at)
-		VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN now() END, now())`,
-		id.ID, accountID, id.Type, value, bidx, id.Verified); err != nil {
+	db := Conn(ctx, r.db)
+	if _, err := withSavepoint(ctx, db, func() (sql.Result, error) {
+		return db.ExecContext(ctx, `
+			INSERT INTO identifiers (id, account_id, type, value, value_bidx, verified_at, created_at)
+			VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN now() END, now())`,
+			id.ID, accountID, id.Type, value, bidx, id.Verified)
+	}); err != nil {
 		return constraintError("store identifier", err)
 	}
 	return nil

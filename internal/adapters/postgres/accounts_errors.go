@@ -1,10 +1,13 @@
 package postgres
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/uptrace/bun"
 
 	"github.com/arafat-hasan/auth1/internal/domain"
 )
@@ -25,4 +28,31 @@ func constraintError(op string, err error) error {
 		return identifierTaken
 	}
 	return fmt.Errorf("%s: %w", op, err)
+}
+
+// savepoint names the savepoint of withSavepoint.
+const savepoint = "accounts_statement"
+
+// withSavepoint runs exec, inside a transaction under a savepoint that a failure rolls back to.
+// A failed statement otherwise aborts the whole transaction, and the use case could not go on
+// after IDENTIFIER_TAKEN, as it must: it still consumes the challenge (TDD-02 §3). Outside a
+// transaction the statement commits alone, and exec runs as it is.
+func withSavepoint(ctx context.Context, db bun.IDB, exec func() (sql.Result, error)) (sql.Result, error) {
+	if !inTx(ctx) {
+		return exec()
+	}
+	if _, err := db.ExecContext(ctx, "SAVEPOINT "+savepoint); err != nil {
+		return nil, fmt.Errorf("savepoint: %w", err)
+	}
+	res, err := exec()
+	if err != nil {
+		if _, rerr := db.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); rerr != nil {
+			return nil, errors.Join(err, fmt.Errorf("roll back to savepoint: %w", rerr))
+		}
+		return nil, err
+	}
+	if _, err := db.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint); err != nil {
+		return nil, fmt.Errorf("release savepoint: %w", err)
+	}
+	return res, nil
 }

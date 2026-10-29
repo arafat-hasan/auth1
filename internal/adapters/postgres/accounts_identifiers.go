@@ -108,9 +108,12 @@ func (r *Accounts) AddIdentifier(ctx context.Context, accountID uuid.UUID, id ac
 
 // VerifyIdentifier implements app.Accounts.
 func (r *Accounts) VerifyIdentifier(ctx context.Context, id uuid.UUID) error {
-	res, err := Conn(ctx, r.db).ExecContext(ctx, `
-		UPDATE identifiers SET verified_at = now()
-		WHERE id = ? AND verified_at IS NULL AND retired_at IS NULL`, id)
+	db := Conn(ctx, r.db)
+	res, err := withSavepoint(ctx, db, func() (sql.Result, error) {
+		return db.ExecContext(ctx, `
+			UPDATE identifiers SET verified_at = now()
+			WHERE id = ? AND verified_at IS NULL AND retired_at IS NULL`, id)
+	})
 	if err != nil {
 		return constraintError("verify identifier", err)
 	}
