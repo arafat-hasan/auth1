@@ -162,6 +162,43 @@ func (r *Accounts) BumpVersion(ctx context.Context, id uuid.UUID, n int64) (int6
 	return v, nil
 }
 
+// ApplyStatus implements app.Accounts.
+func (r *Accounts) ApplyStatus(ctx context.Context, id uuid.UUID, d account.Decision) error {
+	if !d.Changed {
+		return nil
+	}
+	effects := d.Effects.EraseCredentials || d.Effects.ReleaseIdentifiers
+	if effects && !inTx(ctx) {
+		return fmt.Errorf("apply account status: %w", ErrNoTransaction)
+	}
+	res, err := Conn(ctx, r.db).ExecContext(ctx, `
+		UPDATE accounts SET status = ?, status_reason = nullif(?, ''), status_until = ?, status_changed_at = now()
+		WHERE id = ?`, string(d.Status), d.Reason, d.Until, id)
+	if err != nil {
+		return fmt.Errorf("apply account status: %w", err)
+	}
+	if err := oneRow(res, "apply account status", "account"); err != nil {
+		return err
+	}
+	if d.Effects.EraseCredentials {
+		if _, err := Conn(ctx, r.db).ExecContext(ctx, "DELETE FROM password_credentials WHERE account_id = ?", id); err != nil {
+			return fmt.Errorf("apply account status: erase password: %w", err)
+		}
+		if err := r.DeleteTOTP(ctx, id); err != nil {
+			return fmt.Errorf("apply account status: %w", err)
+		}
+		if err := r.DeleteRecoveryCodes(ctx, id); err != nil {
+			return fmt.Errorf("apply account status: %w", err)
+		}
+	}
+	if d.Effects.ReleaseIdentifiers {
+		if err := r.RetireIdentifiers(ctx, id); err != nil {
+			return fmt.Errorf("apply account status: %w", err)
+		}
+	}
+	return nil
+}
+
 // timePtr is t's time, or nil when it is null. Times are UTC, as the domain keeps them.
 func timePtr(t sql.NullTime) *time.Time {
 	if !t.Valid {

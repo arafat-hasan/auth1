@@ -30,6 +30,11 @@ type Accounts interface {
 	// BumpVersion adds n (≥ 1) to the account's version, sets updated_at, and returns the new
 	// version; NOT_FOUND when there is no account.
 	BumpVersion(ctx context.Context, id uuid.UUID, n int64) (int64, error)
+	// ApplyStatus stores the status change d decided by account.Transition; NOT_FOUND when there
+	// is no account. An unchanged d writes nothing. Of d's effects it applies those inside the
+	// aggregate, EraseCredentials and ReleaseIdentifiers; the caller applies RevokeSessions and
+	// CancelFlows through their repositories. With effects, it runs inside UnitOfWork.Do.
+	ApplyStatus(ctx context.Context, id uuid.UUID, d account.Decision) error
 
 	// Identifiers returns the account's current identifiers, decrypted, sorted by type: at most
 	// one per type (I-2).
