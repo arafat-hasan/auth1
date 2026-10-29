@@ -1055,6 +1055,7 @@ type Problem struct {
 	Code         ProblemCode `json:"code"`
 	Detail       *string     `json:"detail,omitempty"`
 	Errors       *[]struct {
+		// Code One of required, not_allowed, unknown, not_future (SDD §10)
 		Code  string `json:"code"`
 		Field string `json:"field"`
 	} `json:"errors,omitempty"`

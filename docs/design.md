@@ -4,7 +4,7 @@
 |---|---|
 | Document | Software Design Description (SDD). High level: *what* auth1 is and *why* it is built this way |
 | Status | Draft |
-| Version | 0.9 (design of auth1 1.0) |
+| Version | 0.11 (design of auth1 1.0) |
 | Date | 2026-10-29 |
 | Owner | Arafat Hasan |
 | Detailed designs | [`docs/tdd/`](tdd/): TDD-01 … TDD-08 (§16) |
@@ -813,7 +813,7 @@ stateDiagram-v2
 | `pending` | Refused: only completing the flow activates | Refused | Refused | Allowed: closes an abandoned registration or invitation |
 | `active` | No-op, 200 | Allowed | Allowed | Allowed |
 | `suspended` | Allowed | Allowed: changes `until` or the reason | Allowed | Allowed |
-| `banned` | Allowed | Allowed | No-op, 200 | Allowed |
+| `banned` | Allowed | Allowed | Allowed: changes the reason | Allowed |
 | `deleted` | Refused | Refused | Refused | No-op, 200 |
 
 A refused transition is `409 STATUS_TRANSITION_INVALID`.
@@ -1010,6 +1010,10 @@ The other flows are in TDD-02 and TDD-03.
 | `NOT_FOUND` | 404 | The account or flow does not exist | No |
 | `RATE_LIMITED` | 429 | A limit of D-17; `retry_after` | Yes |
 | `UNAVAILABLE` | 503 | A dependency is down, or the hashing capacity is full; `Retry-After` | Yes |
+
+**Field errors.** Each `errors` item of `VALIDATION_FAILED` names the `field` as the contract does
+and gives one `code`: `required` (missing), `not_allowed` (present, or with that value, where it may
+not be), `unknown` (not one of the values allowed) or `not_future` (a time not after now).
 
 **Non-error outcomes** (202, `application/json`): `MFA_REQUIRED` and `MFA_ENROLMENT_REQUIRED`, each
 with a flow handle and its expiry.
@@ -1233,3 +1237,5 @@ The build order is part of the implementation plan, written after the TDDs are a
 | 0.7 | 2026-10-28 | D-19 retention: closed flows are deleted 30 days after they close, like closed challenges; before, nothing removed them |
 | 0.8 | 2026-10-29 | D-19 contract tooling: the contract stays OpenAPI 3.1, generated with `oapi-codegen` v2; lint and `oasdiff` in CI (closes O-6) |
 | 0.9 | 2026-10-29 | §10: a parameter or body that does not bind answers 422 `VALIDATION_FAILED` without `errors`. `api/openapi.yaml` gains the `Unprocessable` response on every operation that takes parameters or a body |
+| 0.10 | 2026-10-29 | §8.1: `banned → banned` changes the reason, like `suspended → suspended`; before, it was a no-op and a repeated ban kept the old reason |
+| 0.11 | 2026-10-29 | §10: the codes of a `VALIDATION_FAILED` field error (`required`, `not_allowed`, `unknown`, `not_future`); before, the code was free text |
