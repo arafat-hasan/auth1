@@ -30,9 +30,12 @@ func newDummy(key crypto.Key, params Params) (phc, error) {
 // VerifyDummy implements app.PasswordHasher. It peppers under the current active key rather than
 // the one the dummy was made under, so a pepper key removed since start-up cannot make it fail or
 // skip the work; it answers false either way.
-func (h *Hasher) VerifyDummy(_ context.Context, password []byte) (bool, error) {
+func (h *Hasher) VerifyDummy(ctx context.Context, password []byte) (bool, error) {
 	_, key := h.peppers.Current().Active()
-	sum := compute(key, h.dummy.params, h.dummy.salt[:], password)
+	sum, err := h.run(ctx, key, h.dummy.params, h.dummy.salt[:], password)
+	if err != nil {
+		return false, err
+	}
 	_ = subtle.ConstantTimeCompare(sum, h.dummy.hash[:])
 	clear(sum)
 	return false, nil

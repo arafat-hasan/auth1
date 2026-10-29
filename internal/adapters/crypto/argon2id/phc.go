@@ -98,7 +98,7 @@ func parsePHC(s string) (phc, error) {
 	if nums[2] > maxParallelism {
 		return v, invalid("parameters out of bounds")
 	}
-	v.params = Params{MemoryKiB: nums[0], Iterations: nums[1], Parallelism: uint8(nums[2])}
+	v.params = Params{MemoryKiB: nums[0], Iterations: nums[1], Parallelism: uint8(nums[2])} //nolint:gosec // nums[2] ≤ maxParallelism, checked above
 	if err := v.params.validate(); err != nil {
 		return v, invalid("parameters out of bounds")
 	}

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/text/unicode/norm"
 
@@ -26,6 +27,11 @@ type Options struct {
 	MaxConcurrent int                  // passwords.argon2.max_concurrent: hashing slots, at least 1
 	QueueTimeout  time.Duration        // passwords.argon2.queue_timeout: the wait for a slot, above 0
 	Peppers       crypto.KeyringSource // the pepper keyring, its other state crypto.StateVerify
+
+	// The instruments of TDD-08 §5.2, without attributes; nil for none.
+	Duration metric.Float64Histogram // auth1_hash_duration_seconds: the computation
+	Queue    metric.Float64Histogram // auth1_hash_queue_seconds: the wait for a slot
+	Rejected metric.Int64Counter     // auth1_hash_rejected_total: waits that timed out
 }
 
 // Hasher is the Argon2id password hasher (TDD-03 §1). It implements app.PasswordHasher and is
@@ -34,6 +40,15 @@ type Hasher struct {
 	params  Params
 	peppers crypto.KeyringSource
 	dummy   phc // made at New with params under the then active pepper key
+
+	slots        chan struct{} // one entry per hash running (SDD D-7)
+	queueTimeout time.Duration
+	duration     metric.Float64Histogram
+	queue        metric.Float64Histogram
+	rejected     metric.Int64Counter
+
+	// compute is the hash function: compute, or a stand-in in this package's tests.
+	compute func(key crypto.Key, params Params, salt, password []byte) []byte
 }
 
 // New returns a Hasher, after computing its dummy hash with the configured parameters, so it
@@ -56,24 +71,32 @@ func New(o Options) (*Hasher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Hasher{params: o.Params, peppers: o.Peppers, dummy: dummy}, nil
+	return &Hasher{
+		params: o.Params, peppers: o.Peppers, dummy: dummy,
+		slots: make(chan struct{}, o.MaxConcurrent), queueTimeout: o.QueueTimeout,
+		duration: o.Duration, queue: o.Queue, rejected: o.Rejected,
+		compute: compute,
+	}, nil
 }
 
 // Hash implements app.PasswordHasher.
-func (h *Hasher) Hash(_ context.Context, password []byte) (string, string, error) {
+func (h *Hasher) Hash(ctx context.Context, password []byte) (string, string, error) {
 	id, key := h.peppers.Current().Active()
 	v := phc{params: h.params}
 	if _, err := rand.Read(v.salt[:]); err != nil {
 		return "", "", fmt.Errorf("argon2id: salt: %w", err)
 	}
-	sum := compute(key, v.params, v.salt[:], password)
+	sum, err := h.run(ctx, key, v.params, v.salt[:], password)
+	if err != nil {
+		return "", "", err
+	}
 	copy(v.hash[:], sum)
 	clear(sum)
 	return v.encode(), strconv.FormatUint(uint64(id), 10), nil
 }
 
 // Verify implements app.PasswordHasher.
-func (h *Hasher) Verify(_ context.Context, phcString, pepperKid string, password []byte) (bool, bool, error) {
+func (h *Hasher) Verify(ctx context.Context, phcString, pepperKid string, password []byte) (bool, bool, error) {
 	kr := h.peppers.Current()
 	id, err := parseKid(pepperKid)
 	if err != nil {
@@ -87,7 +110,10 @@ func (h *Hasher) Verify(_ context.Context, phcString, pepperKid string, password
 	if err != nil {
 		return false, false, err
 	}
-	sum := compute(key, v.params, v.salt[:], password)
+	sum, err := h.run(ctx, key, v.params, v.salt[:], password)
+	if err != nil {
+		return false, false, err
+	}
 	ok := subtle.ConstantTimeCompare(sum, v.hash[:]) == 1
 	clear(sum)
 	if !ok {

@@ -304,7 +304,7 @@ func TestSecretsNotLeaked(t *testing.T) {
 	secrets := []string{
 		password, parts[4], parts[5],
 		base64.StdEncoding.EncodeToString(keyBytes(1)), hex.EncodeToString(keyBytes(1)),
-		fmt.Sprint(keyBytes(1)),
+		fmt.Sprintf("%d", keyBytes(1)),
 	}
 	var outputs []string
 	for _, call := range []func() error{
