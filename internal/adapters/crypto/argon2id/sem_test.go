@@ -82,15 +82,30 @@ func (m *meters) counts(t *testing.T) map[string]int64 {
 	return out
 }
 
-// blockCompute makes h's hashes wait for release, reporting each start on entered.
-func blockCompute(h *Hasher) (entered chan struct{}, release chan struct{}) {
-	entered, release = make(chan struct{}, 64), make(chan struct{})
+// blockCompute makes h's hashes wait until release is called, reporting each start on entered.
+// release is also called when the test ends, so a failed test leaves no hash waiting.
+func blockCompute(t *testing.T, h *Hasher) (entered chan struct{}, release func()) {
+	t.Helper()
+	entered, gate := make(chan struct{}, 64), make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
 	h.compute = func(key crypto.Key, p Params, salt, password []byte) []byte {
 		entered <- struct{}{}
-		<-release
+		<-gate
 		return compute(key, p, salt, password)
 	}
 	return entered, release
+}
+
+// waitEntered waits for a held hash to start, failing the test rather than hanging if it does not.
+func waitEntered(t *testing.T, entered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a held hash did not start")
+	}
 }
 
 // TestOverloaded (T-36): with every slot taken, Hash, Verify and VerifyDummy each wait
@@ -104,7 +119,7 @@ func TestOverloaded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entered, release := blockCompute(h)
+	entered, release := blockCompute(t, h)
 	var holders sync.WaitGroup
 	for range 2 {
 		holders.Go(func() {
@@ -113,8 +128,8 @@ func TestOverloaded(t *testing.T) {
 			}
 		})
 	}
-	<-entered
-	<-entered
+	waitEntered(t, entered)
+	waitEntered(t, entered)
 	for name, call := range map[string]func() error{
 		"Hash":        func() error { _, _, err := h.Hash(t.Context(), []byte("pw")); return err },
 		"Verify":      func() error { _, _, err := h.Verify(t.Context(), phc, kid, []byte("pw")); return err },
@@ -130,7 +145,7 @@ func TestOverloaded(t *testing.T) {
 			t.Errorf("%s returned after %s, want %s (+%s)", name, took, queueTimeout, tolerance)
 		}
 	}
-	close(release)
+	release()
 	holders.Wait()
 	got := m.counts(t)
 	if got["auth1_hash_rejected_total"] != 3 {
@@ -192,10 +207,10 @@ func TestPeakConcurrency(t *testing.T) {
 func TestQueueCancel(t *testing.T) {
 	t.Parallel()
 	h, m := newSemHasher(t, 1, 5*time.Second)
-	entered, release := blockCompute(h)
+	entered, release := blockCompute(t, h)
 	var holder sync.WaitGroup
 	holder.Go(func() { _, _, _ = h.Hash(context.Background(), []byte("pw")) })
-	<-entered
+	waitEntered(t, entered)
 	ctx, cancel := context.WithCancel(t.Context())
 	time.AfterFunc(20*time.Millisecond, cancel)
 	start := time.Now()
@@ -206,7 +221,7 @@ func TestQueueCancel(t *testing.T) {
 	if took := time.Since(start); took > time.Second {
 		t.Errorf("Hash returned after %s, want soon after the cancellation", took)
 	}
-	close(release)
+	release()
 	holder.Wait()
 
 	done, stop := context.WithCancel(t.Context())

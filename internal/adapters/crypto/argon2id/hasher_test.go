@@ -1,6 +1,7 @@
 package argon2id_test
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -53,6 +54,21 @@ func peppers(t testing.TB, entries ...pepper) *crypto.Keyring {
 		t.Fatal(err)
 	}
 	return k
+}
+
+// runWatched follows w's file until the test ends, and waits for it to stop.
+func runWatched(t *testing.T, w *crypto.WatchedKeyring) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = w.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 
 func newHasher(t testing.TB, params argon2id.Params, src crypto.KeyringSource) *argon2id.Hasher {
@@ -246,8 +262,8 @@ func TestHashDuringReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runWatched(t, w)
 	ctx := t.Context()
-	go func() { _ = w.Run(ctx) }()
 	h := newHasher(t, small, w)
 	stop := make(chan struct{})
 	var swapper sync.WaitGroup

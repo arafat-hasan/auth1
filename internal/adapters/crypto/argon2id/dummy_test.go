@@ -41,8 +41,8 @@ func TestVerifyDummyAfterKeyRemoved(t *testing.T) {
 	if err := os.WriteFile(path, keyringYAML(pepper{2, 50, crypto.StateActive}), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	runWatched(t, w)
 	ctx := t.Context()
-	go func() { _ = w.Run(ctx) }()
 	for deadline := time.Now().Add(5 * time.Second); ; {
 		if _, ok := w.Current().Lookup(1); !ok {
 			break
