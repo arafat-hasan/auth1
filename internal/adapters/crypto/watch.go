@@ -34,9 +34,14 @@ type WatchedKeyring struct {
 // WatchOption configures a WatchedKeyring.
 type WatchOption func(*WatchedKeyring)
 
-// WithInterval sets how often the file is re-read (DefaultReloadInterval by default).
+// WithInterval sets how often the file is re-read (DefaultReloadInterval by default). A
+// non-positive d is ignored.
 func WithInterval(d time.Duration) WatchOption {
-	return func(w *WatchedKeyring) { w.interval = d }
+	return func(w *WatchedKeyring) {
+		if d > 0 {
+			w.interval = d
+		}
+	}
 }
 
 // NewWatchedKeyring loads the keyring file at path (see ParseKeyring for otherState). A file that

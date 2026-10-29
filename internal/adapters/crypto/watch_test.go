@@ -209,6 +209,23 @@ func TestWatchedKeyringRunStops(t *testing.T) {
 	}
 }
 
+func TestWithIntervalNonPositive(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "keyring.yaml")
+	writeAtomic(t, path, keyringYAML(entry{1, 1, "active"}))
+	for _, d := range []time.Duration{0, -time.Second} {
+		w, err := crypto.NewWatchedKeyring(path, crypto.StateDecrypt, slog.New(slog.DiscardHandler), crypto.WithInterval(d))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := w.Run(ctx); err != nil { // a non-positive ticker interval would panic here
+			t.Errorf("Run with interval %v = %v", d, err)
+		}
+	}
+}
+
 func TestDefaultReloadInterval(t *testing.T) {
 	t.Parallel()
 	if crypto.DefaultReloadInterval != 30*time.Second {
