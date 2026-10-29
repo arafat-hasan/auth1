@@ -34,7 +34,7 @@ type Resend struct {
 // DecideResend decides a resend of c at now (TDD-02 §2.4). An open challenge is reused, unless it
 // was sent less than ResendAfter ago. An expired one is replaced by a new challenge; the caller
 // closes it first if it is still open. An exhausted one is refused until Cooldown has passed since
-// it closed, then replaced. A consumed one is refused.
+// it closed (from now, if the caller has not closed it yet), then replaced. A consumed one is refused.
 func DecideResend(c Challenge, now time.Time, r ResendRules) Resend {
 	switch c.End(now) {
 	case EndOpen:
@@ -45,7 +45,11 @@ func DecideResend(c Challenge, now time.Time, r ResendRules) Resend {
 		}
 		return Resend{Outcome: Reuse}
 	case EndExhausted:
-		if wait := c.ClosedAt.Add(r.Cooldown).Sub(now); wait > 0 {
+		closed := now // an exhausted challenge not yet closed closes now
+		if c.ClosedAt != nil {
+			closed = *c.ClosedAt
+		}
+		if wait := closed.Add(r.Cooldown).Sub(now); wait > 0 {
 			return Resend{Outcome: Cooldown, RetryAfter: ceilSecond(wait)}
 		}
 		return Resend{Outcome: NewChallenge}

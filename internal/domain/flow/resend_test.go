@@ -48,6 +48,8 @@ func TestDecideResend(t *testing.T) {
 		{"exhausted 14 min 59.9 s ago", exhausted(15*time.Minute - 100*time.Millisecond), now, Resend{Outcome: Cooldown, RetryAfter: time.Second}},
 		{"exhausted 15 min ago", exhausted(15 * time.Minute), now, Resend{Outcome: NewChallenge}},
 		{"consumed", consumed, now, Resend{Outcome: Used}},
+		{"exhausted but not yet closed", Challenge{Attempts: 3, MaxAttempts: 3, ExpiresAt: expires}, now,
+			Resend{Outcome: Cooldown, RetryAfter: 15 * time.Minute}},
 	}
 	for _, tt := range tests {
 		if diff := cmp.Diff(tt.want, DecideResend(tt.c, tt.now, rules)); diff != "" {

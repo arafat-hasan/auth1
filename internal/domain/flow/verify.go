@@ -26,7 +26,7 @@ type End string
 const (
 	EndOpen      End = "open"      // open and before expires_at
 	EndConsumed  End = "consumed"  // used: consumed_at is set
-	EndExhausted End = "exhausted" // closed unconsumed with attempts at max_attempts
+	EndExhausted End = "exhausted" // unconsumed with attempts at max_attempts
 	EndExpired   End = "expired"   // any other closed one, or open at or past expires_at
 )
 
@@ -36,8 +36,8 @@ func (c Challenge) End(now time.Time) End {
 	switch {
 	case c.ConsumedAt != nil:
 		return EndConsumed
-	case c.ClosedAt != nil && c.Attempts >= c.MaxAttempts:
-		return EndExhausted
+	case c.Attempts >= c.MaxAttempts:
+		return EndExhausted // closed, or about to be: Verify refuses it either way
 	case c.ClosedAt != nil || !now.Before(c.ExpiresAt):
 		return EndExpired
 	default:

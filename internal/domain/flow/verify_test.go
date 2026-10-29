@@ -187,6 +187,7 @@ func TestEnd(t *testing.T) {
 		{"consumed", consumed, t0, EndConsumed},
 		{"consumed on the last attempt is consumed, not exhausted", consumed, expires.Add(time.Hour), EndConsumed},
 		{"exhausted", exhausted, t0, EndExhausted},
+		{"exhausted but not yet closed", Challenge{Attempts: 3, MaxAttempts: 3, ExpiresAt: expires}, t0, EndExhausted},
 		{"expired", expired, expires.Add(time.Minute), EndExpired},
 		{"closed early", closedEarly, t0.Add(2 * time.Minute), EndExpired},
 	}
