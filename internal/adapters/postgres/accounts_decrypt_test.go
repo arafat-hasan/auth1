@@ -36,8 +36,11 @@ func TestNoBulkDecrypt(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.replaceCodes(t, first.ID, e.codes(2, "mac-"))
-	if ok, err := e.repo.ConfirmTOTP(t.Context(), first.ID, 1); err != nil || ok {
-		t.Fatal(ok, err) // no factor: nothing to confirm
+	if ok, err := e.repo.StartTOTP(t.Context(), first.ID, secretA); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := e.repo.ConfirmTOTP(t.Context(), first.ID, 1); err != nil || !ok {
+		t.Fatal(ok, err)
 	}
 
 	for _, c := range []struct {
@@ -50,6 +53,7 @@ func TestNoBulkDecrypt(t *testing.T) {
 		{"UseRecoveryCode", func() error { _, err := e.repo.UseRecoveryCode(t.Context(), first.ID, []byte("mac-a")); return err }, 0},
 		{"AcceptTOTPStep", func() error { _, err := e.repo.AcceptTOTPStep(t.Context(), first.ID, 2); return err }, 0},
 		{"Roles", func() error { _, err := e.repo.Roles(t.Context(), first.ID); return err }, 0},
+		{"TOTPFactor", func() error { _, err := e.repo.TOTPFactor(t.Context(), first.ID); return err }, 1},
 		{"Get", func() error { _, err := e.repo.Get(t.Context(), first.ID); return err }, 1},
 		{"Identifiers", func() error { _, err := e.repo.Identifiers(t.Context(), first.ID); return err }, 2},
 	} {

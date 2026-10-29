@@ -100,6 +100,30 @@ func TestIdentifierTakenKeepsTransaction(t *testing.T) {
 	}
 }
 
+// TestIdentifierTakenErrorsDistinct checks that each IDENTIFIER_TAKEN is a value of its own, so a
+// caller that changes one does not change the next.
+func TestIdentifierTakenErrorsDistinct(t *testing.T) {
+	t.Parallel()
+	e := accountsDB(t)
+	first, second := e.newAccount(phone, ""), e.newAccount(phone, "")
+	e.create(t, first)
+	e.create(t, second)
+	if err := e.verify(t, first.Identifiers[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	var one, two *domain.Error
+	if !errors.As(e.verify(t, second.Identifiers[0].ID), &one) {
+		t.Fatal("no domain error")
+	}
+	one.Detail = "changed by a caller"
+	if !errors.As(e.verify(t, second.Identifiers[0].ID), &two) {
+		t.Fatal("no domain error")
+	}
+	if one == two || two.Detail == "changed by a caller" {
+		t.Errorf("IDENTIFIER_TAKEN errors are shared: %q", two.Detail)
+	}
+}
+
 func TestFindCurrentReturnsEveryPendingHolder(t *testing.T) {
 	t.Parallel()
 	e := accountsDB(t)

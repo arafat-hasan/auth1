@@ -42,7 +42,7 @@ func NewUnitOfWork(db *bun.DB, acquireTimeout time.Duration, tp trace.TracerProv
 // when COMMIT could not be sent; when ctx ends first, ctx's error. A COMMIT that fails after it
 // was sent is returned as it is: it may have been applied, so it is not safe to retry.
 func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context) error) (err error) {
-	if _, ok := ctx.Value(txKey{}).(bun.Tx); ok {
+	if inTx(ctx) {
 		return fn(ctx)
 	}
 
@@ -121,4 +121,10 @@ func Conn(ctx context.Context, db *bun.DB) bun.IDB {
 		return tx
 	}
 	return db
+}
+
+// inTx reports whether ctx carries the transaction UnitOfWork.Do opened.
+func inTx(ctx context.Context) bool {
+	_, ok := ctx.Value(txKey{}).(bun.Tx)
+	return ok
 }

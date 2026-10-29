@@ -41,12 +41,6 @@ func NewAccounts(db *bun.DB, fc app.FieldCrypto, bidx app.BlindIndex) *Accounts 
 	return &Accounts{db: db, fc: fc, bidx: bidx}
 }
 
-// inTx reports whether ctx carries the transaction UnitOfWork.Do opened.
-func inTx(ctx context.Context) bool {
-	_, ok := ctx.Value(txKey{}).(bun.Tx)
-	return ok
-}
-
 // notFound is the NOT_FOUND failure for what.
 func notFound(what string) error {
 	return &domain.Error{Code: domain.CodeNotFound, Detail: "the " + what + " was not found"}
@@ -104,7 +98,7 @@ func (r *Accounts) insertIdentifier(ctx context.Context, accountID uuid.UUID, id
 	return nil
 }
 
-// accountColumns are the columns scanAccount reads, in its order.
+// accountColumns are the columns get reads, in its order.
 const accountColumns = `id, status, coalesce(status_reason, ''), status_until, status_changed_at, display_name,
 	locale, registered_via, factor_failures, factor_failures_since, version, created_at, updated_at`
 
