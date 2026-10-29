@@ -352,7 +352,7 @@ within 500 ms, 300 ms and 200 ms.
 
 Each is a short procedure kept in `docs/runbooks/`. To be written with the implementation:
 
-1. **Signing-key rotation.** Add the key as `next`; wait `min_publish_before_use`; set it `active` and the old one `retired`; after access TTL + 5 min, remove the old key from the file.
+1. **Signing-key rotation.** Add the key as `next`; wait `min_publish_before_use`; set it `active` and the old one `retired`; after access TTL + 5 min, remove the old key from the file. Setting a key `active` before the wait is over raises the "Key not promotable" alert on every replica, every 30 s, until the wait ends (TDD-04 §5.2); that is expected, and the previous key keeps signing.
 2. **Signing-key compromise.** Add the new key as `active`; `auth1 keys force-activate`; remove the compromised key; `auth1 sessions revoke-all`; tell relying services to refresh their JWKS.
 3. **Field-key rotation.** TDD-01 §3.1.
 4. **Pepper rotation.** §4.

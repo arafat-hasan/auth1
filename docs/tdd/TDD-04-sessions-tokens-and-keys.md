@@ -126,7 +126,7 @@ keys:
 ```
 
 **Validation** (on load; a failure keeps the previous keyring and logs an error naming the file
-and the entry):
+and the entry). The file is one YAML document with no unknown field, and:
 - exactly one `active` key;
 - `alg` is `RS256` or `ES256`, and `state` is `next`, `active` or `retired`;
 - RSA keys of at least 2048 bits for `RS256`; P-256 for `ES256`;
@@ -148,12 +148,17 @@ signing key and answers the JWKS with `503`.
 
 1. For every key in the file: `INSERT INTO signing_keys (kid, alg, first_published_at) VALUES (…, now()) ON CONFLICT DO NOTHING`.
 2. For the `active` key:
-   - if `first_published_at ≤ now() - min_publish_before_use`, sign with it, set `activated_at` if it is null, and clear `retired_at` (a key retired earlier and made active again starts a new retirement window when it is retired again);
-   - otherwise keep signing with the previously active key: the key in the file, other than the `active` one, with the latest `activated_at`. Log the error `signing key not promotable`. If there is no such key, no key signs and readiness is refused.
+   - if `first_published_at ≤ now() - min_publish_before_use`, sign with it, set `activated_at` to `now()`, and clear `retired_at` (a key retired earlier and made active again starts a new retirement window when it is retired again);
+   - otherwise keep signing with the previously active key: the key in the file, other than the `active` one, with the latest `activated_at`, and set its `activated_at` to `now()` and clear its `retired_at` as above. Log the error `signing key not promotable`. If there is no such key, no key signs and readiness is refused.
+
+   `activated_at` is therefore the last load at which the key signed, not its first activation, so after a rollback the previously active key is the one that signed last.
 3. For each `retired` key that does not sign, set `retired_at` if it is null. A retired key that still signs (step 2) gets it at the first load after it stops, so its JWKS window starts after its last signature.
 
-**The JWKS** publishes `next` and `active` keys, and `retired` keys while `retired_at` is null or
-`now() < retired_at + access_ttl + 5 min`, in the file's order. Response headers:
+While a new file rolls out, a replica still on the old file keeps the old key signing and clears its `retired_at` on every load, and a replica on the new file sets it again. The old key's window therefore starts once the last replica has the new file, which only keeps it published longer.
+
+**The JWKS** publishes `next` and `active` keys, `retired` keys while `retired_at` is null or
+`now() < retired_at + access_ttl + 5 min`, and the signing key whatever its state, in the file's
+order. Response headers:
 `Cache-Control: public, max-age=300` and a strong `ETag` over the body; a matching
 `If-None-Match` answers `304`.
 
