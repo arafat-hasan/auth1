@@ -218,13 +218,19 @@ func (v *validator) ranges() {
 }
 
 // argon2 refuses Argon2id parameters beyond what a stored hash may carry (TDD-03 §1.3), so that
-// every hash written can be verified. They apply in every environment.
+// every hash written can be verified, and memory below Argon2's own 8 KiB per lane. They apply in
+// every environment; outside development the 19MiB floor already covers the per-lane minimum.
 func (v *validator) argon2() {
 	a := v.c.Passwords.Argon2
-	if a.Memory > GiB {
+	switch {
+	case a.Memory <= 0: // the range check's to report
+	case a.Memory > GiB:
 		v.add("passwords.argon2.memory", "%s is above the bound of at most %s", a.Memory, GiB)
-	} else if a.Memory%KiB != 0 {
+	case a.Memory%KiB != 0:
 		v.add("passwords.argon2.memory", "%s is not a whole number of KiB", a.Memory)
+	case v.dev && a.Parallelism > 0 && a.Memory < 8*KiB*ByteSize(a.Parallelism):
+		v.add("passwords.argon2.memory", "%s is below Argon2's minimum of 8KiB per lane, %s for parallelism %d",
+			a.Memory, 8*KiB*ByteSize(a.Parallelism), a.Parallelism)
 	}
 	if a.Iterations > 16 {
 		v.add("passwords.argon2.iterations", "%d is above the bound of at most 16", a.Iterations)

@@ -255,8 +255,8 @@ telemetry:
   unbounded pool or no wait for a connection, or for any `passwords.argon2` setting, where zero
   would mean no hash, no hashing slot or no wait for one. These apply in every environment;
 - `passwords.argon2` beyond what a stored hash may carry (TDD-03 §1.3): `memory` above 1GiB or
-  not a whole number of KiB, `iterations` or `parallelism` above 16. These apply in every
-  environment;
+  not a whole number of KiB, `iterations` or `parallelism` above 16; or `memory` below Argon2's
+  own 8KiB per lane of `parallelism`. These apply in every environment;
 - `delivery.adapter: capture` or no `service_auth.mode` outside `development`;
 - a client role outside the catalog;
 - a client origin that is not exactly a scheme and host, or that is not `https` outside

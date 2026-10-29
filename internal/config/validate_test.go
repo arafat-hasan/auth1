@@ -354,6 +354,15 @@ func TestValidateRules(t *testing.T) {
 			want: []string{"passwords.argon2.memory"}},
 		{name: "argon2 memory not whole KiB", change: func(c *Config) { c.Passwords.Argon2.Memory = 64*MiB + 1 },
 			want: []string{"passwords.argon2.memory"}},
+		// 8 KiB per lane is Argon2's own minimum; outside development the 19MiB floor reports it.
+		{name: "argon2 memory 8KiB per lane", change: func(c *Config) {
+			c.Passwords.Argon2.Memory, c.Passwords.Argon2.Parallelism = 128*KiB, 16
+		}, want: []string{"passwords.argon2.memory"}, devRelaxed: true},
+		{name: "argon2 memory below 8KiB per lane", change: func(c *Config) {
+			c.Passwords.Argon2.Memory, c.Passwords.Argon2.Parallelism = 127*KiB, 16
+		}, want: []string{"passwords.argon2.memory"}},
+		{name: "negative argon2 memory not whole KiB", change: func(c *Config) { c.Passwords.Argon2.Memory = -100 },
+			want: []string{"passwords.argon2.memory"}},
 		{name: "argon2 iterations 16", change: func(c *Config) { c.Passwords.Argon2.Iterations = 16 }},
 		{name: "argon2 iterations 17", change: func(c *Config) { c.Passwords.Argon2.Iterations = 17 },
 			want: []string{"passwords.argon2.iterations"}},
