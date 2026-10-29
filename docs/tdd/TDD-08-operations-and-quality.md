@@ -341,7 +341,8 @@ within 500 ms, 300 ms and 200 ms.
 | Parked rows | `auth1_outbox_parked > 0` | §6.5 |
 | Refresh reuse | > 3× its 7-day baseline | §6.9 |
 | Denied service calls | any increase | §6.10 |
-| Key not promotable | any replica | §6.1 |
+| Key not promotable | the error log `signing key not promotable` on any replica | §6.1 |
+| Signing keyring invalid | the error log `signing keyring invalid` on any replica | §6.1 |
 | Redis down | limiter errors > 0 for 5 min | §6.6 |
 | Expiry job stalled | oldest expired open flow > 1 h | §6.11 |
 | Hashing saturated | `auth1_hash_rejected_total` rate > 0 for 5 min | §6.12 |
@@ -351,7 +352,7 @@ within 500 ms, 300 ms and 200 ms.
 
 Each is a short procedure kept in `docs/runbooks/`. To be written with the implementation:
 
-1. **Signing-key rotation.** Add the key as `next`; wait `min_publish_before_use`; set it `active` and the old one `retired`; after access TTL + 5 min, remove the old key from the file.
+1. **Signing-key rotation.** Add the key as `next`; wait `min_publish_before_use`; set it `active` and the old one `retired`; after access TTL + 5 min, remove the old key from the file. Setting a key `active` before the wait is over raises the "Key not promotable" alert on every replica, every 30 s, until the wait ends (TDD-04 §5.2); that is expected, and the previous key keeps signing.
 2. **Signing-key compromise.** Add the new key as `active`; `auth1 keys force-activate`; remove the compromised key; `auth1 sessions revoke-all`; tell relying services to refresh their JWKS.
 3. **Field-key rotation.** TDD-01 §3.1.
 4. **Pepper rotation.** §4.
@@ -375,7 +376,7 @@ Each is a short procedure kept in `docs/runbooks/`. To be written with the imple
 | Purge | 1 h | Yes | TDD-01 §5 |
 | Audit detail clearing | 1 h | Yes | Null `auth_audit.ip`, `user_agent` past 90 days; `sessions.user_agent` 90 days after `last_used_at` (TDD-01 §5) |
 | Audit partitions | 1 day | Yes | Create the next 2 monthly partitions |
-| Keyring sync | On change, 30 s poll | No | TDD-04 §5.2 |
+| Keyring sync | 30 s poll | No | TDD-04 §5.2 |
 | Bootstrap | Start-up | Yes | TDD-02 §8.1 |
 
 **Leader election.**

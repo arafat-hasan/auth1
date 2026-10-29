@@ -125,26 +125,42 @@ keys:
     private_key_file: /secrets/signing/k3.pem
 ```
 
-**Validation** (on load; a failure keeps the previous keyring and alerts):
+**Validation** (on load; a failure keeps the previous keyring and logs an error naming the file
+and the entry). The file is one YAML document with no unknown field, and:
 - exactly one `active` key;
+- `alg` is `RS256` or `ES256`, and `state` is `next`, `active` or `retired`;
 - RSA keys of at least 2048 bits for `RS256`; P-256 for `ES256`;
-- no duplicate keys.
+- no duplicate keys (the same thumbprint twice).
 
-The `kid` is the RFC 7638 thumbprint, computed, never configured.
+`private_key_file` is resolved against the keyring file's directory when it is not absolute. The
+PEM is PKCS#8, or PKCS#1 for RSA, or SEC 1 for EC. The `kid` is the RFC 7638 thumbprint (SHA-256,
+base64url), computed, never configured.
 
 ### 5.2 Loading and publication times
 
-The keyring is reloaded on a change to the file (watched, plus a poll every 30 s, since mounted
-secrets change by symlink swap). On every load, each replica:
+Each replica polls the keyring file and the PEM files it names every 30 s; mounted secrets change
+by symlink swap, so the content is compared, not the modification time. It parses the keyring
+again only when the content changed, but it runs the steps below on every poll, so a key becomes
+promotable, and a retired key leaves the JWKS, without another change to the file. Every time
+comparison uses the database's `now()`, so a replica's clock skew cannot shorten I-14. A new file
+takes effect only together with a successful sync; until the first one, the replica has no
+signing key and answers the JWKS with `503`.
 
 1. For every key in the file: `INSERT INTO signing_keys (kid, alg, first_published_at) VALUES (…, now()) ON CONFLICT DO NOTHING`.
 2. For the `active` key:
-   - if `first_published_at ≤ now() - min_publish_before_use`, sign with it and set `activated_at` if it is null;
-   - otherwise keep signing with the previously active key, if the file still has it, and alert `key_not_promotable`. If the previous key is gone, refuse readiness.
-3. For each `retired` key, set `retired_at` if it is null.
+   - if `first_published_at ≤ now() - min_publish_before_use`, sign with it, set `activated_at` to `now()`, and clear `retired_at` (a key retired earlier and made active again starts a new retirement window when it is retired again);
+   - otherwise keep signing with the previously active key: the key in the file, other than the `active` one, with the latest `activated_at`, and set its `activated_at` to `now()` and clear its `retired_at` as above. Log the error `signing key not promotable`. If there is no such key, no key signs and readiness is refused.
 
-**The JWKS** publishes `next` and `active` keys, and `retired` keys while `now() < retired_at +
-access_ttl + 5 min`. Response headers: `Cache-Control: public, max-age=300` and `ETag`.
+   `activated_at` is therefore the last load at which the key signed, not its first activation, so after a rollback the previously active key is the one that signed last.
+3. For each `retired` key that does not sign, set `retired_at` if it is null. A retired key that still signs (step 2) gets it at the first load after it stops, so its JWKS window starts after its last signature.
+
+While a new file rolls out, a replica still on the old file keeps the old key signing and clears its `retired_at` on every load, and a replica on the new file sets it again. The old key's window therefore starts once the last replica has the new file, which only keeps it published longer.
+
+**The JWKS** publishes `next` and `active` keys, `retired` keys while `retired_at` is null or
+`now() < retired_at + access_ttl + 5 min`, and the signing key whatever its state, in the file's
+order. Response headers:
+`Cache-Control: public, max-age=300` and a strong `ETag` over the body; a matching
+`If-None-Match` answers `304`.
 
 ### 5.3 Rotation
 
@@ -154,15 +170,20 @@ audited, and it is the only way to skip the wait (I-14).
 
 ### 5.4 Metadata
 
-`/.well-known/oauth-authorization-server`:
+`/.well-known/oauth-authorization-server`, served under `http.base_path` like every route. Its
+URLs are the issuer's origin, then `http.base_path`, then the route. This is the RFC 8414 location
+when neither the issuer nor `http.base_path` has a path.
 - `issuer`
 - `jwks_uri`
-- `token_endpoint` (client credentials)
 - `introspection_endpoint`
-- `token_endpoint_auth_methods_supported: [private_key_jwt]`
-- `token_endpoint_auth_signing_alg_values_supported: [RS256, ES256]`
-- `grant_types_supported: [client_credentials]`
-- `introspection_endpoint_auth_methods_supported`
+- when `service_auth.mode` is `client_credentials` or `both`:
+  - `token_endpoint`
+  - `token_endpoint_auth_methods_supported: [private_key_jwt]`
+  - `token_endpoint_auth_signing_alg_values_supported: [RS256, ES256]`
+  - `grant_types_supported: [client_credentials]`
+
+`introspection_endpoint_auth_methods_supported` is left out: no registered method describes a mesh
+identity or a client-credentials bearer token.
 
 ## 6. Introspection
 
@@ -189,8 +210,8 @@ A checklist the product's services follow. auth1 publishes it with the contract.
 
 ## 8. Implementation guidelines *(guideline)*
 
-- `TokenSigner` port: `Sign(claims) (string, error)` with the active key; `Keys() []PublicJWK` for the JWKS. Keyring state is held in an atomic pointer swapped on reload.
-- Library: `github.com/golang-jwt/jwt/v5` for signing and parsing; RFC 7638 thumbprints computed in-house or with `github.com/lestrrat-go/jwx/v3`. Pick one library for JWK handling and use it everywhere.
+- `TokenSigner` port: `Sign(payload, typ) (string, error)` with the signing key, so claim encoding stays with the tokens use case and private keys stay in the keyring; `PublicKeys` for the JWKS and for finding a key by `kid`. Keyring state is held in an atomic pointer swapped on reload.
+- Library: `github.com/lestrrat-go/jwx/v3` for signing, parsing and RFC 7638 thumbprints, everywhere.
 - The refresh use case is the hottest write path. Keep it to one transaction with one session lock, one account read, one insert and one update.
 
 ## 9. To be detailed

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,8 +18,13 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // the pgx driver for database/sql
+
+	deploypg "github.com/arafat-hasan/auth1/deploy/postgres"
+	"github.com/arafat-hasan/auth1/internal/adapters/postgres/migrate"
 	"github.com/arafat-hasan/auth1/internal/http/server"
 	"github.com/arafat-hasan/auth1/internal/testing/pgtest"
+	"github.com/arafat-hasan/auth1/migrations"
 )
 
 // testDeps binds every listener on 127.0.0.1:0 and reports each bound address on addrs, keyed by
@@ -162,7 +168,7 @@ func TestServeRuns(t *testing.T) {
 	addrs := make(chan [2]string, 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	env := dsnEnv(t, pgtest.Empty(t))
+	env := append(dsnEnv(t, pgtest.DSN(t)), promoteAtOnce)
 	run := newTestServeCmd(testDeps(addrs), &bytes.Buffer{}, env, "--config", "config.example.yaml")
 	done := make(chan error, 1)
 	go func() { done <- run(ctx) }()
@@ -205,9 +211,11 @@ func TestServeRuns(t *testing.T) {
 	}
 	expect(api+"/livez", 200, "application/json", `"ok"`)
 	readyz := expect(api+"/readyz", 200, "application/json", `"draining"`)
-	if !strings.Contains(readyz, `"postgres"`) {
-		t.Errorf("/readyz lacks the postgres check: %s", readyz)
+	if !strings.Contains(readyz, `"postgres"`) || !strings.Contains(readyz, `"keyring"`) {
+		t.Errorf("/readyz lacks the postgres or the keyring check: %s", readyz)
 	}
+	expect(api+"/.well-known/jwks.json", 200, "application/json", `"kty":"RSA"`)
+	expect(api+"/.well-known/oauth-authorization-server", 200, "application/json", `"jwks_uri":"https://id.example.com/.well-known/jwks.json"`)
 	expect(api+"/nope", 404, "application/problem+json", `"NOT_FOUND"`)
 	expect(metrics+"/metrics", 200, "", "http_server_request_duration_seconds_bucket")
 
@@ -218,7 +226,7 @@ func TestServeRuns(t *testing.T) {
 	var ready struct {
 		Checks []struct{ Name, Status string } `json:"checks"`
 	}
-	if err := json.Unmarshal([]byte(body), &ready); err != nil || len(ready.Checks) != 2 ||
+	if err := json.Unmarshal([]byte(body), &ready); err != nil || len(ready.Checks) != 3 ||
 		ready.Checks[0].Name != "draining" || ready.Checks[0].Status != "failing" {
 		t.Errorf("/readyz while draining: %s", body)
 	}
@@ -230,6 +238,26 @@ func TestServeRuns(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not stop")
+	}
+}
+
+// promoteAtOnce lets the example's signing key sign as soon as it is published, so that serve can
+// become ready on a fresh database.
+const promoteAtOnce = "AUTH1_KEYS_MIN_PUBLISH_BEFORE_USE=0s"
+
+// migrated runs the roles script and the migrations, as superuser, on the database at dsn.
+func migrated(t *testing.T, dsn string) {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(t.Context(), deploypg.RolesSQL); err != nil {
+		t.Fatalf("roles script: %v", err)
+	}
+	if _, err := migrate.New(db, migrations.FS).Up(t.Context()); err != nil {
+		t.Fatalf("migrate: %v", err)
 	}
 }
 
@@ -337,7 +365,8 @@ func waitReady(t *testing.T, api string, code int, state string, within time.Dur
 
 func TestServeReadinessFollowsPostgres(t *testing.T) {
 	srv := pgtest.NewServer(t)
-	api := startServe(t, dsnEnv(t, srv.DSN()))
+	migrated(t, srv.DSN())
+	api := startServe(t, append(dsnEnv(t, srv.DSN()), promoteAtOnce))
 
 	waitReady(t, api, http.StatusOK, "ok", 5*time.Second)
 	srv.Stop(t)

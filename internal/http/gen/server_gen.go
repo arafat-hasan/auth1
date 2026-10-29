@@ -1438,6 +1438,12 @@ type Unavailable = Problem
 // Unprocessable RFC 9457 problem details, with a stable code
 type Unprocessable = Problem
 
+// GetJwksParams defines parameters for GetJwks.
+type GetJwksParams struct {
+	// IfNoneMatch Entity tags from an earlier response (RFC 9110 §13.1.2), or `*`
+	IfNoneMatch *string `json:"If-None-Match,omitempty"`
+}
+
 // DeleteAccountParams defines parameters for DeleteAccount.
 type DeleteAccountParams struct {
 	// IdempotencyKey Unique per intended change. Replays return the first response for 24 hours.
@@ -1842,7 +1848,7 @@ func (t *SecondFactor) UnmarshalJSON(b []byte) error {
 type ServerInterface interface {
 	// GetJwks The signing keys
 	// (GET /.well-known/jwks.json)
-	GetJwks(w http.ResponseWriter, r *http.Request)
+	GetJwks(w http.ResponseWriter, r *http.Request, params GetJwksParams)
 	// GetServerMetadata Server metadata (RFC 8414)
 	// (GET /.well-known/oauth-authorization-server)
 	GetServerMetadata(w http.ResponseWriter, r *http.Request)
@@ -1998,7 +2004,7 @@ type Unimplemented struct{}
 
 // GetJwks The signing keys
 // (GET /.well-known/jwks.json)
-func (_ Unimplemented) GetJwks(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) GetJwks(w http.ResponseWriter, r *http.Request, params GetJwksParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2308,8 +2314,35 @@ type MiddlewareFunc func(http.Handler) http.Handler
 // GetJwks operation middleware
 func (siw *ServerInterfaceWrapper) GetJwks(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetJwksParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-None-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-None-Match", Err: err})
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetJwks(w, r)
+		siw.Handler.GetJwks(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3935,6 +3968,7 @@ type UnavailableApplicationProblemPlusJSONResponse struct {
 type UnprocessableApplicationProblemPlusJSONResponse Problem
 
 type GetJwksRequestObject struct {
+	Params GetJwksParams
 }
 
 type GetJwksResponseObject interface {
@@ -3965,6 +3999,42 @@ func (response GetJwks200JSONResponse) VisitGetJwksResponse(w http.ResponseWrite
 		w.Header().Set("ETag", fmt.Sprint(*response.Headers.ETag))
 	}
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetJwks304ResponseHeaders struct {
+	CacheControl *string
+	ETag         *string
+}
+
+type GetJwks304Response struct {
+	Headers GetJwks304ResponseHeaders
+}
+
+func (response GetJwks304Response) VisitGetJwksResponse(w http.ResponseWriter) error {
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	if response.Headers.ETag != nil {
+		w.Header().Set("ETag", fmt.Sprint(*response.Headers.ETag))
+	}
+	w.WriteHeader(304)
+	return nil
+}
+
+type GetJwks422ApplicationProblemPlusJSONResponse struct {
+	UnprocessableApplicationProblemPlusJSONResponse
+}
+
+func (response GetJwks422ApplicationProblemPlusJSONResponse) VisitGetJwksResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -9121,8 +9191,10 @@ type strictHandler struct {
 }
 
 // GetJwks operation middleware
-func (sh *strictHandler) GetJwks(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) GetJwks(w http.ResponseWriter, r *http.Request, params GetJwksParams) {
 	var request GetJwksRequestObject
+
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.GetJwks(ctx, request.(GetJwksRequestObject))

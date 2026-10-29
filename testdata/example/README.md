@@ -9,9 +9,13 @@ blind-index key (`fields/bidx.key`) and the OTP and recovery-code MAC key (`mac/
 can read them, so they protect nothing: never use them anywhere else, and never copy them into a
 deployment. `config check` and `serve` parse them as they would real keys.
 
+`secrets/signing/` holds the signing keyring (WP-12): an RS256 key, `active`, and an ES256
+key, `next`, generated for this repository. They too are public development keys, for the
+example and the tests only; never use them anywhere else.
+
 The other files are empty placeholders: `config check` only checks that each exists and is
 readable. Real fixtures replace them when the packages that parse them arrive (WP-11 for
-`pepper/`, WP-12 for `signing/`; `mac/device.key` with the device cookie).
+`pepper/`; `mac/device.key` with the device cookie).
 
 `secrets/db/` holds local development DSNs for the two roles of `deploy/postgres/roles.sql`, with
 each role's name as its password. `dsn` is `auth1_app`'s, which `auth1 serve` reads through

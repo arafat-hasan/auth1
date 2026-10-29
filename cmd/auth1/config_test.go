@@ -77,3 +77,28 @@ func TestConfigCheckRequiresConfig(t *testing.T) {
 		t.Fatal("config check without --config: want an error")
 	}
 }
+
+// TestConfigCheckInvalidKeyring: config check parses and validates the signing keyring.
+func TestConfigCheckInvalidKeyring(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+
+	pem, err := filepath.Abs(filepath.Join("testdata", "example", "secrets", "signing", "rs256.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyring := filepath.Join(t.TempDir(), "keyring.yaml")
+	entry := "  - {alg: RS256, state: active, private_key_file: " + pem + "}\n"
+	writeFile(t, keyring, "keys:\n"+entry+entry)
+	cmd := newConfigCmd(func() []string { return []string{"AUTH1_KEYS_KEYRING_FILE=" + keyring} })
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"check", "--config", "config.example.yaml"})
+	if err := cmd.Execute(); !errors.Is(err, errConfigInvalid) {
+		t.Fatalf("config check error = %v, want errConfigInvalid\n%s", err, &out)
+	}
+	if !strings.Contains(out.String(), "  - keys.keyring_file: signing keyring "+keyring+": ") ||
+		!strings.Contains(out.String(), "2 active keys") {
+		t.Errorf("output does not name the keyring problem:\n%s", &out)
+	}
+}

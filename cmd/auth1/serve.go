@@ -13,7 +13,11 @@ import (
 	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/arafat-hasan/auth1/internal/adapters/keyring"
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
+	"github.com/arafat-hasan/auth1/internal/config"
+	"github.com/arafat-hasan/auth1/internal/http/gen"
+	"github.com/arafat-hasan/auth1/internal/http/handlers"
 	"github.com/arafat-hasan/auth1/internal/http/health"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/server"
@@ -123,7 +127,27 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		}
 	}()
 
-	duration, err := telemetry.NewMetrics(tel.MeterProvider()).Histogram("http.server.request.duration")
+	metrics := telemetry.NewMetrics(tel.MeterProvider())
+	duration, err := metrics.Histogram("http.server.request.duration")
+	if err != nil {
+		return err
+	}
+	jwksKeys, err := metrics.Gauge("auth1_jwks_keys")
+	if err != nil {
+		return err
+	}
+	kr, err := keyring.New(ctx, cfg.Keys.KeyringFile.Path(), postgres.NewSigningKeys(db), keyring.Options{
+		MinPublishBeforeUse: cfg.Keys.MinPublishBeforeUse, AccessTTL: cfg.Tokens.AccessTTL,
+		Logger: logger, Keys: jwksKeys,
+	})
+	if err != nil {
+		return err
+	}
+	mode := cfg.ServiceAuth.Mode
+	api, err := handlers.NewAPI(kr, handlers.MetadataOptions{
+		Issuer: cfg.HTTP.Issuer, BasePath: cfg.HTTP.BasePath,
+		ClientCredentials: mode == config.ServiceAuthClientCredentials || mode == config.ServiceAuthBoth,
+	})
 	if err != nil {
 		return err
 	}
@@ -136,26 +160,30 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		return nil
 	}, true)
 	checks.Register("postgres", postgres.Ping(probe, pingTimeout), true)
+	checks.Register("keyring", kr.Ready, true)
 
 	listeners, err := bind(deps.listen, cfg.HTTP.Listen, cfg.Telemetry.MetricsListen)
 	if err != nil {
 		return err
 	}
+	pw := problem.New(logger)
 	router := server.NewRouter(server.Options{
 		BasePath:        cfg.HTTP.BasePath,
 		Logger:          logger,
-		Problems:        problem.New(logger),
+		Problems:        pw,
 		TracerProvider:  tel.TracerProvider(),
 		Propagator:      tel.Propagator(),
 		RequestDuration: duration,
 		Health:          checks,
+		Routes:          gen.Routes(api, pw),
 	})
 
-	// The keyring poller runs until the servers have stopped. It returns only when its context
-	// ends, so it never stops the servers.
+	// The keyring pollers run until the servers have stopped. They return only when their context
+	// ends, so they never stop the servers.
 	pollCtx, stopPolling := context.WithCancel(ctx)
 	g, gctx := errgroup.WithContext(pollCtx)
 	g.Go(func() error { return keys.fields.Run(gctx) })
+	g.Go(func() error { return kr.Run(gctx) })
 	err = server.Run(ctx, logger, []server.Listener{
 		{Name: "http", Listener: listeners[0], Handler: router},
 		{Name: "metrics", Listener: listeners[1], Handler: tel.MetricsHandler()},

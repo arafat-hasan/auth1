@@ -66,8 +66,14 @@ paths:
       tags: [Metadata]
       operationId: getJwks
       summary: The signing keys
-      description: 'Every `next` and `active` key, and `retired` keys until the access-token lifetime plus 5 minutes after retirement. Cacheable for 5 minutes.'
+      description: 'Every `next` and `active` key, and `retired` keys until the access-token lifetime plus 5 minutes after retirement. Cacheable for 5 minutes. A matching `If-None-Match` answers `304`.'
       security: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: Entity tags from an earlier response (RFC 9110 §13.1.2), or `*`
+          schema: { type: string }
       responses:
         '200':
           description: The key set
@@ -75,10 +81,19 @@ paths:
             Cache-Control:
               schema: { type: string, example: 'public, max-age=300' }
             ETag:
+              description: A strong entity tag over the body
               schema: { type: string }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Jwks' }
+        '304':
+          description: The key set has not changed since the entity tag in `If-None-Match`
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'public, max-age=300' }
+            ETag:
+              schema: { type: string }
+        '422': { $ref: '#/components/responses/Unprocessable' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
 

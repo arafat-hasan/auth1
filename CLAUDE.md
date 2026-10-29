@@ -141,5 +141,16 @@ pointer and its `Run` re-reads the file every 30 s, keeping the last good one wh
 for logging. `cmd/auth1/keys.go` loads the keyring and key files for `config check` and `serve`.
 The example's `fields/` and `mac/mac.key` are public development keys (`testdata/example/README.md`).
 
+Signing keys (TDD-04 §5): `internal/adapters/keyring.Keyring` loads `keys.keyring_file` (`Load`
+validates it; `config check` runs it), polls the file and its PEMs every 30 s, and syncs
+`signing_keys` through `app.SigningKeyStore` (`postgres.SigningKeys`; every time comparison is the
+database's `now()`). It implements `app.TokenSigner` (`Sign(payload, typ)`) and `app.PublicKeys`
+(`Key(kid)`, `Published()`); handlers and use cases take the ports, never the adapter.
+`handlers.API` (embeds `gen.Stub`) serves the JWKS and the server metadata. `serve` registers the
+`keyring` readiness check and runs `Keyring.Run` beside the servers. Private keys never print
+(`String`, `GoString`, `Format`, `LogValue`). The example keyring in
+`testdata/example/secrets/signing` holds public test keys; a fresh database makes its key wait
+`min_publish_before_use` (tests set `AUTH1_KEYS_MIN_PUBLISH_BEFORE_USE=0s`).
+
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
