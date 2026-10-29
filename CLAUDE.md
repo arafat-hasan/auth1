@@ -74,8 +74,8 @@ TDD-08 §5.2 catalogue (`telemetry.InstrumentNames()`) or one of the two role na
 Time and ids (TDD-01 §1): use cases take `app.Clock` (wall time in UTC, for stored timestamps;
 elapsed time keeps `time.Since`) and `app.IDGenerator` (UUIDv7). The adapters are
 `system.Clock` (UTC, truncated to the microsecond, as `timestamptz` stores) and `system.UUIDv7`.
-Tests use `internal/testing/fakes`: `NewClock` (moves only on `Set` / `Advance`) and `NewIDs`,
-whose nth id is `fakes.ID(n)`.
+Tests use `internal/testing/fakes`: `NewClock` (moves only on `Set` / `Advance`; reads to the
+microsecond, like `system.Clock`) and `NewIDs`, whose nth id is `fakes.ID(n)`.
 
 `internal/config` loads YAML over the defaults in `Default()`, then `AUTH1_<PATH>` overrides
 (resolved against the schema's scalar key paths); `Validate()` applies TDD-08 §3.1. Adding a key
