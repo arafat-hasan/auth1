@@ -238,7 +238,7 @@ flowchart TB
     P3[TokenSigner and Keyring]
     P4[MessageDelivery]
     P5[RateLimiter]
-    P6[Clock and IdGenerator]
+    P6[Clock and IDGenerator]
   end
   subgraph Adapters
     A1[PostgreSQL via bun]
