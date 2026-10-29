@@ -102,7 +102,7 @@ func (r *Accounts) insertIdentifier(ctx context.Context, accountID uuid.UUID, id
 		INSERT INTO identifiers (id, account_id, type, value, value_bidx, verified_at, created_at)
 		VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN now() END, now())`,
 		id.ID, accountID, id.Type, value, bidx, id.Verified); err != nil {
-		return fmt.Errorf("store identifier: %w", err)
+		return constraintError("store identifier", err)
 	}
 	return nil
 }

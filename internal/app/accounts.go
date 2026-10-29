@@ -30,4 +30,28 @@ type Accounts interface {
 	// BumpVersion adds n (≥ 1) to the account's version, sets updated_at, and returns the new
 	// version; NOT_FOUND when there is no account.
 	BumpVersion(ctx context.Context, id uuid.UUID, n int64) (int64, error)
+
+	// Identifiers returns the account's current identifiers, decrypted, sorted by type: at most
+	// one per type (I-2).
+	Identifiers(ctx context.Context, accountID uuid.UUID) ([]account.Identifier, error)
+	// FindVerified returns the verified, current identifier of type idType with value; NOT_FOUND
+	// when no account holds it verified (I-1). It decrypts nothing: Value is the value given.
+	FindVerified(ctx context.Context, idType, value string) (account.Identifier, error)
+	// FindCurrent returns every current identifier of type idType with value, verified or not,
+	// sorted by id: unverified ones may belong to several pending accounts. It decrypts nothing:
+	// Value is the value given.
+	FindCurrent(ctx context.Context, idType, value string) ([]account.Identifier, error)
+	// AddIdentifier stores id as a current identifier of the account, verified now when
+	// id.Verified. A verified value another account holds verified is IDENTIFIER_TAKEN. A second
+	// current identifier of one type (I-2) is a caller's bug: retire the old one first.
+	AddIdentifier(ctx context.Context, accountID uuid.UUID, id account.NewIdentifier) error
+	// VerifyIdentifier marks the current, unverified identifier id verified now; NOT_FOUND when
+	// there is no such identifier, and IDENTIFIER_TAKEN when another account holds its value
+	// verified (I-1, T-1).
+	VerifyIdentifier(ctx context.Context, id uuid.UUID) error
+	// RetireIdentifier retires the current identifier id now, releasing its value; NOT_FOUND
+	// when there is no current identifier id.
+	RetireIdentifier(ctx context.Context, id uuid.UUID) error
+	// RetireIdentifiers retires every current identifier of the account.
+	RetireIdentifiers(ctx context.Context, accountID uuid.UUID) error
 }
