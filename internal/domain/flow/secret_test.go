@@ -141,7 +141,9 @@ func TestNewLinkTokenAndHandle(t *testing.T) {
 func TestSecretRedacts(t *testing.T) {
 	t.Parallel()
 
-	s := Secret("424242")
+	// A value long enough that no timestamp or other output contains it by chance.
+	const value = "918273645091827364"
+	s := Secret(value)
 	var out []string
 	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d"} {
 		out = append(out, fmt.Sprintf(verb, s))
@@ -149,8 +151,14 @@ func TestSecretRedacts(t *testing.T) {
 	out = append(out, s.String(), s.GoString())
 
 	var buf bytes.Buffer
-	slog.New(slog.NewJSONHandler(&buf, nil)).Info("m", "otp", s)
-	slog.New(slog.NewTextHandler(&buf, nil)).Info("m", "otp", s)
+	noTime := &slog.HandlerOptions{ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+		if a.Key == slog.TimeKey {
+			return slog.Attr{}
+		}
+		return a
+	}}
+	slog.New(slog.NewJSONHandler(&buf, noTime)).Info("m", "otp", s)
+	slog.New(slog.NewTextHandler(&buf, noTime)).Info("m", "otp", s)
 	out = append(out, buf.String())
 
 	j, err := json.Marshal(struct{ S Secret }{s})
@@ -160,7 +168,8 @@ func TestSecretRedacts(t *testing.T) {
 	out = append(out, string(j))
 
 	for _, o := range out {
-		if strings.Contains(o, "42") || strings.Contains(o, "3432") || !strings.Contains(o, "[redacted]") {
+		if strings.Contains(o, value) || strings.Contains(o, fmt.Sprintf("%x", value)) ||
+			strings.Contains(o, base64.StdEncoding.EncodeToString([]byte(value))) || !strings.Contains(o, "[redacted]") {
 			t.Errorf("formatted secret %q: want [redacted] and no trace of the value", o)
 		}
 	}
