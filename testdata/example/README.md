@@ -5,6 +5,10 @@ config.example.yaml` passes from the repository root. They hold no keys: `config
 checks that each file exists and is readable. Real fixtures replace them when the packages that
 parse keyrings and keys arrive (WP-10, WP-12). Never put real secrets here.
 
+`secrets/signing/` holds a real signing keyring (WP-12): an RS256 key, `active`, and an ES256 key,
+`next`, generated for this repository. They are public test keys, for the example and the tests
+only; never use them anywhere else.
+
 `secrets/db/` is the exception: it holds local development DSNs for the two roles of
 `deploy/postgres/roles.sql`, with each role's name as its password. `dsn` is `auth1_app`'s, which
 `auth1 serve` reads through `database.dsn_file`; `migrator-dsn` is `auth1_migrator`'s, which

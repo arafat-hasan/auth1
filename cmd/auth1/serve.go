@@ -11,8 +11,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/arafat-hasan/auth1/internal/adapters/keyring"
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
+	"github.com/arafat-hasan/auth1/internal/config"
+	"github.com/arafat-hasan/auth1/internal/http/gen"
+	"github.com/arafat-hasan/auth1/internal/http/handlers"
 	"github.com/arafat-hasan/auth1/internal/http/health"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/server"
@@ -117,7 +122,27 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		}
 	}()
 
-	duration, err := telemetry.NewMetrics(tel.MeterProvider()).Histogram("http.server.request.duration")
+	metrics := telemetry.NewMetrics(tel.MeterProvider())
+	duration, err := metrics.Histogram("http.server.request.duration")
+	if err != nil {
+		return err
+	}
+	jwksKeys, err := metrics.Gauge("auth1_jwks_keys")
+	if err != nil {
+		return err
+	}
+	kr, err := keyring.New(ctx, cfg.Keys.KeyringFile.Path(), postgres.NewSigningKeys(db), keyring.Options{
+		MinPublishBeforeUse: cfg.Keys.MinPublishBeforeUse, AccessTTL: cfg.Tokens.AccessTTL,
+		Logger: logger, Keys: jwksKeys,
+	})
+	if err != nil {
+		return err
+	}
+	mode := cfg.ServiceAuth.Mode
+	api, err := handlers.NewAPI(kr, handlers.MetadataOptions{
+		Issuer: cfg.HTTP.Issuer, BasePath: cfg.HTTP.BasePath,
+		ClientCredentials: mode == config.ServiceAuthClientCredentials || mode == config.ServiceAuthBoth,
+	})
 	if err != nil {
 		return err
 	}
@@ -130,28 +155,37 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		return nil
 	}, true)
 	checks.Register("postgres", postgres.Ping(probe, pingTimeout), true)
+	checks.Register("keyring", kr.Ready, true)
 
 	listeners, err := bind(deps.listen, cfg.HTTP.Listen, cfg.Telemetry.MetricsListen)
 	if err != nil {
 		return err
 	}
+	pw := problem.New(logger)
 	router := server.NewRouter(server.Options{
 		BasePath:        cfg.HTTP.BasePath,
 		Logger:          logger,
-		Problems:        problem.New(logger),
+		Problems:        pw,
 		TracerProvider:  tel.TracerProvider(),
 		Propagator:      tel.Propagator(),
 		RequestDuration: duration,
 		Health:          checks,
+		Routes:          gen.Routes(api, pw),
 	})
-	return server.Run(ctx, logger, []server.Listener{
-		{Name: "http", Listener: listeners[0], Handler: router},
-		{Name: "metrics", Listener: listeners[1], Handler: tel.MetricsHandler()},
-	}, server.Shutdown{
-		Drain:      func() { draining.Store(true) },
-		DrainDelay: deps.drainDelay,
-		Timeout:    deps.shutdownTimeout,
+	// The keyring reloads until the servers stop; a server failure stops it too.
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return kr.Run(gctx) })
+	g.Go(func() error {
+		return server.Run(gctx, logger, []server.Listener{
+			{Name: "http", Listener: listeners[0], Handler: router},
+			{Name: "metrics", Listener: listeners[1], Handler: tel.MetricsHandler()},
+		}, server.Shutdown{
+			Drain:      func() { draining.Store(true) },
+			DrainDelay: deps.drainDelay,
+			Timeout:    deps.shutdownTimeout,
+		})
 	})
+	return g.Wait()
 }
 
 // bind opens the API and metrics listeners. If one fails, it closes those already open.

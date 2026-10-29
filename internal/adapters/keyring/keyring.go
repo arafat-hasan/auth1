@@ -25,6 +25,9 @@ const (
 	defaultPollInterval = 30 * time.Second
 	// retiredGrace is how long a retired key stays in the JWKS after the access-token lifetime.
 	retiredGrace = 5 * time.Minute
+	// syncTimeout bounds one sync with the database, so a hanging database cannot stall start-up or
+	// the poll.
+	syncTimeout = 10 * time.Second
 )
 
 var (
@@ -133,7 +136,9 @@ func (k *Keyring) Reload(ctx context.Context) error {
 // sync runs TDD-04 §5.2 for k.file and stores the state it decides. On a store failure it logs
 // and keeps the previous state. k.mu is held.
 func (k *Keyring) sync(ctx context.Context) error {
-	s, err := k.decide(ctx, k.file)
+	dctx, cancel := context.WithTimeout(ctx, syncTimeout)
+	defer cancel()
+	s, err := k.decide(dctx, k.file)
 	if err != nil {
 		k.o.Logger.ErrorContext(ctx, "signing keyring sync failed", "keyring_file", k.path, "error", err)
 		return err
