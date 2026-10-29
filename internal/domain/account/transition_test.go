@@ -19,7 +19,7 @@ var (
 // validChange is a request for to that passes validation: a reason for suspended and banned,
 // and an until for suspended.
 func validChange(to Status) Change {
-	c := Change{To: to, AllowedReasons: testReasons}
+	c := Change{To: to}
 	if to == StatusSuspended || to == StatusBanned {
 		c.ReasonCode = "admin_action"
 	}
@@ -83,7 +83,7 @@ func TestT25TransitionTable(t *testing.T) {
 			t.Run(string(from)+"→"+string(to), func(t *testing.T) {
 				t.Parallel()
 				req := validChange(to)
-				got, err := Transition(from, req, testNow)
+				got, err := Transition(from, req, testReasons, testNow)
 				switch c {
 				case allowed:
 					if err != nil {
@@ -107,7 +107,7 @@ func TestT25TransitionTable(t *testing.T) {
 					checkError(t, err, domain.CodeStatusTransitionInvalid, nil)
 				case notTarget:
 					checkError(t, err, domain.CodeValidationFailed,
-						[]domain.FieldError{{Field: "status", Code: FieldNotAllowed}})
+						[]domain.FieldError{{Field: "status", Code: domain.FieldNotAllowed}})
 				}
 			})
 		}
@@ -127,61 +127,58 @@ func TestTransitionValidation(t *testing.T) {
 		want []domain.FieldError
 	}{
 		{"suspended without a reason", StatusActive,
-			Change{To: StatusSuspended, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldRequired}}},
+			Change{To: StatusSuspended},
+			[]domain.FieldError{{Field: "reason_code", Code: domain.FieldRequired}}},
 		{"banned without a reason", StatusActive,
-			Change{To: StatusBanned, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldRequired}}},
+			Change{To: StatusBanned},
+			[]domain.FieldError{{Field: "reason_code", Code: domain.FieldRequired}}},
 		{"a reason outside the list", StatusActive,
-			Change{To: StatusBanned, ReasonCode: "other", AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldUnknown}}},
-		{"no reasons configured", StatusActive,
-			Change{To: StatusBanned, ReasonCode: "admin_action"},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldUnknown}}},
+			Change{To: StatusBanned, ReasonCode: "other"},
+			[]domain.FieldError{{Field: "reason_code", Code: domain.FieldUnknown}}},
 		{"a reason in another case", StatusActive,
-			Change{To: StatusBanned, ReasonCode: "Admin_Action", AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldUnknown}}},
+			Change{To: StatusBanned, ReasonCode: "Admin_Action"},
+			[]domain.FieldError{{Field: "reason_code", Code: domain.FieldUnknown}}},
 		{"a reason with white space", StatusActive,
-			Change{To: StatusBanned, ReasonCode: " admin_action", AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldUnknown}}},
+			Change{To: StatusBanned, ReasonCode: " admin_action"},
+			[]domain.FieldError{{Field: "reason_code", Code: domain.FieldUnknown}}},
 		{"active with a reason", StatusActive,
-			Change{To: StatusActive, ReasonCode: "admin_action", AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldNotAllowed}}},
+			Change{To: StatusActive, ReasonCode: "admin_action"},
+			[]domain.FieldError{{Field: "reason_code", Code: domain.FieldNotAllowed}}},
 		{"active with an until", StatusSuspended,
-			Change{To: StatusActive, Until: &later, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "until", Code: FieldNotAllowed}}},
+			Change{To: StatusActive, Until: &later},
+			[]domain.FieldError{{Field: "until", Code: domain.FieldNotAllowed}}},
 		{"banned with an until", StatusActive,
-			Change{To: StatusBanned, ReasonCode: "admin_action", Until: &later, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "until", Code: FieldNotAllowed}}},
+			Change{To: StatusBanned, ReasonCode: "admin_action", Until: &later},
+			[]domain.FieldError{{Field: "until", Code: domain.FieldNotAllowed}}},
 		{"deleted with a reason", StatusActive,
-			Change{To: StatusDeleted, ReasonCode: "admin_action", AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldNotAllowed}}},
+			Change{To: StatusDeleted, ReasonCode: "admin_action"},
+			[]domain.FieldError{{Field: "reason_code", Code: domain.FieldNotAllowed}}},
 		{"until in the past", StatusActive,
-			Change{To: StatusSuspended, ReasonCode: "admin_action", Until: &past, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "until", Code: FieldNotFuture}}},
+			Change{To: StatusSuspended, ReasonCode: "admin_action", Until: &past},
+			[]domain.FieldError{{Field: "until", Code: domain.FieldNotFuture}}},
 		{"until equal to now in another zone", StatusActive,
-			Change{To: StatusSuspended, ReasonCode: "admin_action", Until: &nowElsewhere, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "until", Code: FieldNotFuture}}},
+			Change{To: StatusSuspended, ReasonCode: "admin_action", Until: &nowElsewhere},
+			[]domain.FieldError{{Field: "until", Code: domain.FieldNotFuture}}},
 		{"an unknown status", StatusActive,
-			Change{To: "Active", AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "status", Code: FieldUnknown}}},
+			Change{To: "Active"},
+			[]domain.FieldError{{Field: "status", Code: domain.FieldUnknown}}},
 		{"an unknown status skips the other checks", StatusActive,
-			Change{To: "restricted", ReasonCode: "admin_action", Until: &later, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "status", Code: FieldUnknown}}},
+			Change{To: "restricted", ReasonCode: "admin_action", Until: &later},
+			[]domain.FieldError{{Field: "status", Code: domain.FieldUnknown}}},
 		{"no reason and a past until", StatusActive,
-			Change{To: StatusSuspended, Until: &past, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldRequired}, {Field: "until", Code: FieldNotFuture}}},
+			Change{To: StatusSuspended, Until: &past},
+			[]domain.FieldError{{Field: "reason_code", Code: domain.FieldRequired}, {Field: "until", Code: domain.FieldNotFuture}}},
 		{"pending with a reason and an until", StatusActive,
-			Change{To: StatusPending, ReasonCode: "admin_action", Until: &later, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "status", Code: FieldNotAllowed}}},
+			Change{To: StatusPending, ReasonCode: "admin_action", Until: &later},
+			[]domain.FieldError{{Field: "status", Code: domain.FieldNotAllowed}}},
 		{"an invalid body on a refused cell", StatusDeleted,
-			Change{To: StatusSuspended, AllowedReasons: testReasons},
-			[]domain.FieldError{{Field: "reason_code", Code: FieldRequired}}},
+			Change{To: StatusSuspended},
+			[]domain.FieldError{{Field: "reason_code", Code: domain.FieldRequired}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := Transition(tt.from, tt.req, testNow)
+			got, err := Transition(tt.from, tt.req, testReasons, testNow)
 			if diff := cmp.Diff(Decision{}, got); diff != "" {
 				t.Errorf("Decision on error (-want +got):\n%s", diff)
 			}
@@ -190,11 +187,39 @@ func TestTransitionValidation(t *testing.T) {
 	}
 }
 
+func TestTransitionNoReasonsConfigured(t *testing.T) {
+	t.Parallel()
+
+	for _, reasons := range [][]string{nil, {}} {
+		_, err := Transition(StatusActive, Change{To: StatusBanned, ReasonCode: "admin_action"}, reasons, testNow)
+		checkError(t, err, domain.CodeValidationFailed, []domain.FieldError{{Field: "reason_code", Code: domain.FieldUnknown}})
+	}
+}
+
+// TestTransitionUntilMicroseconds checks that until is judged and decided as timestamptz stores
+// it: to the microsecond.
+func TestTransitionUntilMicroseconds(t *testing.T) {
+	t.Parallel()
+
+	req := Change{To: StatusSuspended, ReasonCode: "admin_action", Until: ptr(testNow.Add(500 * time.Nanosecond))}
+	_, err := Transition(StatusActive, req, testReasons, testNow)
+	checkError(t, err, domain.CodeValidationFailed, []domain.FieldError{{Field: "until", Code: domain.FieldNotFuture}})
+
+	req.Until = ptr(testNow.Add(time.Hour + 1500*time.Nanosecond))
+	got, err := Transition(StatusActive, req, testReasons, testNow)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if want := testNow.Add(time.Hour + time.Microsecond); got.Until == nil || !got.Until.Equal(want) {
+		t.Errorf("Until = %v, want %v", got.Until, want)
+	}
+}
+
 func TestTransitionUnknownFrom(t *testing.T) {
 	t.Parallel()
 
 	for _, from := range []Status{"", "Active", "restricted"} {
-		_, err := Transition(from, validChange(StatusActive), testNow)
+		_, err := Transition(from, validChange(StatusActive), testReasons, testNow)
 		checkError(t, err, domain.CodeStatusTransitionInvalid, nil)
 	}
 }
@@ -211,19 +236,19 @@ func TestTransitionSanctionAgain(t *testing.T) {
 		want Decision
 	}{
 		{"suspended again without until clears it", StatusSuspended,
-			Change{To: StatusSuspended, ReasonCode: "policy_violation", AllowedReasons: testReasons},
+			Change{To: StatusSuspended, ReasonCode: "policy_violation"},
 			Decision{Changed: true, Status: StatusSuspended, Reason: "policy_violation"}},
 		{"suspended again with a new until", StatusSuspended,
-			Change{To: StatusSuspended, ReasonCode: "admin_action", Until: ptr(testNow.Add(48 * time.Hour)), AllowedReasons: testReasons},
+			Change{To: StatusSuspended, ReasonCode: "admin_action", Until: ptr(testNow.Add(48 * time.Hour))},
 			Decision{Changed: true, Status: StatusSuspended, Reason: "admin_action", Until: ptr(testNow.Add(48 * time.Hour))}},
 		{"banned again with a new reason", StatusBanned,
-			Change{To: StatusBanned, ReasonCode: "policy_violation", AllowedReasons: testReasons},
+			Change{To: StatusBanned, ReasonCode: "policy_violation"},
 			Decision{Changed: true, Status: StatusBanned, Reason: "policy_violation"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := Transition(tt.from, tt.req, testNow)
+			got, err := Transition(tt.from, tt.req, testReasons, testNow)
 			if err != nil {
 				t.Fatalf("error = %v", err)
 			}
@@ -238,8 +263,8 @@ func TestTransitionCopiesUntil(t *testing.T) {
 	t.Parallel()
 
 	until := testNow.Add(time.Hour).In(time.FixedZone("UTC+5", 5*3600))
-	req := Change{To: StatusSuspended, ReasonCode: "admin_action", Until: &until, AllowedReasons: testReasons}
-	got, err := Transition(StatusActive, req, testNow)
+	req := Change{To: StatusSuspended, ReasonCode: "admin_action", Until: &until}
+	got, err := Transition(StatusActive, req, testReasons, testNow)
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
@@ -265,11 +290,11 @@ func FuzzTransition(f *testing.F) {
 	f.Add("", "", "", false, int64(0))
 
 	f.Fuzz(func(t *testing.T, from, to, reason string, withUntil bool, offsetSeconds int64) {
-		req := Change{To: Status(to), ReasonCode: reason, AllowedReasons: testReasons}
+		req := Change{To: Status(to), ReasonCode: reason}
 		if withUntil {
 			req.Until = ptr(testNow.Add(time.Duration(offsetSeconds % (1 << 32) * int64(time.Second))))
 		}
-		got, err := Transition(Status(from), req, testNow)
+		got, err := Transition(Status(from), req, testReasons, testNow)
 		if err != nil {
 			var de *domain.Error
 			if !errors.As(err, &de) ||

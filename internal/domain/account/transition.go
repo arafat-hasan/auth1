@@ -9,10 +9,9 @@ import (
 
 // Change is a status change asked for through account control (SDD D-14, `StatusChange`).
 type Change struct {
-	To             Status
-	ReasonCode     string     // required for suspended and banned, else empty
-	Until          *time.Time // suspended only, and after now; information only (SDD D-5)
-	AllowedReasons []string   // statuses.reason_codes
+	To         Status
+	ReasonCode string     // required for suspended and banned, else empty
+	Until      *time.Time // suspended only, and after now; information only (SDD D-5)
 }
 
 // Effects are what a transition does beyond the account row. Only deletion has any (SDD D-5,
@@ -32,7 +31,7 @@ type Decision struct {
 	Changed bool
 	Status  Status
 	Reason  string
-	Until   *time.Time // in UTC
+	Until   *time.Time // in UTC, to the microsecond, as timestamptz stores it
 	Effects Effects
 }
 
@@ -70,11 +69,16 @@ var transitions = map[pair]cell{
 }
 
 // Transition decides the status change req for an account in status from, at now (SDD §8.1).
-// The request is validated first, whatever from is: an invalid one is VALIDATION_FAILED with
-// every failing field, in the order status, reason_code, until. A cell the table refuses is
-// STATUS_TRANSITION_INVALID.
-func Transition(from Status, req Change, now time.Time) (Decision, error) {
-	if err := validate(req, now); err != nil {
+// allowedReasons is statuses.reason_codes. The request is validated first, whatever from is: an
+// invalid one is VALIDATION_FAILED with every failing field, in the order status, reason_code,
+// until. A cell the table refuses is STATUS_TRANSITION_INVALID.
+func Transition(from Status, req Change, allowedReasons []string, now time.Time) (Decision, error) {
+	var until *time.Time
+	if req.Until != nil {
+		u := req.Until.UTC().Truncate(time.Microsecond)
+		until = &u
+	}
+	if err := validate(req.To, req.ReasonCode, until, allowedReasons, now); err != nil {
 		return Decision{}, err
 	}
 	switch transitions[pair{from, req.To}] {
@@ -85,9 +89,8 @@ func Transition(from Status, req Change, now time.Time) (Decision, error) {
 		if Restricted(req.To) {
 			d.Reason = req.ReasonCode
 		}
-		if req.To == StatusSuspended && req.Until != nil {
-			until := req.Until.UTC()
-			d.Until = &until
+		if req.To == StatusSuspended {
+			d.Until = until
 		}
 		if req.To == StatusDeleted {
 			d.Effects = Effects{RevokeSessions: true, CancelFlows: true, EraseCredentials: true, ReleaseIdentifiers: true}
@@ -101,31 +104,32 @@ func Transition(from Status, req Change, now time.Time) (Decision, error) {
 	}
 }
 
-// validate checks req against the contract and the accounts CHECKs: a known target other than
-// pending; a listed reason exactly for suspended and banned; an until after now, for suspended only.
-func validate(req Change, now time.Time) error {
-	to, err := ParseStatus(string(req.To))
+// validate checks a change against the contract and the accounts CHECKs: a known target other
+// than pending; a listed reason exactly for suspended and banned; an until after now, for
+// suspended only. until is the time as it will be stored.
+func validate(target Status, reason string, until *time.Time, allowedReasons []string, now time.Time) error {
+	to, err := ParseStatus(string(target))
 	if err != nil {
 		return err
 	}
 	if to == StatusPending {
-		return fieldError(domain.FieldError{Field: "status", Code: FieldNotAllowed})
+		return fieldError(domain.FieldError{Field: "status", Code: domain.FieldNotAllowed})
 	}
 	var fields []domain.FieldError
 	switch {
-	case !Restricted(to) && req.ReasonCode != "":
-		fields = append(fields, domain.FieldError{Field: "reason_code", Code: FieldNotAllowed})
-	case Restricted(to) && req.ReasonCode == "":
-		fields = append(fields, domain.FieldError{Field: "reason_code", Code: FieldRequired})
-	case Restricted(to) && !slices.Contains(req.AllowedReasons, req.ReasonCode):
-		fields = append(fields, domain.FieldError{Field: "reason_code", Code: FieldUnknown})
+	case !Restricted(to) && reason != "":
+		fields = append(fields, domain.FieldError{Field: "reason_code", Code: domain.FieldNotAllowed})
+	case Restricted(to) && reason == "":
+		fields = append(fields, domain.FieldError{Field: "reason_code", Code: domain.FieldRequired})
+	case Restricted(to) && !slices.Contains(allowedReasons, reason):
+		fields = append(fields, domain.FieldError{Field: "reason_code", Code: domain.FieldUnknown})
 	}
 	switch {
-	case req.Until == nil:
+	case until == nil:
 	case to != StatusSuspended:
-		fields = append(fields, domain.FieldError{Field: "until", Code: FieldNotAllowed})
-	case !req.Until.After(now):
-		fields = append(fields, domain.FieldError{Field: "until", Code: FieldNotFuture})
+		fields = append(fields, domain.FieldError{Field: "until", Code: domain.FieldNotAllowed})
+	case !until.After(now):
+		fields = append(fields, domain.FieldError{Field: "until", Code: domain.FieldNotFuture})
 	}
 	if len(fields) > 0 {
 		return fieldError(fields...)

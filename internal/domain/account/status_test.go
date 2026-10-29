@@ -47,7 +47,7 @@ func TestParseStatus(t *testing.T) {
 				t.Errorf("ParseStatus(%q) = %q, want the zero Status", in, got)
 			}
 			checkError(t, err, domain.CodeValidationFailed,
-				[]domain.FieldError{{Field: "status", Code: FieldUnknown}})
+				[]domain.FieldError{{Field: "status", Code: domain.FieldUnknown}})
 		})
 	}
 }

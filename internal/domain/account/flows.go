@@ -68,6 +68,7 @@ func (o SignInOutcome) Err() error {
 	}
 }
 
+// String returns the outcome's name, for logs and test failures.
 func (o SignInOutcome) String() string {
 	return name("SignInOutcome", int(o), "invalid_credentials", "registration_incomplete", "account_restricted", "full", "restricted")
 }
@@ -83,7 +84,10 @@ const (
 	RefreshRefused                                 // SESSION_INVALID: the sessions were revoked
 )
 
-// Refresh decides a refresh of a session of an account in status s.
+// Refresh decides a refresh of a session of an account in status s. For deleted, "sessions
+// revoked" in SDD §8.1 is what deletion already did (Effects.RevokeSessions), so RefreshRefused
+// asks the caller for nothing more than the refusal; sessions brought back by a restore are
+// revoked by the restore runbook (SDD D-19).
 func Refresh(s Status) RefreshOutcome {
 	switch s {
 	case StatusPending:
@@ -105,6 +109,7 @@ func (o RefreshOutcome) Err() error {
 	return &domain.Error{Code: domain.CodeSessionInvalid, Detail: "the session is not valid"}
 }
 
+// String returns the outcome's name, for logs and test failures.
 func (o RefreshOutcome) String() string {
 	return name("RefreshOutcome", int(o), "not_applicable", "full", "restricted", "refused")
 }
@@ -128,6 +133,7 @@ func PasswordReset(s Status) PasswordResetOutcome {
 	}
 }
 
+// String returns the outcome's name, for logs and test failures.
 func (o PasswordResetOutcome) String() string {
 	return name("PasswordResetOutcome", int(o), "nothing_sent", "allowed")
 }
@@ -162,6 +168,7 @@ func (o SensitiveOutcome) Err() error {
 	return &domain.Error{Code: domain.CodeAccountRestricted, Detail: "the account is restricted"}
 }
 
+// String returns the outcome's name, for logs and test failures.
 func (o SensitiveOutcome) String() string {
 	return name("SensitiveOutcome", int(o), "not_applicable", "allowed", "account_restricted")
 }
@@ -183,6 +190,7 @@ func Resume(s Status) ResumeOutcome {
 	return ResumeNotApplicable
 }
 
+// String returns the outcome's name, for logs and test failures.
 func (o ResumeOutcome) String() string {
 	return name("ResumeOutcome", int(o), "not_applicable", "allowed")
 }
@@ -209,6 +217,7 @@ func Introspection(s Status) IntrospectionOutcome {
 	}
 }
 
+// String returns the outcome's name, for logs and test failures.
 func (o IntrospectionOutcome) String() string {
 	return name("IntrospectionOutcome", int(o), "not_applicable", "active", "inactive")
 }

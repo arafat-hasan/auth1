@@ -18,14 +18,6 @@ const (
 	StatusDeleted   Status = "deleted"
 )
 
-// The codes of the field errors this package returns with VALIDATION_FAILED.
-const (
-	FieldRequired   = "required"    // the field is missing
-	FieldNotAllowed = "not_allowed" // the field is present, or has a value, where it may not
-	FieldUnknown    = "unknown"     // the value is not one of those allowed
-	FieldNotFuture  = "not_future"  // the time is not after now
-)
-
 // statuses is every status, in SDD order.
 var statuses = []Status{StatusPending, StatusActive, StatusSuspended, StatusBanned, StatusDeleted}
 
@@ -38,11 +30,12 @@ func ParseStatus(s string) (Status, error) {
 	if slices.Contains(statuses, Status(s)) {
 		return Status(s), nil
 	}
-	return "", fieldError(domain.FieldError{Field: "status", Code: FieldUnknown})
+	return "", fieldError(domain.FieldError{Field: "status", Code: domain.FieldUnknown})
 }
 
 // Restricted reports whether an account in status s gets a restricted session: true for
-// suspended and banned only (SDD D-5).
+// suspended and banned only (SDD D-5). These are also the statuses that carry a reason, as the
+// accounts CHECK requires, so Transition uses it for both.
 func Restricted(s Status) bool { return s == StatusSuspended || s == StatusBanned }
 
 // fieldError is a VALIDATION_FAILED error listing fields.

@@ -53,8 +53,16 @@ func Codes() []Code { return slices.Clone(codes) }
 // FieldError names one malformed field of a VALIDATION_FAILED error and why it failed.
 type FieldError struct {
 	Field string
-	Code  string
+	Code  string // one of the Field… codes
 }
+
+// The codes of a FieldError (SDD §10).
+const (
+	FieldRequired   = "required"    // the field is missing
+	FieldNotAllowed = "not_allowed" // the field is present, or has a value, where it may not
+	FieldUnknown    = "unknown"     // the value is not one of those allowed
+	FieldNotFuture  = "not_future"  // the time is not after now
+)
 
 // Error is a domain failure: a catalogue code, a message safe to show the caller, and the
 // optional members some codes carry. Match it with errors.As and a *Error target.

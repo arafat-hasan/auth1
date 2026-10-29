@@ -37,6 +37,16 @@ func TestCodes(t *testing.T) {
 	}
 }
 
+func TestFieldCodes(t *testing.T) {
+	t.Parallel()
+
+	// SDD §10, field errors.
+	want := []string{"required", "not_allowed", "unknown", "not_future"}
+	if diff := cmp.Diff(want, []string{FieldRequired, FieldNotAllowed, FieldUnknown, FieldNotFuture}); diff != "" {
+		t.Errorf("field codes (-want +got):\n%s", diff)
+	}
+}
+
 func TestCodesReturnsACopy(t *testing.T) {
 	t.Parallel()
 
