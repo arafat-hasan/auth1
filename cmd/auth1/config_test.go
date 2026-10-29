@@ -82,19 +82,13 @@ func TestConfigCheckRequiresConfig(t *testing.T) {
 func TestConfigCheckInvalidKeyring(t *testing.T) {
 	t.Chdir(filepath.Join("..", ".."))
 
-	dir := t.TempDir()
-	pem, err := os.ReadFile(filepath.Join("testdata", "example", "secrets", "signing", "rs256.pem"))
+	pem, err := filepath.Abs(filepath.Join("testdata", "example", "secrets", "signing", "rs256.pem"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "k.pem"), pem, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	keyring := filepath.Join(dir, "keyring.yaml")
-	twoActive := "keys:\n  - {alg: RS256, state: active, private_key_file: k.pem}\n  - {alg: RS256, state: active, private_key_file: k.pem}\n"
-	if err := os.WriteFile(keyring, []byte(twoActive), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyring := filepath.Join(t.TempDir(), "keyring.yaml")
+	entry := "  - {alg: RS256, state: active, private_key_file: " + pem + "}\n"
+	writeFile(t, keyring, "keys:\n"+entry+entry)
 	cmd := newConfigCmd(func() []string { return []string{"AUTH1_KEYS_KEYRING_FILE=" + keyring} })
 	var out bytes.Buffer
 	cmd.SetOut(&out)

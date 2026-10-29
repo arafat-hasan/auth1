@@ -97,9 +97,16 @@ func router(t *testing.T, keys app.PublicKeys, m handlers.MetadataOptions) http.
 
 var defaultMetadata = handlers.MetadataOptions{Issuer: "https://id.example.com"}
 
+// response is a served response, its body read.
+type response struct {
+	status int
+	header http.Header
+	body   []byte
+}
+
 // get serves GET basePath+path with h and checks the exchange against the contract, whose paths
 // carry no base path.
-func get(t *testing.T, h http.Handler, basePath, path string, header http.Header) (*http.Response, []byte) {
+func get(t *testing.T, h http.Handler, basePath, path string, header http.Header) response {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, basePath+path, nil)
 	for k, v := range header {
@@ -108,6 +115,7 @@ func get(t *testing.T, h http.Handler, basePath, path string, header http.Header
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	resp := rec.Result()
+	defer func() { _ = resp.Body.Close() }()
 	contractReq := req.Clone(req.Context())
 	contractReq.URL.Path = path
 	apitest.New(t).Check(t, contractReq, resp)
@@ -115,21 +123,22 @@ func get(t *testing.T, h http.Handler, basePath, path string, header http.Header
 	if err != nil {
 		t.Fatal(err)
 	}
-	return resp, body
+	return response{status: resp.StatusCode, header: resp.Header, body: body}
 }
 
 func TestJWKS(t *testing.T) {
 	t.Parallel()
 	keys := testKeys(t)
-	resp, body := get(t, router(t, keySet{keys: keys, synced: true}, defaultMetadata), "", "/.well-known/jwks.json", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status %d, body %s", resp.StatusCode, body)
+	resp := get(t, router(t, keySet{keys: keys, synced: true}, defaultMetadata), "", "/.well-known/jwks.json", nil)
+	body := resp.body
+	if resp.status != http.StatusOK {
+		t.Fatalf("status %d, body %s", resp.status, body)
 	}
-	if got := resp.Header.Get("Cache-Control"); got != "public, max-age=300" {
+	if got := resp.header.Get("Cache-Control"); got != "public, max-age=300" {
 		t.Errorf("Cache-Control %q", got)
 	}
 	sum := sha256.Sum256(body)
-	if got, want := resp.Header.Get("ETag"), `"`+base64.RawURLEncoding.EncodeToString(sum[:])+`"`; got != want {
+	if got, want := resp.header.Get("ETag"), `"`+base64.RawURLEncoding.EncodeToString(sum[:])+`"`; got != want {
 		t.Errorf("ETag %s, want the strong tag over the body %s", got, want)
 	}
 
@@ -163,8 +172,7 @@ func TestJWKS(t *testing.T) {
 func TestJWKSNotModified(t *testing.T) {
 	t.Parallel()
 	h := router(t, keySet{keys: testKeys(t), synced: true}, defaultMetadata)
-	first, _ := get(t, h, "", "/.well-known/jwks.json", nil)
-	etag := first.Header.Get("ETag")
+	etag := get(t, h, "", "/.well-known/jwks.json", nil).header.Get("ETag")
 	tests := []struct {
 		name, ifNoneMatch string
 		want              int
@@ -178,12 +186,13 @@ func TestJWKSNotModified(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			resp, body := get(t, h, "", "/.well-known/jwks.json", http.Header{"If-None-Match": {tt.ifNoneMatch}})
-			if resp.StatusCode != tt.want {
-				t.Fatalf("status %d, want %d", resp.StatusCode, tt.want)
+			resp := get(t, h, "", "/.well-known/jwks.json", http.Header{"If-None-Match": {tt.ifNoneMatch}})
+			body := resp.body
+			if resp.status != tt.want {
+				t.Fatalf("status %d, want %d", resp.status, tt.want)
 			}
-			if resp.Header.Get("ETag") != etag || resp.Header.Get("Cache-Control") != "public, max-age=300" {
-				t.Errorf("headers %v, want the ETag and Cache-Control", resp.Header)
+			if resp.header.Get("ETag") != etag || resp.header.Get("Cache-Control") != "public, max-age=300" {
+				t.Errorf("headers %v, want the ETag and Cache-Control", resp.header)
 			}
 			if tt.want == http.StatusNotModified && len(body) != 0 {
 				t.Errorf("304 with a body %q", body)
@@ -194,9 +203,10 @@ func TestJWKSNotModified(t *testing.T) {
 
 func TestJWKSUnavailable(t *testing.T) {
 	t.Parallel()
-	resp, body := get(t, router(t, keySet{}, defaultMetadata), "", "/.well-known/jwks.json", nil)
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status %d", resp.StatusCode)
+	resp := get(t, router(t, keySet{}, defaultMetadata), "", "/.well-known/jwks.json", nil)
+	body := resp.body
+	if resp.status != http.StatusServiceUnavailable {
+		t.Fatalf("status %d", resp.status)
 	}
 	var p struct{ Code string }
 	if err := json.Unmarshal(body, &p); err != nil || p.Code != "UNAVAILABLE" {
@@ -239,9 +249,10 @@ func TestServerMetadata(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			resp, body := get(t, router(t, keySet{}, tt.m), tt.m.BasePath, "/.well-known/oauth-authorization-server", nil)
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("status %d, body %s", resp.StatusCode, body)
+			resp := get(t, router(t, keySet{}, tt.m), tt.m.BasePath, "/.well-known/oauth-authorization-server", nil)
+			body := resp.body
+			if resp.status != http.StatusOK {
+				t.Fatalf("status %d, body %s", resp.status, body)
 			}
 			var got gen.ServerMetadata
 			if err := json.Unmarshal(body, &got); err != nil {

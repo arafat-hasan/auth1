@@ -72,7 +72,7 @@ func (s *SigningKeys) LatestActivated(ctx context.Context, kids []string) (strin
 	var kid string
 	err := Conn(ctx, s.db).QueryRowContext(ctx, `
 		SELECT kid FROM signing_keys WHERE kid IN (?) AND activated_at IS NOT NULL
-		ORDER BY activated_at DESC, kid LIMIT 1`, bun.In(kids)).Scan(&kid)
+		ORDER BY activated_at DESC, kid LIMIT 1`, bun.List(kids)).Scan(&kid)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -88,7 +88,7 @@ func (s *SigningKeys) Retire(ctx context.Context, kids []string) error {
 		return nil
 	}
 	_, err := Conn(ctx, s.db).ExecContext(ctx,
-		"UPDATE signing_keys SET retired_at = now() WHERE kid IN (?) AND retired_at IS NULL", bun.In(kids))
+		"UPDATE signing_keys SET retired_at = now() WHERE kid IN (?) AND retired_at IS NULL", bun.List(kids))
 	if err != nil {
 		return fmt.Errorf("retire signing keys: %w", err)
 	}
@@ -103,7 +103,7 @@ func (s *SigningKeys) Retiring(ctx context.Context, kids []string, window time.D
 	rows, err := Conn(ctx, s.db).QueryContext(ctx, `
 		SELECT kid FROM signing_keys
 		WHERE kid IN (?) AND (retired_at IS NULL OR retired_at > now() - make_interval(secs => ?))
-		ORDER BY kid`, bun.In(kids), seconds(window))
+		ORDER BY kid`, bun.List(kids), seconds(window))
 	if err != nil {
 		return nil, fmt.Errorf("read retiring signing keys: %w", err)
 	}
