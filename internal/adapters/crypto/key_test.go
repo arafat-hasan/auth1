@@ -122,6 +122,16 @@ func formatted(v any) []string {
 	return outs
 }
 
+// byteList prints each byte of b with format, joined by sep: "1 2 3" as %v prints a byte array,
+// "0x1, 0x2, 0x3" as %#v does.
+func byteList(b []byte, format, sep string) string {
+	parts := make([]string, len(b))
+	for i, c := range b {
+		parts[i] = fmt.Sprintf(format, c)
+	}
+	return strings.Join(parts, sep)
+}
+
 // assertRedacted fails if any formatting of v shows one of the keys: raw, in hex or base64, or
 // byte by byte as fmt prints a byte array.
 func assertRedacted(t *testing.T, v any, keys ...[]byte) {
@@ -130,8 +140,7 @@ func assertRedacted(t *testing.T, v any, keys ...[]byte) {
 		for _, k := range keys {
 			for _, form := range []string{
 				string(k), hex.EncodeToString(k), strings.ToUpper(hex.EncodeToString(k)), b64(k),
-				strings.Trim(fmt.Sprint(k[:8]), "[]"), strings.Trim(fmt.Sprintf("%#v", k[:8]), "[]byte{}"),
-				strings.Trim(fmt.Sprintf("%#v", [8]byte(k[:8])), "[8]uint8{}"),
+				byteList(k[:8], "%d", " "), byteList(k[:8], "%#x", ", "),
 			} {
 				if strings.Contains(out, form) {
 					t.Errorf("output %q shows a key", out)

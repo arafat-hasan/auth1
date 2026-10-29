@@ -3,6 +3,7 @@ package crypto_test
 import (
 	"bytes"
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,7 +47,7 @@ func TestReloadDuringSealOpen(t *testing.T) {
 	var ops atomic.Int64
 	for g := range 32 {
 		wg.Go(func() {
-			plaintext := []byte{byte(g)}
+			plaintext := []byte(strconv.Itoa(g))
 			for ctx.Err() == nil {
 				ct, err := f.Seal(place, plaintext)
 				if err != nil {

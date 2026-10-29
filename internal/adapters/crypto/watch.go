@@ -47,7 +47,7 @@ func NewWatchedKeyring(path, otherState string, logger *slog.Logger, opts ...Wat
 	for _, o := range opts {
 		o(w)
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // the path comes from the configuration
 	if err != nil {
 		return nil, fmt.Errorf("read keyring: %w", err)
 	}
