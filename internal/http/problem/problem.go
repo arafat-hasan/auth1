@@ -127,6 +127,18 @@ func (pw *Writer) Write(w http.ResponseWriter, r *http.Request, err error) {
 	_ = json.NewEncoder(w).Encode(b) // the status is sent; a failed write cannot be reported
 }
 
+// WriteNotImplemented renders the 501 of an operation that has no handler yet. The problem has no
+// code: the SDD §10 catalogue has none for it, and no operation of the contract answers 501.
+func (pw *Writer) WriteNotImplemented(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", ContentType)
+	w.WriteHeader(http.StatusNotImplemented)
+	_ = json.NewEncoder(w).Encode(struct {
+		Type   string `json:"type"`
+		Title  string `json:"title"`
+		Status int    `json:"status"`
+	}{"about:blank", http.StatusText(http.StatusNotImplemented), http.StatusNotImplemented})
+}
+
 // unexpected logs err with the request id and returns the generic UNAVAILABLE body, which carries
 // no retry hint because the cause is unknown.
 func (pw *Writer) unexpected(r *http.Request, err error) body {

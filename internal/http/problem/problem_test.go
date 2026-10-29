@@ -220,3 +220,27 @@ func TestUnknownDomainCode(t *testing.T) {
 		t.Errorf("not logged: %s", logs.String())
 	}
 }
+
+// TestWriteNotImplemented checks the 501 of an operation with no handler yet: a problem with no
+// code, because the SDD §10 catalogue has none for it.
+func TestWriteNotImplemented(t *testing.T) {
+	t.Parallel()
+
+	pw := New(slog.New(slog.DiscardHandler))
+	rec := httptest.NewRecorder()
+	pw.WriteNotImplemented(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rec.Code != http.StatusNotImplemented {
+		t.Errorf("status %d, want 501", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != ContentType {
+		t.Errorf("Content-Type %q, want %q", got, ContentType)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not JSON: %v: %s", err, rec.Body)
+	}
+	want := map[string]any{"type": "about:blank", "title": "Not Implemented", "status": float64(501)}
+	if diff := cmp.Diff(want, body); diff != "" {
+		t.Errorf("body (-want +got):\n%s", diff)
+	}
+}
