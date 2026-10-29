@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
 	"strings"
 
 	"github.com/arafat-hasan/auth1/internal/app"
@@ -15,9 +16,13 @@ type BlindIndex struct {
 	key Key
 }
 
-// NewBlindIndex returns the blind index under key (encryption.blind_index_key_file).
-func NewBlindIndex(key Key) *BlindIndex {
-	return &BlindIndex{key: key}
+// NewBlindIndex returns the blind index under key (encryption.blind_index_key_file). The zero Key
+// is refused.
+func NewBlindIndex(key Key) (*BlindIndex, error) {
+	if key.isZero() {
+		return nil, fmt.Errorf("blind index: %w", errKeyZero)
+	}
+	return &BlindIndex{key: key}, nil
 }
 
 // Compute returns the index of normalised under idType. An empty idType, or one containing 0x00,

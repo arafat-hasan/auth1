@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
 
 	"github.com/google/uuid"
 )
@@ -18,9 +19,12 @@ type MAC struct {
 	key Key
 }
 
-// NewMAC returns the MAC under key (encryption.mac_key_file).
-func NewMAC(key Key) *MAC {
-	return &MAC{key: key}
+// NewMAC returns the MAC under key (encryption.mac_key_file). The zero Key is refused.
+func NewMAC(key Key) (*MAC, error) {
+	if key.isZero() {
+		return nil, fmt.Errorf("MAC: %w", errKeyZero)
+	}
+	return &MAC{key: key}, nil
 }
 
 // OTP returns the MAC of a one-time code sent for the challenge challengeID (TDD-02 §2.2).

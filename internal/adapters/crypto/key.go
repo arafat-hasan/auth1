@@ -20,6 +20,7 @@ const redacted = "[redacted]"
 var (
 	errKeyEncoding = errors.New("key is not standard base64")
 	errKeySize     = fmt.Errorf("key is not %d bytes", KeySize)
+	errKeyZero     = errors.New("key is the zero Key, not one loaded from a key file")
 )
 
 // Key is a 32-byte symmetric key. It never shows its bytes when formatted with fmt or logged with
@@ -75,6 +76,9 @@ func (k Key) Bytes() []byte {
 	}
 	return bytes.Clone(k.b()[:])
 }
+
+// isZero reports whether k is the zero Key, which holds no bytes.
+func (k Key) isZero() bool { return k.b == nil }
 
 // equal reports in constant time whether k and o hold the same bytes.
 func (k Key) equal(o Key) bool {
