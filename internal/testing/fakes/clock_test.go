@@ -8,21 +8,36 @@ import (
 	"github.com/arafat-hasan/auth1/internal/testing/fakes"
 )
 
-var start = time.Date(2026, 3, 14, 15, 9, 26, 535897932, time.UTC)
+// start has a sub-microsecond part, which Now drops: a clock set to start reads startMicro.
+var (
+	start      = time.Date(2026, 3, 14, 15, 9, 26, 535897932, time.UTC)
+	startMicro = time.Date(2026, 3, 14, 15, 9, 26, 535897000, time.UTC)
+)
 
 func TestClock(t *testing.T) {
 	t.Parallel()
-	other := time.Date(2027, 1, 2, 3, 4, 5, 6, time.UTC)
+	other := time.Date(2027, 1, 2, 3, 4, 5, 6000, time.UTC)
 	for _, tc := range []struct {
 		name string
 		op   func(c *fakes.Clock)
 		want time.Time
 	}{
-		{"untouched", func(*fakes.Clock) {}, start},
+		{"untouched", func(*fakes.Clock) {}, startMicro},
 		{"set", func(c *fakes.Clock) { c.Set(other) }, other},
-		{"advance zero", func(c *fakes.Clock) { c.Advance(0) }, start},
-		{"advance 90s", func(c *fakes.Clock) { c.Advance(90 * time.Second) }, start.Add(90 * time.Second)},
-		{"advance 1ns", func(c *fakes.Clock) { c.Advance(time.Nanosecond) }, start.Add(time.Nanosecond)},
+		{"set sub-microsecond", func(c *fakes.Clock) { c.Set(other.Add(999)) }, other},
+		{"advance zero", func(c *fakes.Clock) { c.Advance(0) }, startMicro},
+		{"advance 90s", func(c *fakes.Clock) { c.Advance(90 * time.Second) }, startMicro.Add(90 * time.Second)},
+		{"advance 1µs", func(c *fakes.Clock) { c.Advance(time.Microsecond) }, startMicro.Add(time.Microsecond)},
+		// start is 932 ns past its microsecond: 68 ns more reaches the next one, 67 ns does not.
+		{"advance 1ns", func(c *fakes.Clock) { c.Advance(time.Nanosecond) }, startMicro},
+		{"advance 67ns", func(c *fakes.Clock) { c.Advance(67 * time.Nanosecond) }, startMicro},
+		{"advance 68ns", func(c *fakes.Clock) { c.Advance(68 * time.Nanosecond) }, startMicro.Add(time.Microsecond)},
+		{"advance 68 × 1ns", func(c *fakes.Clock) {
+			for range 68 {
+				c.Advance(time.Nanosecond)
+			}
+		}, startMicro.Add(time.Microsecond)},
+		{"set back", func(c *fakes.Clock) { c.Set(startMicro.Add(-time.Hour)) }, startMicro.Add(-time.Hour)},
 		{"set then advance", func(c *fakes.Clock) { c.Set(other); c.Advance(time.Hour) }, other.Add(time.Hour)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -37,16 +52,17 @@ func TestClock(t *testing.T) {
 	}
 }
 
-// A time in another zone is kept as the same instant, in UTC, with its nanoseconds.
+// A time in another zone reads as the same instant, in UTC, to the microsecond.
 func TestClockUTC(t *testing.T) {
 	t.Parallel()
 	given := time.Date(2026, 5, 1, 12, 0, 0, 123456789, time.FixedZone("x", 5*3600))
+	want := time.Date(2026, 5, 1, 7, 0, 0, 123456000, time.UTC)
 	c := fakes.NewClock(given)
 	check := func(op string) {
 		t.Helper()
 		got := c.Now()
-		if got.Location() != time.UTC || !got.Equal(given) || got.Nanosecond() != given.Nanosecond() {
-			t.Errorf("after %s: Now() = %v, want %v in UTC", op, got, given)
+		if got.Location() != time.UTC || !got.Equal(want) {
+			t.Errorf("after %s: Now() = %v, want %v", op, got, want)
 		}
 	}
 	check("NewClock")
@@ -65,8 +81,8 @@ func TestClockNegativeAdvancePanics(t *testing.T) {
 		}()
 		c.Advance(-time.Nanosecond)
 	}()
-	if got := c.Now(); !got.Equal(start) {
-		t.Errorf("Now() = %v after the panic, want %v", got, start)
+	if got := c.Now(); !got.Equal(startMicro) {
+		t.Errorf("Now() = %v after the panic, want %v", got, startMicro)
 	}
 }
 
@@ -84,7 +100,7 @@ func TestClockConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if got, want := c.Now(), start.Add(goroutines*each*time.Millisecond); !got.Equal(want) {
+	if got, want := c.Now(), startMicro.Add(goroutines*each*time.Millisecond); !got.Equal(want) {
 		t.Errorf("Now() = %v, want %v", got, want)
 	}
 }
