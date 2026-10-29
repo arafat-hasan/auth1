@@ -13,6 +13,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/arafat-hasan/auth1/internal/adapters/crypto"
+	"github.com/arafat-hasan/auth1/internal/adapters/crypto/argon2id"
 	"github.com/arafat-hasan/auth1/internal/adapters/keyring"
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
 	"github.com/arafat-hasan/auth1/internal/config"
@@ -100,7 +102,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	slog.SetDefault(logger)
 	otel.SetTextMapPropagator(tel.Propagator())
 
-	keys, problems := loadCryptoKeys(cfg.Encryption, logger)
+	keys, problems := loadCryptoKeys(cfg, logger)
 	if len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
@@ -136,6 +138,11 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
+	hasher, err := newHasher(cfg.Passwords.Argon2, keys.pepper, metrics)
+	if err != nil {
+		return err
+	}
+	_ = hasher // consumed by the sign-in use cases (M5)
 	kr, err := keyring.New(ctx, cfg.Keys.KeyringFile.Path(), postgres.NewSigningKeys(db), keyring.Options{
 		MinPublishBeforeUse: cfg.Keys.MinPublishBeforeUse, AccessTTL: cfg.Tokens.AccessTTL,
 		Logger: logger, Keys: jwksKeys,
@@ -183,6 +190,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	pollCtx, stopPolling := context.WithCancel(ctx)
 	g, gctx := errgroup.WithContext(pollCtx)
 	g.Go(func() error { return keys.fields.Run(gctx) })
+	g.Go(func() error { return keys.pepper.Run(gctx) })
 	g.Go(func() error { return kr.Run(gctx) })
 	err = server.Run(ctx, logger, []server.Listener{
 		{Name: "http", Listener: listeners[0], Handler: router},
@@ -210,4 +218,29 @@ func bind(listen func(network, addr string) (net.Listener, error), httpAddr, met
 		out = append(out, ln)
 	}
 	return out, nil
+}
+
+// newHasher builds the password hasher from passwords.argon2 (validated: whole KiB, within the
+// bounds of TDD-03 §1.3) with its three instruments. It computes the dummy hash, so it takes one
+// hash's time.
+func newHasher(a config.Argon2, peppers *crypto.WatchedKeyring, metrics *telemetry.Metrics) (*argon2id.Hasher, error) {
+	o := argon2id.Options{
+		Params: argon2id.Params{
+			MemoryKiB:   uint32(a.Memory / config.KiB), //nolint:gosec // at most 1 GiB, validated
+			Iterations:  uint32(a.Iterations),          //nolint:gosec // at most 16, validated
+			Parallelism: uint8(a.Parallelism),          //nolint:gosec // at most 16, validated
+		},
+		MaxConcurrent: a.MaxConcurrent, QueueTimeout: a.QueueTimeout, Peppers: peppers,
+	}
+	var err error
+	if o.Duration, err = metrics.Histogram("auth1_hash_duration_seconds"); err != nil {
+		return nil, err
+	}
+	if o.Queue, err = metrics.Histogram("auth1_hash_queue_seconds"); err != nil {
+		return nil, err
+	}
+	if o.Rejected, err = metrics.Counter("auth1_hash_rejected_total"); err != nil {
+		return nil, err
+	}
+	return argon2id.New(o)
 }

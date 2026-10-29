@@ -33,6 +33,12 @@ var badKeys = []struct {
 		"encryption.mac_key_file", "not 32 bytes"},
 	{"blind-index key not base64", "AUTH1_ENCRYPTION_BLIND_INDEX_KEY_FILE", "not a key\n",
 		"encryption.blind_index_key_file", "not standard base64"},
+	{"two active pepper keys", "AUTH1_PASSWORDS_PEPPER_KEYRING_FILE",
+		"keys:\n  - {id: 1, key: " + devKey1 + ", state: active}\n  - {id: 2, key: " + devKey2 + ", state: active}\n",
+		"passwords.pepper_keyring_file", "several active keys"},
+	{"pepper key in the field keyring's state", "AUTH1_PASSWORDS_PEPPER_KEYRING_FILE",
+		"keys:\n  - {id: 1, key: " + devKey1 + ", state: active}\n  - {id: 2, key: " + devKey2 + ", state: decrypt}\n",
+		"passwords.pepper_keyring_file", `state must be "active" or "verify"`},
 }
 
 // badKeyEnv writes content to a file and returns the development overrides that point env at it.
@@ -49,12 +55,15 @@ func TestLoadCryptoKeysExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys, problems := loadCryptoKeys(cfg.Encryption, slog.New(slog.DiscardHandler))
+	keys, problems := loadCryptoKeys(cfg, slog.New(slog.DiscardHandler))
 	if len(problems) > 0 {
 		t.Fatalf("problems: %v", problems)
 	}
 	if id, _ := keys.fields.Current().Active(); id != 2 {
 		t.Errorf("active field key %d, want 2", id)
+	}
+	if id, _ := keys.pepper.Current().Active(); id != 1 {
+		t.Errorf("active pepper key %d, want 1", id)
 	}
 	if keys.blindIndex.Bytes() == nil || keys.mac.Bytes() == nil {
 		t.Error("a key file was not loaded")

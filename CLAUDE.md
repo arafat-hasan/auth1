@@ -139,7 +139,15 @@ field keyring's other state is `decrypt`); `WatchedKeyring` holds the field keyr
 pointer and its `Run` re-reads the file every 30 s, keeping the last good one when the file is bad.
 `Key` and `Keyring` redact themselves under `fmt` and `slog`; never take key bytes out of them
 for logging. `cmd/auth1/keys.go` loads the keyring and key files for `config check` and `serve`.
-The example's `fields/` and `mac/mac.key` are public development keys (`testdata/example/README.md`).
+The example's `fields/`, `mac/mac.key` and `pepper/` are public development keys (`testdata/example/README.md`).
+
+Passwords (TDD-03 §1): `internal/adapters/crypto/argon2id.Hasher` implements `app.PasswordHasher`
+(`Hash`, `Verify` with `needsRehash`, `VerifyDummy`; passwords are `[]byte`). The pepper keyring is
+a `crypto.WatchedKeyring` with other state `crypto.StateVerify`; `pepper_kid` is the key id as
+plain decimal text. All three methods share one semaphore of `passwords.argon2.max_concurrent`
+slots and return `app.ErrOverloaded` (503, `Retry-After: 1`) after `queue_timeout`. `New` computes
+the dummy hash, so it takes one hash's time; `serve` builds it at start-up. Never hash inside a
+transaction (G-4).
 
 Signing keys (TDD-04 §5): `internal/adapters/keyring.Keyring` loads `keys.keyring_file` (`Load`
 validates it; `config check` runs it), polls the file and its PEMs every 30 s, and syncs

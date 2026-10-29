@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -134,6 +135,30 @@ func TestHTTPDurationBuckets(t *testing.T) {
 	}
 	if len(lines) != 15 { // 14 boundaries and +Inf
 		t.Errorf("%d buckets, want 15: %q", len(lines), lines)
+	}
+}
+
+// TestHashBuckets: the hashing histograms have boundaries around the 100–250 ms a hash takes
+// (SDD O-3), not the SDK default's, which would put every hash in its first bucket.
+func TestHashBuckets(t *testing.T) {
+	t.Parallel()
+
+	tel := newTest(t, &bytes.Buffer{}, nil)
+	for _, name := range []string{"auth1_hash_duration_seconds", "auth1_hash_queue_seconds"} {
+		h, err := NewMetrics(tel.MeterProvider()).Histogram(name)
+		if err != nil {
+			t.Fatalf("Histogram: %v", err)
+		}
+		h.Record(context.Background(), 0.12)
+		lines := sampleLines(scrape(t, tel), name+"_bucket")
+		for le, value := range map[string]string{`le="0.01"`: " 0", `le="0.1"`: " 0", `le="0.15"`: " 1", `le="5"`: " 1"} {
+			if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, le) && strings.HasSuffix(l, value) }) {
+				t.Errorf("%s: no bucket %s with value%s in %q", name, le, value, lines)
+			}
+		}
+		if len(lines) != 13 { // 12 boundaries and +Inf
+			t.Errorf("%s: %d buckets, want 13: %q", name, len(lines), lines)
+		}
 	}
 }
 

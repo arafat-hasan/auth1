@@ -39,6 +39,10 @@ type spec struct {
 // http.server.request.duration, in seconds.
 var httpDurationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10}
 
+// hashBuckets are the boundaries, in seconds, of the hashing histograms: around the 100–250 ms an
+// Argon2id hash is tuned to take (SDD O-3), up to the queue timeout and beyond.
+var hashBuckets = []float64{0.01, 0.025, 0.05, 0.1, 0.15, 0.2, 0.25, 0.35, 0.5, 1, 2, 5}
+
 // catalogue is TDD-08 §5.2: every metric name auth1 may expose, with its kind. Instruments are
 // created only when a package asks for one; a name not listed here cannot be created.
 // http.server.request.duration is the standard HTTP server metric of §5.2 and the one name
@@ -54,8 +58,8 @@ var catalogue = map[string]spec{
 	"auth1_outbox_parked":              {kind: KindGauge},
 	"auth1_introspections_total":       {kind: KindCounter},
 	"auth1_service_calls_denied_total": {kind: KindCounter},
-	"auth1_hash_duration_seconds":      {kind: KindHistogram},
-	"auth1_hash_queue_seconds":         {kind: KindHistogram},
+	"auth1_hash_duration_seconds":      {kind: KindHistogram, buckets: hashBuckets},
+	"auth1_hash_queue_seconds":         {kind: KindHistogram, buckets: hashBuckets},
 	"auth1_hash_rejected_total":        {kind: KindCounter},
 	"auth1_rate_limited_total":         {kind: KindCounter},
 	"auth1_rate_limiter_errors_total":  {kind: KindCounter},
