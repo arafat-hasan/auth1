@@ -35,11 +35,15 @@ func TestReloadDuringSealOpen(t *testing.T) {
 	defer cancel()
 	var wg sync.WaitGroup
 	wg.Go(func() {
+		// Not the test's goroutine, so a failed write is reported with t.Error, not t.Fatal.
 		for i := 0; ctx.Err() == nil; i++ {
+			ring := ringA
 			if i%2 == 0 {
-				writeAtomic(t, path, ringB)
-			} else {
-				writeAtomic(t, path, ringA)
+				ring = ringB
+			}
+			if err := replaceFile(path, ring); err != nil {
+				t.Errorf("swap the keyring file: %v", err)
+				return
 			}
 			time.Sleep(2 * time.Millisecond)
 		}

@@ -35,21 +35,28 @@ func (l *logBuffer) String() string {
 
 func (l *logBuffer) logger() *slog.Logger { return slog.New(slog.NewTextHandler(l, nil)) }
 
-// writeAtomic replaces path's content by renaming a temporary file over it, as a secret mount's
-// symlink swap does: a reader sees the old content or the new, never a mix.
-func writeAtomic(t testing.TB, path string, data []byte) {
-	t.Helper()
+// replaceFile replaces path's content by renaming a temporary file over it, as a secret mount's
+// symlink swap does: a reader sees the old content or the new, never a mix. It returns errors
+// rather than failing the test, so goroutines other than the test's can call it.
+func replaceFile(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		t.Fatal(err)
+		_ = tmp.Close()
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		t.Fatal(err)
+		return err
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	return os.Rename(tmp.Name(), path)
+}
+
+// writeAtomic is replaceFile that fails the test on error. Call it from the test's goroutine only.
+func writeAtomic(t testing.TB, path string, data []byte) {
+	t.Helper()
+	if err := replaceFile(path, data); err != nil {
 		t.Fatal(err)
 	}
 }
