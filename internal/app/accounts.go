@@ -54,4 +54,18 @@ type Accounts interface {
 	RetireIdentifier(ctx context.Context, id uuid.UUID) error
 	// RetireIdentifiers retires every current identifier of the account.
 	RetireIdentifiers(ctx context.Context, accountID uuid.UUID) error
+
+	// Roles returns the account's roles, sorted by name.
+	Roles(ctx context.Context, accountID uuid.UUID) ([]account.Role, error)
+	// SetRoles makes roles the account's set: roles not in it are removed, new ones are granted
+	// now by grantedBy (empty when not recorded), and roles kept keep their grant.
+	SetRoles(ctx context.Context, accountID uuid.UUID, roles []string, grantedBy string) error
+
+	// PasswordCredential returns the account's password; NOT_FOUND when it has none.
+	PasswordCredential(ctx context.Context, accountID uuid.UUID) (account.PasswordCredential, error)
+	// SetPassword stores or replaces the account's password, changed now. pepperKID is opaque.
+	SetPassword(ctx context.Context, accountID uuid.UUID, hash, pepperKID string) error
+	// Activate moves a pending account that has a password to active (registration and
+	// invitation completion). Any other account is an error: activation never breaks I-17.
+	Activate(ctx context.Context, accountID uuid.UUID) error
 }

@@ -73,17 +73,11 @@ func (r *Accounts) Create(ctx context.Context, a account.NewAccount) error {
 			return fmt.Errorf("create account: %w", err)
 		}
 	}
-	if _, err := db.ExecContext(ctx,
-		"INSERT INTO password_credentials (account_id, hash, pepper_kid, changed_at) VALUES (?, ?, ?, now())",
-		a.ID, a.Password.Hash, a.Password.PepperKID); err != nil {
-		return fmt.Errorf("create account: store password: %w", err)
+	if err := r.SetPassword(ctx, a.ID, a.Password.Hash, a.Password.PepperKID); err != nil {
+		return fmt.Errorf("create account: %w", err)
 	}
-	for _, role := range a.Roles {
-		if _, err := db.ExecContext(ctx,
-			"INSERT INTO account_roles (account_id, role, granted_at, granted_by) VALUES (?, ?, now(), nullif(?, ''))",
-			a.ID, role, a.GrantedBy); err != nil {
-			return fmt.Errorf("create account: grant role: %w", err)
-		}
+	if err := r.SetRoles(ctx, a.ID, a.Roles, a.GrantedBy); err != nil {
+		return fmt.Errorf("create account: %w", err)
 	}
 	return nil
 }
