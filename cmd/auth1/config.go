@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -42,14 +43,16 @@ func newConfigCmd(environ func() []string) *cobra.Command {
 }
 
 // checkConfig prints "configuration OK" or every problem from loading and validating, one per
-// line. A file that cannot be read or parsed is returned as an error.
+// line. A valid configuration's keyring and key files are then parsed as serve would. A file that
+// cannot be read or parsed is returned as an error.
 func checkConfig(cmd *cobra.Command, path string, environ []string) error {
 	cfg, problems, err := loadConfig(path, environ)
 	if err != nil {
 		return err
 	}
 	if len(problems) == 0 {
-		problems = keyringProblems(cfg)
+		_, problems = loadCryptoKeys(cfg.Encryption, slog.New(slog.DiscardHandler))
+		problems = append(problems, keyringProblems(cfg)...)
 	}
 	out := cmd.OutOrStdout()
 	if len(problems) == 0 {

@@ -100,6 +100,11 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	slog.SetDefault(logger)
 	otel.SetTextMapPropagator(tel.Propagator())
 
+	keys, problems := loadCryptoKeys(cfg.Encryption, logger)
+	if len(problems) > 0 {
+		return printProblems(cmd.ErrOrStderr(), problems)
+	}
+
 	// The pools connect on first use, so serve starts while PostgreSQL is down; /readyz reports it
 	// through a probe pool of its own, so busy request connections do not fail readiness. They
 	// close after the servers have shut down (deferred after telemetry, so they close first).
@@ -172,20 +177,23 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		Health:          checks,
 		Routes:          gen.Routes(api, pw),
 	})
-	// The keyring reloads until the servers stop; a server failure stops it too.
-	g, gctx := errgroup.WithContext(ctx)
+
+	// The keyring pollers run until the servers have stopped. They return only when their context
+	// ends, so they never stop the servers.
+	pollCtx, stopPolling := context.WithCancel(ctx)
+	g, gctx := errgroup.WithContext(pollCtx)
+	g.Go(func() error { return keys.fields.Run(gctx) })
 	g.Go(func() error { return kr.Run(gctx) })
-	g.Go(func() error {
-		return server.Run(gctx, logger, []server.Listener{
-			{Name: "http", Listener: listeners[0], Handler: router},
-			{Name: "metrics", Listener: listeners[1], Handler: tel.MetricsHandler()},
-		}, server.Shutdown{
-			Drain:      func() { draining.Store(true) },
-			DrainDelay: deps.drainDelay,
-			Timeout:    deps.shutdownTimeout,
-		})
+	err = server.Run(ctx, logger, []server.Listener{
+		{Name: "http", Listener: listeners[0], Handler: router},
+		{Name: "metrics", Listener: listeners[1], Handler: tel.MetricsHandler()},
+	}, server.Shutdown{
+		Drain:      func() { draining.Store(true) },
+		DrainDelay: deps.drainDelay,
+		Timeout:    deps.shutdownTimeout,
 	})
-	return g.Wait()
+	stopPolling()
+	return errors.Join(err, g.Wait())
 }
 
 // bind opens the API and metrics listeners. If one fails, it closes those already open.
