@@ -88,4 +88,15 @@ type Accounts interface {
 	ReplaceTOTP(ctx context.Context, accountID uuid.UUID, secret []byte, step int64) (bool, error)
 	// DeleteTOTP deletes the account's factor, if any.
 	DeleteTOTP(ctx context.Context, accountID uuid.UUID) error
+
+	// ReplaceRecoveryCodes deletes every recovery code of the account, used or not, and stores
+	// codes as the new batch (TDD-03 §5.3). It runs inside UnitOfWork.Do.
+	ReplaceRecoveryCodes(ctx context.Context, accountID, batch uuid.UUID, codes []account.RecoveryCode) error
+	// UseRecoveryCode marks the account's unused code with mac used, now (TDD-03 §3.2). It reports
+	// false when the account has no unused code with mac: a code is accepted at most once (I-18).
+	UseRecoveryCode(ctx context.Context, accountID uuid.UUID, mac []byte) (bool, error)
+	// UnusedRecoveryCodes returns how many unused recovery codes the account has.
+	UnusedRecoveryCodes(ctx context.Context, accountID uuid.UUID) (int, error)
+	// DeleteRecoveryCodes deletes every recovery code of the account.
+	DeleteRecoveryCodes(ctx context.Context, accountID uuid.UUID) error
 }
