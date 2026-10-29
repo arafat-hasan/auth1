@@ -42,6 +42,8 @@ func TestStateRoundTrip(t *testing.T) {
 			`{"started":true,"proof":"none"}`},
 		{"email_change", EmailChangeState{ConfirmOld: ConfirmOldRequired, OldConfirmed: true},
 			`{"confirm_old":"required","old_confirmed":true,"new_confirmed":false}`},
+		{"email_change both confirmed", EmailChangeState{ConfirmOld: ConfirmOldRequired, OldConfirmed: true, NewConfirmed: true},
+			`{"confirm_old":"required","old_confirmed":true,"new_confirmed":true}`},
 		{"email_change notify", EmailChangeState{ConfirmOld: ConfirmOldNotify, NewConfirmed: true},
 			`{"confirm_old":"notify","old_confirmed":false,"new_confirmed":true}`},
 		{"email_change support", EmailChangeState{ConfirmOld: ConfirmOldSupport},
@@ -112,6 +114,8 @@ func TestMarshalStateRefuses(t *testing.T) {
 		PasswordResetState{Started: true, Proof: "email"},
 		EmailChangeState{},
 		EmailChangeState{ConfirmOld: "optional"},
+		EmailChangeState{ConfirmOld: ConfirmOldNotify, OldConfirmed: true},
+		EmailChangeState{ConfirmOld: ConfirmOldSupport, OldConfirmed: true},
 	} {
 		if _, err := MarshalState(s); !errors.Is(err, ErrStateInvalid) {
 			t.Errorf("MarshalState(%#v) error = %v, want ErrStateInvalid", s, err)
@@ -161,6 +165,13 @@ func TestUnmarshalStateRefuses(t *testing.T) {
 		{"missing confirm_old", KindEmailChange, `{"old_confirmed":false,"new_confirmed":false}`},
 		{"unknown confirm_old", KindEmailChange, `{"confirm_old":"optional","old_confirmed":false,"new_confirmed":false}`},
 		{"missing new_confirmed", KindEmailChange, `{"confirm_old":"notify","old_confirmed":false}`},
+		{"case-folded key", KindRegistration, `{"pending_types":[],"PENDING_TYPES":["email"]}`},
+		{"case-folded key alone", KindPasswordReset, `{"Started":true,"proof":"totp"}`},
+		{"case-folded optional key", KindSignIn, `{"first_factor":"pwd","step":"enrolment","Device_ID":"01920000-0000-7000-8000-000000000001"}`},
+		{"null device_id", KindSignIn, `{"first_factor":"pwd","step":"enrolment","device_id":null}`},
+		{"null proof", KindPasswordReset, `{"started":false,"proof":null}`},
+		{"old confirmed under notify", KindEmailChange, `{"confirm_old":"notify","old_confirmed":true,"new_confirmed":false}`},
+		{"old confirmed under support", KindEmailChange, `{"confirm_old":"support","old_confirmed":true,"new_confirmed":true}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -95,7 +95,8 @@ type PasswordResetState struct {
 	Proof   Proof `json:"proof,omitempty"`
 }
 
-// EmailChangeState is the state of an email-change flow.
+// EmailChangeState is the state of an email-change flow. OldConfirmed may be set only when
+// ConfirmOld is required: in the other modes the old address does not confirm (TDD-02 §7).
 type EmailChangeState struct {
 	ConfirmOld   ConfirmOld `json:"confirm_old"`
 	OldConfirmed bool       `json:"old_confirmed"`
@@ -156,7 +157,15 @@ func (s PasswordResetState) validate() error {
 	return oneOf("proof", proofs, s.Proof)
 }
 
-func (s EmailChangeState) validate() error { return oneOf("confirm_old", confirmOlds, s.ConfirmOld) }
+func (s EmailChangeState) validate() error {
+	if err := oneOf("confirm_old", confirmOlds, s.ConfirmOld); err != nil {
+		return err
+	}
+	if s.OldConfirmed && s.ConfirmOld != ConfirmOldRequired {
+		return errors.New("old_confirmed is set, but the old address confirms only when confirm_old is required")
+	}
+	return nil
+}
 
 func (PhoneChangeState) validate() error { return nil }
 
@@ -219,8 +228,8 @@ func nonNil(s []string) []string {
 }
 
 // UnmarshalState decodes flows.state for a flow of kind k. It refuses anything MarshalState would
-// not write: unknown fields, a missing or null field that has no omitempty, trailing data, and a
-// value outside its field's rules.
+// not write: a key that is not a field's exact name, a null, a missing field that has no
+// omitempty, trailing data, and a value outside its field's rules.
 func UnmarshalState(k Kind, data []byte) (State, error) {
 	var (
 		s   State
@@ -252,7 +261,7 @@ func UnmarshalState(k Kind, data []byte) (State, error) {
 
 // decode decodes data strictly into a T and validates it.
 func decode[T State](data []byte) (State, error) {
-	if err := requireFields(data, reflect.TypeFor[T]()); err != nil {
+	if err := checkFields(data, reflect.TypeFor[T]()); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -270,9 +279,10 @@ func decode[T State](data []byte) (State, error) {
 	return v, nil
 }
 
-// requireFields checks that data is a JSON object holding a non-null value for every field of t
-// whose tag has no omitempty.
-func requireFields(data []byte, t reflect.Type) error {
+// checkFields checks that data is a JSON object whose keys are exactly field names of t, as its
+// tags spell them (encoding/json would match them case-insensitively), each with a non-null value,
+// and that holds every field whose tag has no omitempty.
+func checkFields(data []byte, t reflect.Type) error {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
@@ -280,13 +290,20 @@ func requireFields(data []byte, t reflect.Type) error {
 	if m == nil {
 		return errors.New("null, not an object")
 	}
+	known := make(map[string]bool, t.NumField())
 	for i := range t.NumField() {
 		name, opts, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
-		if opts == "omitempty" {
-			continue
-		}
-		if v, ok := m[name]; !ok || string(v) == "null" {
+		known[name] = true
+		if _, ok := m[name]; !ok && opts != "omitempty" {
 			return fmt.Errorf("%s is missing", name)
+		}
+	}
+	for name, v := range m {
+		if !known[name] {
+			return fmt.Errorf("unknown field %q", name)
+		}
+		if string(v) == "null" {
+			return fmt.Errorf("%s is null", name)
 		}
 	}
 	return nil
