@@ -82,9 +82,11 @@ func TestIdentifierTakenKeepsTransaction(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.do(t, func(ctx context.Context) error {
+			if _, err := e.repo.GetForUpdate(ctx, second.ID); err != nil {
+				return err
+			}
 			checkCode(t, c.taken(ctx), domain.CodeIdentifierTaken)
-			_, err := e.repo.BumpVersion(ctx, second.ID, 1)
-			return err
+			return nil
 		})
 		after, err := e.repo.Get(t.Context(), second.ID)
 		if err != nil {

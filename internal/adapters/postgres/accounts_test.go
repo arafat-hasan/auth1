@@ -39,6 +39,7 @@ type accountsEnv struct {
 	fc   app.FieldCrypto
 	bidx app.BlindIndex
 	ids  *fakes.IDs
+	dsn  string // the superuser's
 }
 
 // randomKey is the base64 of 32 random bytes.
@@ -101,7 +102,7 @@ func accountsDBWith(t *testing.T, wrap func(app.FieldCrypto) app.FieldCrypto) *a
 	return &accountsEnv{
 		repo: postgres.NewAccounts(appDB, repoFC, bidx),
 		uow:  postgres.NewUnitOfWork(appDB, 5*time.Second, noop.NewTracerProvider()),
-		app:  appDB, su: su, fc: fc, bidx: bidx, ids: fakes.NewIDs(),
+		app:  appDB, su: su, fc: fc, bidx: bidx, ids: fakes.NewIDs(), dsn: dsn,
 	}
 }
 
@@ -282,7 +283,9 @@ func TestGetForUpdateOutsideTransaction(t *testing.T) {
 	}
 }
 
-func TestBumpVersion(t *testing.T) {
+// TestCommitMovesVersion checks that a committed change moves the locked account's version by
+// one and sets updated_at (TDD-01 §4.2).
+func TestCommitMovesVersion(t *testing.T) {
 	t.Parallel()
 	e := accountsDB(t)
 	na := e.newAccount("", "ada@example.org")
@@ -293,30 +296,25 @@ func TestBumpVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	v, err := e.repo.BumpVersion(t.Context(), na.ID, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
+	e.do(t, func(ctx context.Context) error {
+		_, err := e.repo.GetForUpdate(ctx, na.ID)
+		return err
+	})
 	after, err := e.repo.Get(t.Context(), na.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 4 || after.Version != 4 {
-		t.Errorf("version = %d, stored %d; want 4", v, after.Version)
+	if after.Version != 2 {
+		t.Errorf("version = %d, want 2", after.Version)
 	}
 	if !after.UpdatedAt.After(before.UpdatedAt) {
 		t.Errorf("updated_at = %v, want later than %v", after.UpdatedAt, before.UpdatedAt)
 	}
-	_, err = e.repo.BumpVersion(t.Context(), e.ids.New(), 1)
-	checkCode(t, err, domain.CodeNotFound)
-	if _, err := e.repo.BumpVersion(t.Context(), na.ID, 0); err == nil {
-		t.Error("BumpVersion by 0 succeeded")
-	}
 }
 
-// TestConcurrentUpdatesSerialise checks I-10: concurrent use cases that lock one account and bump
-// its version apply one after the other. Each reads the version under the lock and holds it a
-// moment; without FOR UPDATE two would read the same version.
+// TestConcurrentUpdatesSerialise checks I-10: concurrent use cases that lock one account apply one
+// after the other. Each reads the version under the lock and holds it a moment; without FOR UPDATE
+// two would read the same version.
 func TestConcurrentUpdatesSerialise(t *testing.T) {
 	t.Parallel()
 	const n = 8
@@ -338,13 +336,6 @@ func TestConcurrentUpdatesSerialise(t *testing.T) {
 					return err
 				}
 				time.Sleep(20 * time.Millisecond)
-				v, err := e.repo.BumpVersion(ctx, na.ID, 1)
-				if err != nil {
-					return err
-				}
-				if v != a.Version+1 {
-					return fmt.Errorf("bumped to %d after reading %d under the lock", v, a.Version)
-				}
 				mu.Lock()
 				read[a.Version]++
 				mu.Unlock()

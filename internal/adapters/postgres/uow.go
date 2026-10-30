@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/uptrace/bun"
 	"go.opentelemetry.io/otel/codes"
@@ -16,8 +17,59 @@ import (
 	"github.com/arafat-hasan/auth1/internal/domain"
 )
 
-// txKey is the context key of the open transaction.
+// txKey is the context key of the open transaction, a *txn.
 type txKey struct{}
+
+// txn is the transaction Do opened and the accounts locked in it. A use case runs on one
+// goroutine, so txn has no lock of its own, as bun.Tx has none.
+type txn struct {
+	tx     bun.Tx
+	locked []*lockedAccount // in lock order
+}
+
+// lockedAccount is an account locked in the transaction: the version read under the lock and the
+// events written about it so far.
+type lockedAccount struct {
+	id      uuid.UUID
+	version int64
+	events  int64
+}
+
+// lock records that the transaction locked the account, read at version. A second lock keeps the
+// first record: the row has not changed under the lock. Take the lock outside a savepoint: rolling
+// back to one releases the row locks taken after it, and the record would outlive the lock.
+func (t *txn) lock(id uuid.UUID, version int64) {
+	if t.account(id) == nil {
+		t.locked = append(t.locked, &lockedAccount{id: id, version: version})
+	}
+}
+
+// account returns the locked account id, or nil when the transaction has not locked it.
+func (t *txn) account(id uuid.UUID) *lockedAccount {
+	for _, a := range t.locked {
+		if a.id == id {
+			return a
+		}
+	}
+	return nil
+}
+
+// finish moves each locked account to its version plus the number of events written about it,
+// or plus one when there were none: a change without an event still moves the version
+// (TDD-06 §2, TDD-01 §4.2, I-10).
+func (t *txn) finish(ctx context.Context) error {
+	for _, a := range t.locked {
+		res, err := t.tx.ExecContext(ctx, "UPDATE accounts SET version = ?, updated_at = now() WHERE id = ?",
+			a.version+max(1, a.events), a.id)
+		if err != nil {
+			return fmt.Errorf("set account version: %w", err)
+		}
+		if err := oneRow(res, "set account version", "account"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // unavailable is the domain failure for a pool that hands out no connection in time.
 var unavailable = &domain.Error{Code: domain.CodeUnavailable, Detail: "The service is temporarily unavailable."}
@@ -35,11 +87,12 @@ func NewUnitOfWork(db *bun.DB, acquireTimeout time.Duration, tp trace.TracerProv
 	return &UnitOfWork{db: db, acquireTimeout: acquireTimeout, tracer: tp.Tracer("github.com/arafat-hasan/auth1/internal/adapters/postgres")}
 }
 
-// Do runs fn in a transaction, which repositories reach through Conn. It commits once when fn
-// returns nil and rolls back when fn returns an error or panics; the panic continues after the
-// rollback. A Do inside fn joins the open transaction. Do returns UNAVAILABLE wrapping the cause
-// when no connection is free within the acquire timeout, when the transaction cannot begin, or
-// when COMMIT could not be sent; when ctx ends first, ctx's error. A COMMIT that fails after it
+// Do runs fn in a transaction, which repositories reach through Conn. When fn returns nil, Do
+// moves the version of every account fn locked with Accounts.GetForUpdate (TDD-06 §2) and commits
+// once. It rolls back when fn or that update returns an error, or fn panics; the panic continues
+// after the rollback. A Do inside fn joins the open transaction. Do returns UNAVAILABLE wrapping
+// the cause when no connection is free within the acquire timeout, when the transaction cannot
+// begin, or when COMMIT could not be sent; when ctx ends first, ctx's error. A COMMIT that fails after it
 // was sent is returned as it is: it may have been applied, so it is not safe to retry.
 func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context) error) (err error) {
 	if inTx(ctx) {
@@ -79,9 +132,13 @@ func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context) error)
 		}
 	}()
 
-	err = fn(context.WithValue(ctx, txKey{}, tx))
+	t := &txn{tx: tx}
+	err = fn(context.WithValue(ctx, txKey{}, t))
 	panicked = false
 	if err != nil {
+		return err
+	}
+	if err = t.finish(ctx); err != nil {
 		return err
 	}
 	committed = true
@@ -117,14 +174,19 @@ func failure(ctx context.Context, op string, err error) error {
 // Conn returns the executor for a repository: the transaction Do opened, when ctx carries one,
 // otherwise the pool.
 func Conn(ctx context.Context, db *bun.DB) bun.IDB {
-	if tx, ok := ctx.Value(txKey{}).(bun.Tx); ok {
-		return tx
+	if t := txFrom(ctx); t != nil {
+		return t.tx
 	}
 	return db
 }
 
+// txFrom returns the transaction UnitOfWork.Do opened, or nil when ctx carries none.
+func txFrom(ctx context.Context) *txn {
+	t, _ := ctx.Value(txKey{}).(*txn)
+	return t
+}
+
 // inTx reports whether ctx carries the transaction UnitOfWork.Do opened.
 func inTx(ctx context.Context) bool {
-	_, ok := ctx.Value(txKey{}).(bun.Tx)
-	return ok
+	return txFrom(ctx) != nil
 }

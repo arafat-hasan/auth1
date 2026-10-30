@@ -15,8 +15,10 @@ import (
 // now(), the start of the transaction. Errors are NOT_FOUND only where a method says so, and no
 // error text holds an identifier value, a hash or a secret.
 //
-// A use case that changes an account first locks it with GetForUpdate and ends with BumpVersion
-// (I-10, TDD-01 §4.2); the account row is the first lock it takes (G-5).
+// A use case that changes an account first locks it with GetForUpdate (I-10, TDD-01 §4.2); the
+// account row is the first lock it takes (G-5). The lock is the change's mark: when the
+// transaction commits, UnitOfWork moves the version past the events written about the account,
+// by one when there were none (TDD-06 §2).
 type Accounts interface {
 	// Create stores a pending account at version 1 with its identifiers, password and roles. It
 	// runs inside UnitOfWork.Do. A verified identifier whose value another account holds verified
@@ -24,12 +26,9 @@ type Accounts interface {
 	Create(ctx context.Context, a account.NewAccount) error
 	// Get returns the account; NOT_FOUND when there is none.
 	Get(ctx context.Context, id uuid.UUID) (account.Account, error)
-	// GetForUpdate is Get, locking the row until the transaction ends. It runs inside
-	// UnitOfWork.Do.
+	// GetForUpdate is Get, locking the row until the transaction ends, and marking the account
+	// changed: its version moves when the transaction commits. It runs inside UnitOfWork.Do.
 	GetForUpdate(ctx context.Context, id uuid.UUID) (account.Account, error)
-	// BumpVersion adds n (≥ 1) to the account's version, sets updated_at, and returns the new
-	// version; NOT_FOUND when there is no account.
-	BumpVersion(ctx context.Context, id uuid.UUID, n int64) (int64, error)
 	// ApplyStatus stores the status change d decided by account.Transition; NOT_FOUND when there
 	// is no account. An unchanged d writes nothing. Of d's effects it applies those inside the
 	// aggregate, EraseCredentials and ReleaseIdentifiers; the caller applies RevokeSessions and

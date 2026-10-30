@@ -17,8 +17,9 @@ func TestCheckMetricNames(t *testing.T) {
 	}
 }
 
-// notMetrics are the auth1_ names that are not metrics: the PostgreSQL roles of TDD-01 §4.1.
-var notMetrics = []string{"auth1_app", "auth1_migrator"}
+// notMetrics are the auth1_ names that are not metrics: the PostgreSQL roles of TDD-01 §4.1 and
+// the outbox's notification channel of TDD-06 §3.3.
+var notMetrics = []string{"auth1_app", "auth1_migrator", "auth1_outbox"}
 
 // TestMetricNames fails when code names an auth1_ metric that TDD-08 §5.2 does not list.
 func TestMetricNames(t *testing.T) {
