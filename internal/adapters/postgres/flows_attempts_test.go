@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 
@@ -165,6 +166,28 @@ func TestRecordSend(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	var sends []string
+	rows, err := e.su.QueryContext(t.Context(), `
+		SELECT s.send || ' ' || (s.target_bidx = c.target_bidx) || ' ' || (s.sent_at = c.last_sent_at)
+		FROM challenge_sends s JOIN challenges c ON c.id = s.challenge_id
+		WHERE s.challenge_id = ? ORDER BY s.send`, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		sends = append(sends, s)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"1 true true", "2 true true"}; !slices.Equal(sends, want) {
+		t.Errorf("challenge_sends rows %q, want %q", sends, want)
 	}
 }
 

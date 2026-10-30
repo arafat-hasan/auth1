@@ -34,7 +34,7 @@ here match `api/openapi.yaml`, which is the final word on shapes.
 | `totp_replacement` | 10 min | — (the pending secret is in `flows.pending_secret`, encrypted) |
 
 - **Opening** a flow draws a 256-bit handle (base64url, 43 characters) and stores its SHA-256.
-- **Opening a flow of the same kind** for the same account cancels the previous open one (`close_reason = 'replaced'`), except `sign_in`, where several may be open (several devices).
+- **Opening a flow of the same kind** for the same account cancels the previous open one (`close_reason = 'replaced'`, or `expired` when it is past `expires_at` and the expiry job (§2.5) has not closed it yet), except `sign_in`, where several may be open (several devices).
 - **Finding** a flow: `SELECT … FROM flows WHERE id = $1 AND handle_hash = sha256($2) AND completed_at IS NULL AND cancelled_at IS NULL AND expires_at > now() FOR UPDATE`. No match answers `CHALLENGE_CLOSED`; the answer is the same for an unknown id, a wrong handle and an expired flow.
 - **Closing** sets `completed_at` or `cancelled_at` with `close_reason` (`replaced`, `expired`, `account_closed`, `attempts`), and closes the flow's open challenges (§2.3).
 

@@ -210,7 +210,8 @@ func (r *Flows) Attempt(ctx context.Context, id uuid.UUID) (int, bool, error) {
 	return attempts, true, nil
 }
 
-// RecordSend implements app.Flows.
+// RecordSend implements app.Flows. The send's row in challenge_sends, which the send limits
+// count, is written in the same statement.
 func (r *Flows) RecordSend(ctx context.Context, id uuid.UUID) (int, error) {
 	t, err := lockedChallenge(ctx, "record send", id)
 	if err != nil {
@@ -218,9 +219,13 @@ func (r *Flows) RecordSend(ctx context.Context, id uuid.UUID) (int, error) {
 	}
 	var sends int
 	err = t.tx.QueryRowContext(ctx, `
-		UPDATE challenges SET sends = sends + 1, last_sent_at = now()
-		WHERE id = ? AND closed_at IS NULL
-		RETURNING sends`, id).Scan(&sends)
+		WITH c AS (
+			UPDATE challenges SET sends = sends + 1, last_sent_at = now()
+			WHERE id = ? AND closed_at IS NULL
+			RETURNING id, sends, target_bidx, last_sent_at)
+		INSERT INTO challenge_sends (challenge_id, send, target_bidx, sent_at)
+		SELECT id, sends, target_bidx, last_sent_at FROM c
+		RETURNING send`, id).Scan(&sends)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, notFound("challenge")
 	}

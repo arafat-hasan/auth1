@@ -40,10 +40,11 @@ type Flows interface {
 	// handle. The account must be locked. PendingSecret is decrypted.
 	LockFlow(ctx context.Context, f flow.Flow) (flow.Flow, error)
 	// Open stores f and locks it. For every kind but sign_in, it first cancels the account's
-	// open flow of the same kind ("replaced"), closing its challenges (TDD-02 §2.1). The account
-	// must be locked.
+	// open flow of the same kind ("replaced", or "expired" when past expires_at), closing its
+	// challenges (TDD-02 §2.1). The account must be locked.
 	Open(ctx context.Context, f flow.NewFlow) error
-	// Update stores the open flow's state and attempts. The flow must be locked.
+	// Update stores the open flow's state and attempts; a state of another kind is
+	// flow.ErrStateInvalid. The flow must be locked.
 	Update(ctx context.Context, id uuid.UUID, state flow.State, attempts int) error
 	// ReplaceHandle makes handleHash the open flow's handle; the old one finds nothing after
 	// (TDD-02 §4). The flow must be locked.
@@ -69,9 +70,9 @@ type Flows interface {
 	// max_attempts (I-4, TDD-02 §2.2). It returns the new count, or false, changing nothing, when
 	// the challenge is closed or its attempts are used up. The challenge must be locked.
 	Attempt(ctx context.Context, id uuid.UUID) (attempts int, ok bool, err error)
-	// RecordSend counts a send of the open challenge, now, and returns the send number for the
-	// delivery's request id (TDD-02 §2.4); NOT_FOUND when it is closed. The challenge must be
-	// locked.
+	// RecordSend counts a send of the open challenge, now, for the send limits too, and returns
+	// the send number for the delivery's request id (TDD-02 §2.4); NOT_FOUND when it is closed. The
+	// challenge must be locked.
 	RecordSend(ctx context.Context, id uuid.UUID) (sends int, err error)
 	// CloseChallenge closes the open challenge, consumed when consumed, and erases its secret in
 	// the same statement (I-5). It returns false, changing nothing, when the challenge is closed
@@ -84,19 +85,20 @@ type Flows interface {
 	// It runs inside UnitOfWork.Do.
 	SendCounts(ctx context.Context, targetType, value string, w SendWindows) (SendCounts, error)
 	// ExhaustedSince returns when the latest challenge to the address closed exhausted, unconsumed
-	// with its attempts used up, within the last within; nil when none did (L-9).
+	// with its attempts used up, within the last within; nil when none did (L-9). within must be
+	// positive.
 	ExhaustedSince(ctx context.Context, targetType, value string, within time.Duration) (*time.Time, error)
 }
 
 // SendWindows are the two windows of the per-address send limits (L-7): Short (60 s by default)
-// and Long (1 h). Short is not longer than Long.
+// and Long (1 h). Short is positive and not longer than Long.
 type SendWindows struct {
 	Short time.Duration
 	Long  time.Duration
 }
 
-// SendCounts are the sends to one address: Short counts the challenges last sent within the short
-// window, and Long the sends of the challenges last sent within the long window.
+// SendCounts are the sends to one address made within each window: Short within the short window,
+// Long within the long one.
 type SendCounts struct {
 	Short int
 	Long  int

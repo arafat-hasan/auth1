@@ -65,6 +65,24 @@ func (e *flowsEnv) trySendAfter(t *testing.T, f flow.NewFlow, c flow.NewChalleng
 	return sent
 }
 
+// ago moves every send, and the challenges' last_sent_at, back by d.
+func (e *flowsEnv) ago(t *testing.T, d time.Duration) {
+	t.Helper()
+	e.exec(t, "UPDATE challenges SET last_sent_at = last_sent_at - make_interval(secs => ?) WHERE last_sent_at IS NOT NULL", d.Seconds())
+	e.exec(t, "UPDATE challenge_sends SET sent_at = sent_at - make_interval(secs => ?)", d.Seconds())
+}
+
+// sendAt records a send of c, made d ago, as RecordSend would.
+func (e *flowsEnv) sendAt(t *testing.T, c flow.NewChallengeRecord, d time.Duration) {
+	t.Helper()
+	e.exec(t, `
+		WITH c AS (
+			UPDATE challenges SET sends = sends + 1, last_sent_at = greatest(last_sent_at, now() - make_interval(secs => ?))
+			WHERE id = ? RETURNING id, sends, target_bidx)
+		INSERT INTO challenge_sends (challenge_id, send, target_bidx, sent_at)
+		SELECT id, sends, target_bidx, now() - make_interval(secs => ?) FROM c`, d.Seconds(), c.ID, d.Seconds())
+}
+
 // totalSends returns the sends of every challenge to the email's blind index.
 func (e *flowsEnv) totalSends(t *testing.T, email string) (total, challenges int) {
 	t.Helper()
@@ -100,7 +118,7 @@ func TestT20SharedSendBudget(t *testing.T) {
 	}
 	// Each later minute, a different account tries first; five sends an hour in all.
 	for round := 1; round <= 6; round++ {
-		e.exec(t, "UPDATE challenges SET last_sent_at = last_sent_at - interval '2 minutes' WHERE last_sent_at IS NOT NULL")
+		e.ago(t, 2*time.Minute)
 		for k := range fs {
 			i := (round + k) % len(fs)
 			e.trySend(t, fs[i], cs[i], email)
@@ -143,18 +161,21 @@ func TestSendCountsConcurrent(t *testing.T) {
 	}
 }
 
-// TestSendCountsWindows checks the windows are the caller's and are read on last_sent_at, so a
-// challenge opened long ago and sent recently counts.
+// TestSendCountsWindows checks the windows are the caller's and count the sends made within them,
+// whatever challenge or account they were made for.
 func TestSendCountsWindows(t *testing.T) {
 	t.Parallel()
 	e := flowsDB(t)
 	const email = "windows@example.org"
 	fs, cs := e.sharedEmail(t, 2, email)
 	_, others := e.sharedEmail(t, 1, "other@example.org")
-	e.exec(t, "UPDATE challenges SET sends = 3, last_sent_at = now() - interval '90 seconds' WHERE id = ?", cs[0].ID)
-	e.exec(t, `UPDATE challenges SET sends = 1, last_sent_at = now() - interval '30 seconds',
-		created_at = now() - interval '2 hours' WHERE id = ?`, cs[1].ID)
-	e.exec(t, "UPDATE challenges SET sends = 4, last_sent_at = now() WHERE id = ?", others[0].ID)
+	for _, d := range []time.Duration{3 * time.Minute, 2 * time.Minute, 90 * time.Second} {
+		e.sendAt(t, cs[0], d)
+	}
+	e.sendAt(t, cs[1], 30*time.Second)
+	for range 4 {
+		e.sendAt(t, others[0], 0)
+	}
 
 	for _, c := range []struct {
 		w    app.SendWindows
@@ -162,7 +183,7 @@ func TestSendCountsWindows(t *testing.T) {
 	}{
 		{defaultWindows, app.SendCounts{Short: 1, Long: 4}},
 		{app.SendWindows{Short: 2 * time.Minute, Long: time.Hour}, app.SendCounts{Short: 2, Long: 4}},
-		{app.SendWindows{Short: 10 * time.Second, Long: time.Minute}, app.SendCounts{Short: 0, Long: 1}},
+		{app.SendWindows{Short: 10 * time.Second, Long: 100 * time.Second}, app.SendCounts{Short: 0, Long: 2}},
 		{app.SendWindows{Short: 10 * time.Second, Long: 20 * time.Second}, app.SendCounts{}},
 	} {
 		var got app.SendCounts
@@ -187,6 +208,33 @@ func TestSendCountsWindows(t *testing.T) {
 		if err == nil {
 			t.Errorf("SendCounts(%v) accepted", w)
 		}
+	}
+}
+
+// TestSendCountsLongLivedChallenge checks that the sends of a challenge made before the long
+// window do not count once it is sent again: a verification link lives 24 h, and counting all its
+// sends whenever one was recent would let one send an hour hold the address at its limit.
+func TestSendCountsLongLivedChallenge(t *testing.T) {
+	t.Parallel()
+	e := flowsDB(t)
+	const email = "long@example.org"
+	fs, cs := e.sharedEmail(t, 2, email)
+	for h := 10; h > 5; h-- {
+		e.sendAt(t, cs[0], time.Duration(h)*time.Hour)
+	}
+	e.sendAt(t, cs[0], 2*time.Minute)
+
+	var got app.SendCounts
+	err := e.withChallenges(t, fs[1], func(ctx context.Context, _ []flow.ChallengeRecord) error {
+		var err error
+		got, err = e.flows.SendCounts(ctx, "email", email, defaultWindows)
+		return err
+	})
+	if err != nil || got != (app.SendCounts{Short: 0, Long: 1}) {
+		t.Errorf("SendCounts = %+v, %v; want {Short:0 Long:1}", got, err)
+	}
+	if !e.trySend(t, fs[1], cs[1], email) {
+		t.Error("a send to the address was refused, with one send in the hour")
 	}
 }
 
@@ -217,5 +265,10 @@ func TestExhaustedSince(t *testing.T) {
 	}
 	if got, err := e.flows.ExhaustedSince(t.Context(), "email", "else@example.org", time.Hour); err != nil || got != nil {
 		t.Errorf("another address: %v, %v; want nil", got, err)
+	}
+	for _, within := range []time.Duration{0, -time.Minute} {
+		if got, err := e.flows.ExhaustedSince(t.Context(), "email", email, within); err == nil {
+			t.Errorf("ExhaustedSince(%v) = %v, accepted", within, got)
+		}
 	}
 }

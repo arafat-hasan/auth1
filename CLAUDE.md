@@ -174,7 +174,8 @@ nothing and answer every miss with the same `CHALLENGE_CLOSED` (I-20); then lock
 records locked flows and challenges, and a method without its prerequisite lock returns
 `postgres.ErrLockOrder` before querying (G-5). `Attempt` (I-4), `RecordSend`, `CloseChallenge` and
 `Complete` / `Cancel` (which erase secrets in the closing statement, I-5) are conditional SQL.
-`SendCounts` takes a transaction-scoped advisory lock on the address before counting, so
+`RecordSend` also writes the send's `challenge_sends` row (migration `000002`), which `SendCounts`
+counts per window after taking a transaction-scoped advisory lock on the address, so
 check-then-send is exact (I-21); `ExhaustedSince` is the L-9 cooldown query.
 
 Identifiers (TDD-01 §2): `internal/domain/identifier` holds the `Type` interface (`Normalise`,

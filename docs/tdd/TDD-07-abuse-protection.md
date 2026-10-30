@@ -86,16 +86,18 @@ value, then count:
 ```sql
 SELECT pg_advisory_xact_lock(hashtextextended(encode($1, 'hex'), 0));
 
-SELECT count(*) FILTER (WHERE last_sent_at > now() - interval '60 seconds') AS last_minute,
-       coalesce(sum(sends), 0) AS last_hour
-FROM challenges
-WHERE target_bidx = $1 AND last_sent_at > now() - interval '1 hour';
+SELECT count(*) FILTER (WHERE sent_at > now() - interval '60 seconds') AS last_minute,
+       count(*) AS last_hour
+FROM challenge_sends
+WHERE target_bidx = $1 AND sent_at > now() - interval '1 hour';
 ```
 
-The query covers every challenge to that value, whatever account or flow opened it (I-21). Both
-windows are read on `last_sent_at`, so a challenge opened more than an hour ago and resent since
-still counts; `last_hour` counts every send of a challenge last sent within the hour, which errs
-towards refusing. The windows are configuration *(cfg)*. The lock makes the check and the send
+The query covers every send to that value, whatever account, flow or challenge it was for (I-21).
+`challenge_sends` holds one row per send (TDD-01 §4), written in the statement that counts the send
+on the challenge, so each window counts exactly the sends made within it. Counting on `challenges`
+cannot: `sends` and `last_sent_at` do not say when the earlier sends were, and a verification link
+lives 24 h, so counting all of a challenge's sends whenever one was recent would let one send an
+hour hold the value at its limit for every account. The windows are configuration *(cfg)*. The lock makes the check and the send
 exact: two concurrent sends to one value from different accounts cannot both pass. It is taken
 after the account, flow and challenge locks and held until commit; a use case sending to several
 values checks them in one order, by type.
