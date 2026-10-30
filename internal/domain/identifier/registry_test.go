@@ -57,10 +57,7 @@ func TestNewRegistry(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			r, err := NewRegistry(Builtin(), tt.policies)
-			var got []string
-			for _, e := range problems(err) {
-				got = append(got, e.Error())
-			}
+			got := problems(err)
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Errorf("problems (-want +got):\n%s", diff)
 			}
@@ -74,10 +71,7 @@ func TestNewRegistry(t *testing.T) {
 func TestNewRegistryCannotSignIn(t *testing.T) {
 	t.Parallel()
 	_, err := NewRegistry([]Type{noSignIn{}}, map[string]Policy{"nickname": {Verify: flow.MethodEmailCode, SignIn: true}})
-	var got []string
-	for _, e := range problems(err) {
-		got = append(got, e.Error())
-	}
+	got := problems(err)
 	want := []string{"identifiers.nickname.sign_in: the nickname type cannot sign in"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("problems (-want +got):\n%s", diff)
@@ -141,21 +135,15 @@ func TestRegistryPolicyIsCopied(t *testing.T) {
 	}
 }
 
-// problems returns the *PolicyError values joined in err.
-func problems(err error) []*PolicyError {
-	if err == nil {
+// problems returns the messages of the PolicyErrors in err, or nil.
+func problems(err error) []string {
+	var pe PolicyErrors
+	if !errors.As(err, &pe) {
 		return nil
 	}
-	var out []*PolicyError
-	if j, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, e := range j.Unwrap() {
-			out = append(out, problems(e)...)
-		}
-		return out
-	}
-	var pe *PolicyError
-	if errors.As(err, &pe) {
-		out = append(out, pe)
+	var out []string
+	for _, e := range pe {
+		out = append(out, e.Error())
 	}
 	return out
 }

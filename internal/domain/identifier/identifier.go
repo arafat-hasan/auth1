@@ -1,6 +1,8 @@
 package identifier
 
 import (
+	"strings"
+
 	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
 )
@@ -53,6 +55,18 @@ func (e *PolicyError) Path() string {
 
 // Error returns "<path>: <message>".
 func (e *PolicyError) Error() string { return e.Path() + ": " + e.Message }
+
+// PolicyErrors is every problem NewRegistry found, in type order. Match it with errors.As.
+type PolicyErrors []PolicyError
+
+// Error returns each problem on a line of its own.
+func (e PolicyErrors) Error() string {
+	lines := make([]string, len(e))
+	for i := range e {
+		lines[i] = e[i].Error()
+	}
+	return strings.Join(lines, "\n")
+}
 
 // notAllowed returns the IDENTIFIER_NOT_ALLOWED error with detail, which never holds the value.
 func notAllowed(detail string) error {

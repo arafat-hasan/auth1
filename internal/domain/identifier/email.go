@@ -44,17 +44,18 @@ func (Email) VerifyMethods() []flow.Method {
 	return []flow.Method{flow.MethodEmailLink, flow.MethodEmailCode}
 }
 
-// Normalise applies TDD-01 §2.2: trim; refuse inner white space and control characters; NFC;
+// Normalise applies TDD-01 §2.2: trim; refuse inner white space and control characters, which here
+// include format (Cf) and private-use (Co) characters, invisible look-alikes of an address; NFC;
 // a bare address by net/mail; split at the last "@"; the domain to ASCII by IDNA 2008, lower-cased,
 // with a dot and at most 253 octets; the local part by Unicode simple case folding, 1 to 64
-// octets; the address at most 254 octets. There are no provider rules and no DNS look-up.
+// octets, not starting with a combining mark; the address at most 254 octets. There are no provider rules and no DNS look-up.
 func (Email) Normalise(raw string, _ Policy) (string, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" || len(s) > maxEmailInput || !utf8.ValidString(s) {
 		return "", notAllowed("the email address is malformed")
 	}
-	if strings.IndexFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
-		return "", notAllowed("the email address has white space or control characters")
+	if strings.IndexFunc(s, invisible) >= 0 {
+		return "", notAllowed("the email address has white space, control or format characters")
 	}
 	s = norm.NFC.String(s)
 	if a, err := mail.ParseAddress(s); err != nil || a.Name != "" || a.Address != s {
@@ -75,6 +76,9 @@ func (Email) Normalise(raw string, _ Policy) (string, error) {
 	local = norm.NFC.String(strings.Map(simpleFold, local))
 	if local == "" || len(local) > maxLocalPart {
 		return "", notAllowed("the email local part is empty or too long")
+	}
+	if r, _ := utf8.DecodeRuneInString(local); unicode.Is(unicode.M, r) {
+		return "", notAllowed("the email local part starts with a combining mark")
 	}
 	addr := local + "@" + dom
 	if len(addr) > maxAddress {
@@ -98,6 +102,11 @@ func (e Email) CheckPolicy(p Policy) []PolicyError {
 		return []PolicyError{{Type: e.Name(), Field: "calling_codes", Message: "applies to phone only"}}
 	}
 	return nil
+}
+
+// invisible reports whether r is white space or a control, format or private-use character.
+func invisible(r rune) bool {
+	return unicode.IsSpace(r) || unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co)
 }
 
 // simpleFold maps r by Unicode simple case folding (CaseFolding.txt, statuses C and S). For a rune

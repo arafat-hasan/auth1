@@ -1,7 +1,6 @@
 package identifier
 
 import (
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -19,39 +18,35 @@ type Registry struct {
 
 // NewRegistry checks policies against types and returns the registry of the configured types. A
 // policy must name a known type, verify it by one of the type's methods, turn sign_in on only for
-// a type that can sign in, and pass the type's own checks. Every problem is a *PolicyError,
-// joined with errors.Join in type order.
+// a type that can sign in, and pass the type's own checks. The problems are returned as
+// PolicyErrors, in type order.
 func NewRegistry(types []Type, policies map[string]Policy) (*Registry, error) {
 	known := make(map[string]Type, len(types))
 	for _, t := range types {
 		known[t.Name()] = t
 	}
 	r := &Registry{types: map[string]Type{}, policies: map[string]Policy{}}
-	var errs []error
+	var errs PolicyErrors
 	for _, name := range slices.Sorted(maps.Keys(policies)) {
 		p := policies[name]
 		t, ok := known[name]
 		if !ok {
 			msg := "unknown identifier type; known: " + strings.Join(slices.Sorted(maps.Keys(known)), ", ")
-			errs = append(errs, &PolicyError{Type: name, Message: msg})
+			errs = append(errs, PolicyError{Type: name, Message: msg})
 			continue
 		}
-		var problems []PolicyError
 		if !slices.Contains(t.VerifyMethods(), p.Verify) {
-			problems = append(problems, PolicyError{Type: name, Field: "verify", Message: "must be " + orList(t.VerifyMethods())})
+			errs = append(errs, PolicyError{Type: name, Field: "verify", Message: "must be " + orList(t.VerifyMethods())})
 		}
 		if p.SignIn && !t.CanSignIn() {
-			problems = append(problems, PolicyError{Type: name, Field: "sign_in", Message: fmt.Sprintf("the %s type cannot sign in", name)})
+			errs = append(errs, PolicyError{Type: name, Field: "sign_in", Message: fmt.Sprintf("the %s type cannot sign in", name)})
 		}
-		problems = append(problems, t.CheckPolicy(p)...)
-		for i := range problems {
-			errs = append(errs, &problems[i])
-		}
+		errs = append(errs, t.CheckPolicy(p)...)
 		p.CallingCodes = slices.Clone(p.CallingCodes)
 		r.types[name], r.policies[name] = t, p
 	}
 	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+		return nil, errs
 	}
 	return r, nil
 }

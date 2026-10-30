@@ -52,6 +52,13 @@ func TestEmailNormalise(t *testing.T) {
 		{"inner tab", "alice@exa\tmple.com", ""},
 		{"inner no-break space", "alice @example.com", ""},
 		{"control character", "alice\x00@example.com", ""},
+		{"zero-width space", "alice\u200b@example.com", ""},
+		{"right-to-left override", "ali\u202ece@example.com", ""},
+		{"soft hyphen", "al\u00adice@example.com", ""},
+		{"byte order mark", "\ufeffalice@example.com", ""},
+		{"private use", "alice\ue000@example.com", ""},
+		{"local part starts with a combining mark", "\u0301@example.com", ""},
+		{"local part starts with a spacing mark", "\u0903a@example.com", ""},
 		{"empty", "", ""},
 		{"white space only", "  ", ""},
 		{"no @", "alice.example.com", ""},
@@ -139,7 +146,7 @@ func TestEmailNoCollisions(t *testing.T) {
 		for _, raw := range g {
 			n, err := Email{}.Normalise(raw, emailPolicy)
 			if err != nil {
-				continue
+				t.Fatalf("Normalise(%q) = %v; the group compares accepted values", raw, err)
 			}
 			if other, ok := seen[n]; ok {
 				t.Errorf("%q and %q both normalise to %q", other, raw, n)
@@ -188,6 +195,16 @@ func checkNotAllowed(t *testing.T, err error) {
 	var de *domain.Error
 	if !errors.As(err, &de) || de.Code != domain.CodeIdentifierNotAllowed {
 		t.Fatalf("error = %v, want IDENTIFIER_NOT_ALLOWED", err)
+	}
+}
+
+// TestSimpleFoldUnicodeVersion fails when Go's Unicode tables change version: simpleFold's
+// exceptions were checked against CaseFolding.txt of this version, and a new version may add status
+// S pairs or Cherokee-like orbits that change stored values. Re-check them, then update the version.
+func TestSimpleFoldUnicodeVersion(t *testing.T) {
+	t.Parallel()
+	if unicode.Version != "17.0.0" {
+		t.Errorf("unicode.Version = %s: re-check simpleFold against its CaseFolding.txt", unicode.Version)
 	}
 }
 
