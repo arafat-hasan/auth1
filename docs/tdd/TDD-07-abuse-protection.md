@@ -80,22 +80,29 @@ the body for native clients)*
 
 ## 5. Send limits per value (L-7)
 
-Before a send, in the transaction, with the account locked:
+Before a send, in the transaction, with the account locked, take a transaction-scoped lock on the
+value, then count:
 
 ```sql
+SELECT pg_advisory_xact_lock(hashtextextended(encode($1, 'hex'), 0));
+
 SELECT count(*) FILTER (WHERE last_sent_at > now() - interval '60 seconds') AS last_minute,
-       coalesce(sum(sends) FILTER (WHERE created_at > now() - interval '1 hour'), 0) AS last_hour
+       coalesce(sum(sends), 0) AS last_hour
 FROM challenges
-WHERE target_bidx = $1 AND created_at > now() - interval '1 hour';
+WHERE target_bidx = $1 AND last_sent_at > now() - interval '1 hour';
 ```
 
-The query covers every challenge to that value, whatever account or flow opened it (I-21). Two
-concurrent sends to one value from different accounts can each pass the check once: the limit is
-approximate by at most the concurrency. *(guideline: if exactness is needed, take
-`pg_advisory_xact_lock(hashtext(target_bidx))` first)*.
+The query covers every challenge to that value, whatever account or flow opened it (I-21). Both
+windows are read on `last_sent_at`, so a challenge opened more than an hour ago and resent since
+still counts; `last_hour` counts every send of a challenge last sent within the hour, which errs
+towards refusing. The windows are configuration *(cfg)*. The lock makes the check and the send
+exact: two concurrent sends to one value from different accounts cannot both pass. It is taken
+after the account, flow and challenge locks and held until commit; a use case sending to several
+values checks them in one order, by type.
 
-The 15-minute cooldown after an exhausted challenge (L-9) is checked the same way, on
-`closed_at` of exhausted challenges to that value.
+The 15-minute cooldown after an exhausted challenge (L-9) is checked the same way, on `closed_at`
+of the challenges to that value closed unconsumed with `attempts >= max_attempts`: no close reason
+is stored for a challenge, and this is what exhausted means (TDD-02 §2.2).
 
 ## 6. SMS budget (L-13)
 

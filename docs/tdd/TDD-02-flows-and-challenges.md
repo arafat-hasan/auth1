@@ -51,7 +51,7 @@ The columns behind this (`state`, `pending_secret`, `close_reason`, `attempts`) 
 **Verifying** an OTP:
 1. Compute the MAC of the input and compare it in constant time with `secret_mac`.
 2. Under the challenge row lock, increment `attempts` with `UPDATE … SET attempts = attempts + 1 WHERE id = $1 AND closed_at IS NULL AND attempts < max_attempts RETURNING attempts` (I-4).
-3. On a wrong code, answer `CODE_INVALID` with `attempts_left`. At `max_attempts`, close the challenge (`exhausted`) and answer `CHALLENGE_CLOSED`.
+3. On a wrong code, answer `CODE_INVALID` with `attempts_left`. At `max_attempts`, close the challenge (`exhausted`: no reason is stored; a challenge closed unconsumed with `attempts = max_attempts` is exhausted) and answer `CHALLENGE_CLOSED`.
 4. Count the failure against the account's second-factor failures (TDD-07).
 
 A **link token** is found by `secret_mac = sha256(token)` through the unique index, so there is no attempt counter: a wrong token simply matches nothing.

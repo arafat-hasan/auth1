@@ -246,32 +246,32 @@ func TestFlowsNoBulkDecrypt(t *testing.T) {
 	link := e.linkChallenge(f.ID, "new@example.org", "token")
 	e.openChallenges(t, f, append(cs, link)...)
 
-	count := func(name string, want int64, call func(ctx context.Context) error) {
+	count := func(name string, want int64, call func() error) {
 		t.Helper()
 		before := counter.opens.Load()
-		if err := call(t.Context()); err != nil {
+		if err := call(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if got := counter.opens.Load() - before; got != want {
 			t.Errorf("%s opened %d fields, want %d", name, got, want)
 		}
 	}
-	count("Find", 0, func(ctx context.Context) error { _, err := e.flows.Find(ctx, f.ID, f.HandleHash); return err })
-	count("FindByHandle", 0, func(ctx context.Context) error { _, err := e.flows.FindByHandle(ctx, f.HandleHash); return err })
-	count("FindLink", 0, func(ctx context.Context) error {
-		_, _, err := e.flows.FindLink(ctx, crypto.SHA256([]byte("token")))
+	count("Find", 0, func() error { _, err := e.flows.Find(t.Context(), f.ID, f.HandleHash); return err })
+	count("FindByHandle", 0, func() error { _, err := e.flows.FindByHandle(t.Context(), f.HandleHash); return err })
+	count("FindLink", 0, func() error {
+		_, _, err := e.flows.FindLink(t.Context(), crypto.SHA256([]byte("token")))
 		return err
 	})
-	count("LockFlow and LockChallenges of 5", 0, func(context.Context) error {
+	count("LockFlow and LockChallenges of 5", 0, func() error {
 		return e.withChallenges(t, f, func(context.Context, []flow.ChallengeRecord) error { return nil })
 	})
-	count("ChallengeSecret", 1, func(context.Context) error {
+	count("ChallengeSecret", 1, func() error {
 		return e.withChallenges(t, f, func(ctx context.Context, _ []flow.ChallengeRecord) error {
 			_, err := e.flows.ChallengeSecret(ctx, link.ID)
 			return err
 		})
 	})
-	count("ChallengeTarget", 1, func(context.Context) error {
+	count("ChallengeTarget", 1, func() error {
 		return e.withChallenges(t, f, func(ctx context.Context, _ []flow.ChallengeRecord) error {
 			_, err := e.flows.ChallengeTarget(ctx, link.ID)
 			return err
