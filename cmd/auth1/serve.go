@@ -17,6 +17,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/adapters/crypto/argon2id"
 	"github.com/arafat-hasan/auth1/internal/adapters/keyring"
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
+	"github.com/arafat-hasan/auth1/internal/adapters/system"
 	"github.com/arafat-hasan/auth1/internal/config"
 	"github.com/arafat-hasan/auth1/internal/http/gen"
 	"github.com/arafat-hasan/auth1/internal/http/handlers"
@@ -86,10 +87,20 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
-	// The registry has no consumer until the use cases arrive; serve refuses a policy it rejects.
+	// The registry and the message types have no consumer until the use cases arrive; serve
+	// refuses a policy or a type table that start-up rejects.
 	if _, problems := loadIdentifiers(cfg); len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
+	if _, problems := loadMessageTypes(cfg); len(problems) > 0 {
+		return printProblems(cmd.ErrOrStderr(), problems)
+	}
+	// The adapter is handed rows by the delivery relay (WP-42); the resolver arrives with WP-43.
+	delivery, devRoutes, err := newDelivery(cfg, unavailableResolver{}, system.Clock{})
+	if err != nil {
+		return err
+	}
+	_ = delivery
 
 	tel, err := telemetry.New(ctx, cfg.Telemetry, telemetry.BuildInfo{Version: info.Version})
 	if err != nil {
@@ -187,6 +198,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		RequestDuration: duration,
 		Health:          checks,
 		Routes:          gen.Routes(api, pw),
+		Dev:             devRoutes,
 	})
 
 	// The keyring pollers run until the servers have stopped. They return only when their context

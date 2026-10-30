@@ -217,6 +217,8 @@ func TestServeRuns(t *testing.T) {
 	expect(api+"/.well-known/jwks.json", 200, "application/json", `"kty":"RSA"`)
 	expect(api+"/.well-known/oauth-authorization-server", 200, "application/json", `"jwks_uri":"https://id.example.com/.well-known/jwks.json"`)
 	expect(api+"/nope", 404, "application/problem+json", `"NOT_FOUND"`)
+	// The development routes exist only with the capture adapter (TestServeCaptureInDevelopment).
+	expect(api+"/dev/messages?to=a@example.org", 404, "application/problem+json", `"NOT_FOUND"`)
 	expect(metrics+"/metrics", 200, "", "http_server_request_duration_seconds_bucket")
 
 	cancel()

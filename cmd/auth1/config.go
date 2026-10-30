@@ -13,6 +13,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/config"
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
 	"github.com/arafat-hasan/auth1/internal/domain/identifier"
+	"github.com/arafat-hasan/auth1/internal/domain/message"
 )
 
 // errConfigInvalid is returned by "config check" after it has printed the problems.
@@ -54,6 +55,8 @@ func checkConfig(cmd *cobra.Command, path string, environ []string) error {
 	}
 	if len(problems) == 0 {
 		_, problems = loadIdentifiers(cfg)
+		_, typeProblems := loadMessageTypes(cfg)
+		problems = append(problems, typeProblems...)
 		_, keyProblems := loadCryptoKeys(cfg, slog.New(slog.DiscardHandler))
 		problems = append(problems, keyProblems...)
 		problems = append(problems, keyringProblems(cfg)...)
@@ -114,6 +117,20 @@ func loadIdentifiers(cfg *config.Config) (*identifier.Registry, []*config.Proble
 	}
 	out := make([]*config.Problem, len(pe))
 	for i, e := range pe {
+		out[i] = &config.Problem{Path: e.Path(), Message: e.Message}
+	}
+	return nil, out
+}
+
+// loadMessageTypes applies delivery.types to the message purposes (TDD-06 §7). It runs after
+// Validate: internal/config cannot know the purposes, which live in internal/domain/message.
+func loadMessageTypes(cfg *config.Config) (*message.Types, []*config.Problem) {
+	types, errs := message.NewTypes(cfg.Delivery.Types)
+	if len(errs) == 0 {
+		return types, nil
+	}
+	out := make([]*config.Problem, len(errs))
+	for i, e := range errs {
 		out[i] = &config.Problem{Path: e.Path(), Message: e.Message}
 	}
 	return nil, out
