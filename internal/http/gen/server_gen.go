@@ -626,7 +626,11 @@ type DeliveryRequest struct {
 	// Type Examples: auth.phone_verification_code, auth.notice_password_changed
 	Type string `json:"type"`
 
-	// Variables References (for `code`, `link` and personal values) or plain non-secret values
+	// Variables References (for `code`, `link` and personal values) or plain non-secret values. The
+	// reference forms: `auth1:secret:<challenge id>` (the OTP), `auth1:link:<challenge id>`
+	// (the full link), `auth1:identifier:<identifier id>` (an identifier's value),
+	// `auth1:challenge-target:<challenge id>` (an address under change) and
+	// `auth1:display-name:<account id>` (the account's display name).
 	Variables map[string]DeliveryRequest_Variables_AdditionalProperties `json:"variables"`
 }
 
