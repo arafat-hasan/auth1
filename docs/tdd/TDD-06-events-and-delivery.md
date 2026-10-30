@@ -151,7 +151,8 @@ examples are in `api/asyncapi.yaml`, which is the final word.
   "recipient": "auth1:identifier:0192…",
   "variables": { "code": "auth1:secret:0192…" },
   "deadline": "2026-10-26T10:05:00Z",
-  "traceparent": "00-…"
+  "traceparent": "00-…",
+  "resolver": "auth1"
 }
 ```
 
@@ -204,8 +205,11 @@ is harmless. Each call is audited (request id, number resolved, number omitted) 
 | Notice: sessions revoked | `auth.notice_sessions_revoked` | Email | `reason`, `occurred_at` | No |
 | Notice: new sign-in *(off by default)* | `auth.notice_new_sign_in` | Email | `client_id`, `user_agent`, `occurred_at` | No |
 
-Type names are configuration (`delivery.types`). Notices go to the account's current email. When
-the deployment has no email identifier, they go to the first verified identifier in policy order.
+Type names are configuration (`delivery.types`, keyed by purpose: the default type without
+`auth.`, for example `password_reset_link`). Notices go to the account's current verified email.
+When the deployment has no email identifier type, they go to the account's first verified
+identifier by type name, by that type's channel. A notice to an identifier retired less than
+`delivery.retired_address_window` ago (the old address after a change) is still sent.
 
 ## 8. Adapters
 
@@ -226,6 +230,8 @@ the resolver (§6).
 ### 8.3 `capture`
 
 - Keeps the last 1000 messages in memory, values resolved, readable at `GET /dev/messages?to=<value>`.
+  The route is not part of the API contract and sits at the root, beside `/livez`, not under
+  `http.base_path`.
 - Allowed only when `app.environment` is `development`. Start-up refuses it elsewhere (SDD T-17).
 - End-to-end tests use it, or a fake notification service that calls the resolver.
 

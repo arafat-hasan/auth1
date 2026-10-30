@@ -124,7 +124,7 @@ delivery:
   retired_address_window: 168h            # a retired identifier stays reserved this long
   notices:
     new_sign_in: false                    # notify on sign-in from a new device
-  types: {}                               # purpose -> message type; defaults in TDD-06 §7
+  types: {}                               # purpose -> message type, e.g. password_reset_link: x.reset; purposes and defaults in TDD-06 §7
 
 service_auth:
   mode: mesh                              # mesh | client_credentials | both; required outside development, no default
