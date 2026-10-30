@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
@@ -120,7 +119,7 @@ func (r *Flows) LockFlow(ctx context.Context, f flow.Flow) (flow.Flow, error) {
 	if err != nil {
 		return flow.Flow{}, fmt.Errorf("lock flow: %w", err)
 	}
-	t.lockFlow(got.ID)
+	t.lockFlow(got.ID, got.Kind)
 	if pending != nil {
 		plain, err := r.fc.Open(app.NewPlace(tableFlows, "pending_secret", got.ID), pending)
 		if err != nil {
@@ -154,15 +153,17 @@ func (r *Flows) Open(ctx context.Context, f flow.NewFlow) error {
 		}
 	}
 	if f.Kind != flow.KindSignIn {
-		// Flow rows before challenge rows, in one statement (G-5).
+		// Flow rows before challenge rows, in one statement (G-5). A flow past expires_at that the
+		// expiry job has not closed yet closes as expired, not replaced.
 		if _, err := t.tx.ExecContext(ctx, `
 			WITH f AS (
-				UPDATE flows SET cancelled_at = now(), close_reason = ?, pending_secret = NULL
+				UPDATE flows SET cancelled_at = now(), pending_secret = NULL,
+					close_reason = CASE WHEN expires_at > now() THEN ? ELSE ? END
 				WHERE account_id = ? AND kind = ? AND completed_at IS NULL AND cancelled_at IS NULL
 				RETURNING id)
 			UPDATE challenges SET closed_at = now(), secret = NULL
 			WHERE flow_id IN (SELECT id FROM f) AND closed_at IS NULL`,
-			string(flow.CloseReplaced), f.AccountID, string(f.Kind)); err != nil {
+			string(flow.CloseReplaced), string(flow.CloseExpired), f.AccountID, string(f.Kind)); err != nil {
 			return fmt.Errorf("open flow: replace: %w", err)
 		}
 	}
@@ -172,7 +173,7 @@ func (r *Flows) Open(ctx context.Context, f flow.NewFlow) error {
 		f.ID, string(f.Kind), f.AccountID, f.ClientID, f.HandleHash, string(state), pending, f.ExpiresAt); err != nil {
 		return fmt.Errorf("open flow: %w", err)
 	}
-	t.lockFlow(f.ID)
+	t.lockFlow(f.ID, f.Kind)
 	return nil
 }
 
@@ -183,7 +184,7 @@ func lockedFlow(ctx context.Context, op string, id uuid.UUID) (*txn, error) {
 	if t == nil {
 		return nil, fmt.Errorf("%s: %w", op, ErrNoTransaction)
 	}
-	if !slices.Contains(t.flows, id) {
+	if _, ok := t.flows[id]; !ok {
 		return nil, fmt.Errorf("%s: %w", op, ErrLockOrder)
 	}
 	return t, nil
@@ -194,6 +195,9 @@ func (r *Flows) Update(ctx context.Context, id uuid.UUID, state flow.State, atte
 	t, err := lockedFlow(ctx, "update flow", id)
 	if err != nil {
 		return err
+	}
+	if state == nil || state.Kind() != t.flows[id] {
+		return fmt.Errorf("update flow: %w: state is not of kind %s", flow.ErrStateInvalid, t.flows[id])
 	}
 	data, err := flow.MarshalState(state)
 	if err != nil {

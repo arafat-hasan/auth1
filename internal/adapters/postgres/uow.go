@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/arafat-hasan/auth1/internal/domain"
+	"github.com/arafat-hasan/auth1/internal/domain/flow"
 )
 
 // txKey is the context key of the open transaction, a *txn.
@@ -27,7 +28,7 @@ type txKey struct{}
 type txn struct {
 	tx         bun.Tx
 	locked     []*lockedAccount // in lock order
-	flows      []uuid.UUID
+	flows      map[uuid.UUID]flow.Kind
 	challenges []uuid.UUID
 }
 
@@ -48,12 +49,13 @@ func (t *txn) lock(id uuid.UUID, version int64) {
 	}
 }
 
-// lockFlow records that the transaction locked the flow id. As for lock, take the lock outside a
-// savepoint.
-func (t *txn) lockFlow(id uuid.UUID) {
-	if !slices.Contains(t.flows, id) {
-		t.flows = append(t.flows, id)
+// lockFlow records that the transaction locked the flow id, of kind. As for lock, take the lock
+// outside a savepoint.
+func (t *txn) lockFlow(id uuid.UUID, kind flow.Kind) {
+	if t.flows == nil {
+		t.flows = make(map[uuid.UUID]flow.Kind)
 	}
+	t.flows[id] = kind
 }
 
 // lockChallenge records that the transaction locked the challenge id, as lockFlow.

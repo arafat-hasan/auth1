@@ -225,6 +225,13 @@ func TestOpenReplaces(t *testing.T) {
 			t.Errorf("flow %s: %v", f.Kind, err)
 		}
 	}
+
+	// An open flow past expires_at, which the expiry job has not closed yet, closes as expired.
+	e.exec(t, "UPDATE flows SET expires_at = now() - interval '1 minute' WHERE id = ?", otherKind.ID)
+	e.open(t, e.newFlow(acc, flow.KindPhoneChange, handle("phone again")))
+	if cancelled, _, reason, _ := e.flowCols(t, otherKind.ID); !cancelled || reason != string(flow.CloseExpired) {
+		t.Errorf("expired flow replaced: cancelled %v, reason %q; want expired", cancelled, reason)
+	}
 }
 
 func TestSignInFlowsCoexist(t *testing.T) {
@@ -254,6 +261,21 @@ func TestUpdateFlow(t *testing.T) {
 	}
 	if d := cmp.Diff(flow.State(state), got.State); d != "" || got.Attempts != 2 {
 		t.Errorf("state (-want +got):\n%s; attempts %d, want 2", d, got.Attempts)
+	}
+
+	for _, wrong := range []flow.State{nil, flow.SignInState{}} {
+		err := e.uow.Do(t.Context(), func(ctx context.Context) error {
+			if _, err := e.repo.GetForUpdate(ctx, got.AccountID); err != nil {
+				return err
+			}
+			if _, err := e.flows.LockFlow(ctx, got); err != nil {
+				return err
+			}
+			return e.flows.Update(ctx, got.ID, wrong, 0)
+		})
+		if !errors.Is(err, flow.ErrStateInvalid) {
+			t.Errorf("Update with state %T: %v, want ErrStateInvalid", wrong, err)
+		}
 	}
 }
 

@@ -79,7 +79,7 @@ it (TDD-07 §5).
 
 **Sending** a challenge, inside the use case's transaction:
 1. Check the send limits for `target_bidx` (TDD-07 §5). On refusal, answer `RESEND_TOO_SOON` or `RATE_LIMITED`.
-2. Increment `sends` and set `last_sent_at`.
+2. Increment `sends`, set `last_sent_at` and record the send in `challenge_sends`, in one statement.
 3. Write a delivery outbox row (TDD-06 §5): `request_id = <challenge id>:<sends>`.
 
 **Resend** (`POST …/resend` with the handle and the identifier type):
