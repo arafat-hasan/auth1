@@ -160,5 +160,12 @@ database's `now()`). It implements `app.TokenSigner` (`Sign(payload, typ)`) and 
 `testdata/example/secrets/signing` holds public test keys; a fresh database makes its key wait
 `min_publish_before_use` (tests set `AUTH1_KEYS_MIN_PUBLISH_BEFORE_USE=0s`).
 
+Identifiers (TDD-01 §2): `internal/domain/identifier` holds the `Type` interface (`Normalise`,
+`VerifyMethods`, `CanSignIn`, `Variants`, `CheckPolicy`), the built-in `Email` and `Phone`
+(`identifier.Builtin()`) and the `Registry`. `NewRegistry` checks the `identifiers` policy against
+the types, so `loadConfig` in `cmd/auth1` reports its problems for `config check` and `serve`.
+Refusals are `IDENTIFIER_NOT_ALLOWED` and never carry the value. An empty `calling_codes` allows no
+phone. Both normalisers are fuzzed (`FuzzEmail`, `FuzzPhone`: deterministic and idempotent).
+
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
