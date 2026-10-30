@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,42 @@ func TestConfigCheckBroken(t *testing.T) {
 		if !strings.Contains(out, "  - "+path+": ") {
 			t.Errorf("output does not name %s:\n%s", path, out)
 		}
+	}
+}
+
+// TestConfigCheckIdentifiers checks that a configuration that passes Validate still has its
+// identifier policy checked against the identifier-type registry (TDD-01 §2.4). It runs from the
+// repository root, like TestConfigCheckExample.
+func TestConfigCheckIdentifiers(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+
+	example, err := os.ReadFile("config.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`(?m)^identifiers:.*\n(?:  .*\n)+`)
+	if !re.Match(example) {
+		t.Fatal("config.example.yaml has no identifiers block")
+	}
+	policy := "identifiers:\n" +
+		"  email: { required: true, verify: email_link, sign_in: true, calling_codes: [\"44\"] }\n" +
+		"  phone: { required: true, verify: email_code }\n" +
+		"  username: { verify: email_code }\n"
+	path := filepath.Join(t.TempDir(), "identifiers.yaml")
+	if err := os.WriteFile(path, re.ReplaceAll(example, []byte(policy)), 0o600); err != nil { //nolint:gosec // a test file in a temporary directory
+		t.Fatal(err)
+	}
+	out, err := runConfigCheck(t, path)
+	if !errors.Is(err, errConfigInvalid) {
+		t.Fatalf("config check error = %v, want errConfigInvalid\n%s", err, out)
+	}
+	want := "configuration has 4 problem(s):\n" +
+		"  - identifiers.email.calling_codes: applies to phone only\n" +
+		"  - identifiers.phone.verify: must be sms_otp\n" +
+		"  - identifiers.phone.calling_codes: is empty, so no phone is allowed; required or sign_in needs at least one\n" +
+		"  - identifiers.username: unknown identifier type; known: email, phone\n"
+	if !strings.HasPrefix(out, want) {
+		t.Errorf("output:\n%s\nwant it to start with:\n%s", out, want)
 	}
 }
 

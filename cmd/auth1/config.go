@@ -11,6 +11,8 @@ import (
 
 	"github.com/arafat-hasan/auth1/internal/adapters/keyring"
 	"github.com/arafat-hasan/auth1/internal/config"
+	"github.com/arafat-hasan/auth1/internal/domain/flow"
+	"github.com/arafat-hasan/auth1/internal/domain/identifier"
 )
 
 // errConfigInvalid is returned by "config check" after it has printed the problems.
@@ -51,7 +53,9 @@ func checkConfig(cmd *cobra.Command, path string, environ []string) error {
 		return err
 	}
 	if len(problems) == 0 {
-		_, problems = loadCryptoKeys(cfg, slog.New(slog.DiscardHandler))
+		_, problems = loadIdentifiers(cfg)
+		_, keyProblems := loadCryptoKeys(cfg, slog.New(slog.DiscardHandler))
+		problems = append(problems, keyProblems...)
 		problems = append(problems, keyringProblems(cfg)...)
 	}
 	out := cmd.OutOrStdout()
@@ -88,6 +92,31 @@ func loadConfig(path string, environ []string) (*config.Config, []*config.Proble
 		problems = append(problems, config.Problems(cfg.Validate())...)
 	}
 	return cfg, problems, nil
+}
+
+// loadIdentifiers checks the identifier policy against the built-in identifier types
+// (TDD-01 §2.4) and returns the registry, or one problem per failure. It runs on a configuration
+// that has passed Validate, which checks the policy's syntax, so a value is not reported twice.
+func loadIdentifiers(cfg *config.Config) (*identifier.Registry, []*config.Problem) {
+	policies := make(map[string]identifier.Policy, len(cfg.Identifiers))
+	for name, p := range cfg.Identifiers {
+		policies[name] = identifier.Policy{
+			Required:     p.Required,
+			Verify:       flow.Method(p.Verify),
+			SignIn:       p.SignIn,
+			CallingCodes: p.CallingCodes,
+		}
+	}
+	r, err := identifier.NewRegistry(identifier.Builtin(), policies)
+	var pe identifier.PolicyErrors
+	if !errors.As(err, &pe) {
+		return r, nil
+	}
+	out := make([]*config.Problem, len(pe))
+	for i, e := range pe {
+		out[i] = &config.Problem{Path: e.Path(), Message: e.Message}
+	}
+	return nil, out
 }
 
 // printProblems writes the problem count and each problem to out, and returns errConfigInvalid.

@@ -86,6 +86,10 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
+	// The registry has no consumer until the use cases arrive; serve refuses a policy it rejects.
+	if _, problems := loadIdentifiers(cfg); len(problems) > 0 {
+		return printProblems(cmd.ErrOrStderr(), problems)
+	}
 
 	tel, err := telemetry.New(ctx, cfg.Telemetry, telemetry.BuildInfo{Version: info.Version})
 	if err != nil {
