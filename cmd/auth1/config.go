@@ -11,6 +11,8 @@ import (
 
 	"github.com/arafat-hasan/auth1/internal/adapters/keyring"
 	"github.com/arafat-hasan/auth1/internal/config"
+	"github.com/arafat-hasan/auth1/internal/domain/flow"
+	"github.com/arafat-hasan/auth1/internal/domain/identifier"
 )
 
 // errConfigInvalid is returned by "config check" after it has printed the problems.
@@ -86,8 +88,41 @@ func loadConfig(path string, environ []string) (*config.Config, []*config.Proble
 	}
 	if cfg != nil {
 		problems = append(problems, config.Problems(cfg.Validate())...)
+		_, err := newIdentifierRegistry(cfg.Identifiers)
+		problems = append(problems, identifierProblems(err)...)
 	}
 	return cfg, problems, nil
+}
+
+// newIdentifierRegistry checks the identifier policy against the built-in identifier types
+// (TDD-01 §2.4) and returns the registry.
+func newIdentifierRegistry(policies map[string]config.IdentifierPolicy) (*identifier.Registry, error) {
+	out := make(map[string]identifier.Policy, len(policies))
+	for name, p := range policies {
+		out[name] = identifier.Policy{
+			Required:     p.Required,
+			Verify:       flow.Method(p.Verify),
+			SignIn:       p.SignIn,
+			CallingCodes: p.CallingCodes,
+		}
+	}
+	return identifier.NewRegistry(identifier.Builtin(), out)
+}
+
+// identifierProblems returns one problem per *identifier.PolicyError joined in err.
+func identifierProblems(err error) []*config.Problem {
+	var out []*config.Problem
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range j.Unwrap() {
+			out = append(out, identifierProblems(e)...)
+		}
+		return out
+	}
+	var pe *identifier.PolicyError
+	if errors.As(err, &pe) {
+		out = append(out, &config.Problem{Path: pe.Path(), Message: pe.Message})
+	}
+	return out
 }
 
 // printProblems writes the problem count and each problem to out, and returns errConfigInvalid.

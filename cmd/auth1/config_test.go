@@ -56,6 +56,34 @@ func TestConfigCheckBroken(t *testing.T) {
 	}
 }
 
+// TestConfigCheckIdentifiers checks that the identifier policy is checked against the
+// identifier-type registry (TDD-01 §2.4).
+func TestConfigCheckIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "identifiers.yaml")
+	policy := "identifiers:\n" +
+		"  email: { verify: sms_otp }\n" +
+		"  phone: { required: true, verify: sms_otp }\n" +
+		"  username: { verify: email_code }\n"
+	if err := os.WriteFile(path, []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runConfigCheck(t, path)
+	if !errors.Is(err, errConfigInvalid) {
+		t.Fatalf("config check error = %v, want errConfigInvalid\n%s", err, out)
+	}
+	for _, line := range []string{
+		"  - identifiers.email.verify: must be email_link or email_code\n",
+		"  - identifiers.phone.calling_codes: is empty, so no phone is allowed; required or sign_in needs at least one\n",
+		"  - identifiers.username: unknown identifier type; known: email, phone\n",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("output does not have %q:\n%s", line, out)
+		}
+	}
+}
+
 func TestConfigCheckUnreadable(t *testing.T) {
 	t.Parallel()
 
