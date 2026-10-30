@@ -109,10 +109,16 @@ func (r *Accounts) Get(ctx context.Context, id uuid.UUID) (account.Account, erro
 
 // GetForUpdate implements app.Accounts.
 func (r *Accounts) GetForUpdate(ctx context.Context, id uuid.UUID) (account.Account, error) {
-	if !inTx(ctx) {
+	t := txFrom(ctx)
+	if t == nil {
 		return account.Account{}, fmt.Errorf("lock account: %w", ErrNoTransaction)
 	}
-	return r.get(ctx, id, " FOR UPDATE")
+	a, err := r.get(ctx, id, " FOR UPDATE")
+	if err != nil {
+		return account.Account{}, err
+	}
+	t.lock(a.ID, a.Version)
+	return a, nil
 }
 
 // get reads one account, with lock appended to the query.
@@ -140,23 +146,6 @@ func (r *Accounts) get(ctx context.Context, id uuid.UUID, lock string) (account.
 	a.StatusUntil, a.FactorFailuresSince = timePtr(until), timePtr(failuresFrom)
 	a.StatusChangedAt, a.CreatedAt, a.UpdatedAt = a.StatusChangedAt.UTC(), a.CreatedAt.UTC(), a.UpdatedAt.UTC()
 	return a, nil
-}
-
-// BumpVersion implements app.Accounts.
-func (r *Accounts) BumpVersion(ctx context.Context, id uuid.UUID, n int64) (int64, error) {
-	if n < 1 {
-		return 0, fmt.Errorf("bump account version: increment %d is not positive", n)
-	}
-	var v int64
-	err := Conn(ctx, r.db).QueryRowContext(ctx,
-		"UPDATE accounts SET version = version + ?, updated_at = now() WHERE id = ? RETURNING version", n, id).Scan(&v)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, notFound("account")
-	}
-	if err != nil {
-		return 0, fmt.Errorf("bump account version: %w", err)
-	}
-	return v, nil
 }
 
 // ApplyStatus implements app.Accounts.
