@@ -36,7 +36,8 @@ type lockedAccount struct {
 }
 
 // lock records that the transaction locked the account, read at version. A second lock keeps the
-// first record: the row has not changed under the lock.
+// first record: the row has not changed under the lock. Take the lock outside a savepoint: rolling
+// back to one releases the row locks taken after it, and the record would outlive the lock.
 func (t *txn) lock(id uuid.UUID, version int64) {
 	if t.account(id) == nil {
 		t.locked = append(t.locked, &lockedAccount{id: id, version: version})
@@ -89,9 +90,9 @@ func NewUnitOfWork(db *bun.DB, acquireTimeout time.Duration, tp trace.TracerProv
 // Do runs fn in a transaction, which repositories reach through Conn. When fn returns nil, Do
 // moves the version of every account fn locked with Accounts.GetForUpdate (TDD-06 §2) and commits
 // once. It rolls back when fn or that update returns an error, or fn panics; the panic continues
-// after the rollback. A Do inside fn joins the open transaction. Do returns UNAVAILABLE wrapping the cause
-// when no connection is free within the acquire timeout, when the transaction cannot begin, or
-// when COMMIT could not be sent; when ctx ends first, ctx's error. A COMMIT that fails after it
+// after the rollback. A Do inside fn joins the open transaction. Do returns UNAVAILABLE wrapping
+// the cause when no connection is free within the acquire timeout, when the transaction cannot
+// begin, or when COMMIT could not be sent; when ctx ends first, ctx's error. A COMMIT that fails after it
 // was sent is returned as it is: it may have been applied, so it is not safe to retry.
 func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context) error) (err error) {
 	if inTx(ctx) {

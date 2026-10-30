@@ -18,8 +18,9 @@ type OutboxWriter interface {
 	// Accounts.GetForUpdate in this transaction: the i-th event of the transaction gets the
 	// locked version plus i, and the version moves past the last at commit (TDD-06 §2, I-8).
 	Event(ctx context.Context, eventType string, accountID uuid.UUID, data any) error
-	// Delivery writes req for the delivery adapter, about the account. It needs no lock and moves
-	// no version. An empty req.RequestID, a notice's, becomes the row's id (TDD-06 §5).
+	// Delivery writes req for the delivery adapter, about the account; a zero accountID stores
+	// no subject. It needs no lock and moves no version. An empty req.RequestID, a notice's,
+	// becomes the row's id (TDD-06 §5).
 	Delivery(ctx context.Context, accountID uuid.UUID, req DeliveryRequest) error
 }
 

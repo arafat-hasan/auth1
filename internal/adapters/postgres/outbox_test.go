@@ -61,7 +61,7 @@ type outboxRow struct {
 	Body           string
 	TraceContext   sql.NullString
 	Attempts       int
-	Pending        bool // next_attempt_at = created_at, published_at and parked_at null
+	Pending        bool // next_attempt_at = created_at; published_at, parked_at and last_error null
 }
 
 // rows returns every outbox row, ordered by id.

@@ -60,7 +60,8 @@ func auditRows(t *testing.T, e *accountsEnv) []auditRow {
 	return out
 }
 
-func str(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
+// nullString is s as a non-null sql.NullString.
+func nullString(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
 
 func TestAuditWrite(t *testing.T) {
 	t.Parallel()
@@ -84,9 +85,9 @@ func TestAuditWrite(t *testing.T) {
 	want := []auditRow{
 		{
 			AccountID: uuid.NullUUID{UUID: id, Valid: true}, ActorKind: "service",
-			ActorID: str("spiffe://example.org/support"), OnBehalf: str("agent 42"),
-			Action: "account.suspend", Outcome: "success", ClientID: str("support-console"),
-			IP: str("2001:db8::1"), UserAgent: str("curl/8.0"),
+			ActorID: nullString("spiffe://example.org/support"), OnBehalf: nullString("agent 42"),
+			Action: "account.suspend", Outcome: "success", ClientID: nullString("support-console"),
+			IP: nullString("2001:db8::1"), UserAgent: nullString("curl/8.0"),
 			Details: map[string]any{"reason_code": "abuse", "sessions_revoked": float64(2)}, AtIsNow: true,
 		},
 		{ActorKind: "anonymous", Action: "sign_in", Outcome: "failure", Details: map[string]any{}, AtIsNow: true},
