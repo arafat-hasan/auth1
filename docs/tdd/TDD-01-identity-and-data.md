@@ -343,6 +343,9 @@ CREATE INDEX outbox_delivery_pending ON outbox (next_attempt_at)
 CREATE INDEX outbox_published ON outbox (published_at) WHERE published_at IS NOT NULL;  -- retention (§5)
 ```
 
+**Audit rows.** `actor_kind` is one of the five in the check; `outcome` is `success` or `failure`.
+What a failure was, and other non-secret facts, go in `details`.
+
 ### 4.1 Grants
 
 - `auth1_migrator` owns the schema.
@@ -353,7 +356,7 @@ CREATE INDEX outbox_published ON outbox (published_at) WHERE published_at IS NOT
 
 | Rule | How |
 |---|---|
-| Changes to one account apply in order (I-10) | Every use case that changes an account first takes `SELECT … FOR UPDATE` on its row, and finishes with `UPDATE accounts SET version = version + n, updated_at = now() WHERE id = $1`. Optimistic preconditions for service callers (`If-Match` on `version`) are not offered in 1.0 |
+| Changes to one account apply in order (I-10) | Every use case that changes an account first takes `SELECT … FOR UPDATE` on its row, and finishes with `UPDATE accounts SET version = version + n, updated_at = now() WHERE id = $1`. The unit of work runs that update at commit for every account locked in the transaction (TDD-06 §2), so the lock counts as the change: a committed use case that locks an account and then changes nothing in it (an idempotent no-op, or a lock taken for the lock order) still moves its version and `updated_at`. Optimistic preconditions for service callers (`If-Match` on `version`) are not offered in 1.0 |
 | Event order (I-8) | The outbox `account_version` values are assigned from the locked row inside the same transaction (TDD-06 §2) |
 | Lock order | Account row, then flow, then challenge, then session. Never the reverse, to avoid deadlocks |
 | Isolation | `READ COMMITTED` with explicit row locks and conditional updates. No reliance on `SERIALIZABLE` |

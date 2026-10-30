@@ -32,7 +32,9 @@ Inside a use case's transaction, with the account row locked (TDD-01 §4.2):
 3. At the end: `UPDATE accounts SET version = v + max(1, n)`, where `n` is the number of events.
 
 Versions are **monotonic, not contiguous**: a change with no event (a TOTP replacement) still moves
-the version. Consumers must accept gaps and use the version only to order and to discard stale data.
+the version. Step 3 runs for every account the transaction locked, so a committed lock with no
+change (an idempotent no-op) moves it too (TDD-01 §4.2). Consumers must accept gaps and use the
+version only to order and to discard stale data.
 
 ## 3. The relay
 
