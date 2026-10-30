@@ -3,9 +3,9 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Version | 0.2 |
-| Date | 2026-10-27 |
-| SDD | [design.md](../design.md) 0.4: D-15, D-16, I-7, I-8, I-15 |
+| Version | 0.3 |
+| Date | 2026-10-30 |
+| SDD | [design.md](../design.md) 0.13: D-15, D-16, I-7, I-8, I-15 |
 | Owner | Arafat Hasan |
 
 The outbox, the relay, the CloudEvents mapping, the delivery port and its adapters, the resolver
@@ -161,10 +161,11 @@ examples are in `api/asyncapi.yaml`, which is the final word.
 | `auth1:challenge-target:<challenge id>` | The challenge's `target_value` (an address under change) |
 | `auth1:secret:<challenge id>` | The OTP |
 | `auth1:link:<challenge id>` | The full URL: `link_base_url` + the purpose's path + `#token=<token>` |
+| `auth1:display-name:<account id>` | The account's display name |
 
 - **`request_id`** is `<challenge id>:<send number>` for a challenge, and `<outbox id>` for a notice.
 - **`deadline`** is the challenge's expiry, so the notification service can drop late messages itself.
-- **Plain variables** (for notices) are non-secret values only, for example `remaining_codes`, `client_id`, `occurred_at`.
+- **Plain variables** (for notices) are non-secret values only, for example `remaining_codes`, `client_id`, `occurred_at`. Personal values, such as a display name, are references: an outbox row is kept 7 days.
 
 ## 6. The resolver hook
 
@@ -176,7 +177,8 @@ Rules, checked for each reference:
 1. **The request was really sent.** The `request_id` must name a delivery outbox row (kept 7 days), and the reference must appear in that row's body. auth1 resolves only what it asked to send. Possessing a challenge id is not enough (I-20).
 2. **Secrets and challenge targets:** the challenge is open (`closed_at` null, `expires_at` in the future, `attempts < max_attempts`).
 3. **Identifiers:** current; or, for a notice row, retired less than `delivery.retired_address_window` ago (7 days).
-4. **Anything else** is omitted from `values`, which means "do not send".
+4. **Display names:** the account exists and is not `deleted`. The value is the current display name, read when resolved, not the one at the time of the request.
+5. **Anything else** is omitted from `values`, which means "do not send".
 
 Resolving reads only. It changes no counter or row (I-15), so a retry by the notification service
 is harmless. Each call is audited (request id, number resolved, number omitted) and counted in
@@ -195,7 +197,7 @@ is harmless. Each call is audited (request id, number resolved, number omitted) 
 | Email change, old address | `auth.email_change_confirm_old` | Email | `link` | Yes |
 | Email change, new address | `auth.email_change_confirm_new` | Email | `link` | Yes |
 | Phone change | `auth.phone_change_code` | SMS | `code` | Yes |
-| Invitation | `auth.invitation_link` | Email | `link`, `display_name` (reference) | Yes |
+| Invitation | `auth.invitation_link` | Email | `link`, `display_name` (`auth1:display-name:`) | Yes |
 | Notice: password changed / reset | `auth.notice_password_changed` | Email | `occurred_at`, `how` | No |
 | Notice: email change requested | `auth.notice_email_change_requested` | Email (old address) | `occurred_at` | No |
 | Notice: identifier changed | `auth.notice_identifier_changed` | Email (old address, or the account's email) | `type`, `occurred_at` | No |
@@ -203,6 +205,8 @@ is harmless. Each call is audited (request id, number resolved, number omitted) 
 | Notice: recovery codes regenerated / one used | `auth.notice_recovery_codes` | Email | `change`, `remaining_codes` | No |
 | Notice: sessions revoked | `auth.notice_sessions_revoked` | Email | `reason`, `occurred_at` | No |
 | Notice: new sign-in *(off by default)* | `auth.notice_new_sign_in` | Email | `client_id`, `user_agent`, `occurred_at` | No |
+
+`display_name` is not invitation-only: a notice may carry it later, through the same reference.
 
 Type names are configuration (`delivery.types`). Notices go to the account's current email. When
 the deployment has no email identifier, they go to the first verified identifier in policy order.

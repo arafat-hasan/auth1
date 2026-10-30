@@ -4,11 +4,11 @@
 |---|---|
 | Document | Software Design Description (SDD). High level: *what* auth1 is and *why* it is built this way |
 | Status | Draft |
-| Version | 0.12 (design of auth1 1.0) |
-| Date | 2026-10-29 |
+| Version | 0.13 (design of auth1 1.0) |
+| Date | 2026-10-30 |
 | Owner | Arafat Hasan |
 | Detailed designs | [`docs/tdd/`](tdd/): TDD-01 … TDD-08 (§16) |
-| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.9 |
+| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.13 |
 | Depends on | PostgreSQL 18, Redis, an AMQP 0-9-1 broker, a workload-identity source (a service mesh, or client credentials), a message-delivery service or provider |
 
 auth1 is an identity service: accounts, credentials, second factors, identifier verification,
@@ -704,6 +704,7 @@ A **`MessageDelivery` port** with three adapters, chosen by `delivery.adapter`:
 | No storing or caching | Resolved values are used for one delivery and never stored, cached, logged or emitted (`Cache-Control: no-store`) |
 | Idempotent per request | Resolving the same request again returns the same values while the challenge is open, and moves no counter |
 | Addresses under verification | A recipient may be a value that is not yet an identifier (an address being changed to) |
+| Display names | A display-name reference resolves to the account's current display name while the account is not deleted. Like every reference, only if it appears in a delivery request auth1 sent under that request id (I-20). A display name is personal, so it is never a plain variable |
 
 **Secret-bearing messages:**
 - verifying a phone or an email
@@ -1240,3 +1241,4 @@ The build order is part of the implementation plan, written after the TDDs are a
 | 0.10 | 2026-10-29 | §8.1: `banned → banned` changes the reason, like `suspended → suspended`; before, it was a no-op and a repeated ban kept the old reason |
 | 0.11 | 2026-10-29 | §10: the codes of a `VALIDATION_FAILED` field error (`required`, `not_allowed`, `unknown`, `not_future`); before, the code was free text |
 | 0.12 | 2026-10-29 | D-4 lists the `totp_replacement` flow kind, which TDD-02 §2.1 and the schema already have |
+| 0.13 | 2026-10-30 | D-16: a display-name reference, `auth1:display-name:<account id>`, so the invitation can carry the display name without a plain personal value in the outbox; before, TDD-06 §7 called it a reference but none was defined. `api/openapi.yaml` names the reference forms |
