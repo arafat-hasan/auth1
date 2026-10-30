@@ -53,7 +53,9 @@ func checkConfig(cmd *cobra.Command, path string, environ []string) error {
 		return err
 	}
 	if len(problems) == 0 {
-		_, problems = loadCryptoKeys(cfg, slog.New(slog.DiscardHandler))
+		_, problems = loadIdentifiers(cfg)
+		_, keyProblems := loadCryptoKeys(cfg, slog.New(slog.DiscardHandler))
+		problems = append(problems, keyProblems...)
 		problems = append(problems, keyringProblems(cfg)...)
 	}
 	out := cmd.OutOrStdout()
@@ -88,41 +90,33 @@ func loadConfig(path string, environ []string) (*config.Config, []*config.Proble
 	}
 	if cfg != nil {
 		problems = append(problems, config.Problems(cfg.Validate())...)
-		_, err := newIdentifierRegistry(cfg.Identifiers)
-		problems = append(problems, identifierProblems(err)...)
 	}
 	return cfg, problems, nil
 }
 
-// newIdentifierRegistry checks the identifier policy against the built-in identifier types
-// (TDD-01 §2.4) and returns the registry.
-func newIdentifierRegistry(policies map[string]config.IdentifierPolicy) (*identifier.Registry, error) {
-	out := make(map[string]identifier.Policy, len(policies))
-	for name, p := range policies {
-		out[name] = identifier.Policy{
+// loadIdentifiers checks the identifier policy against the built-in identifier types
+// (TDD-01 §2.4) and returns the registry, or one problem per failure. It runs on a configuration
+// that has passed Validate, which checks the policy's syntax, so a value is not reported twice.
+func loadIdentifiers(cfg *config.Config) (*identifier.Registry, []*config.Problem) {
+	policies := make(map[string]identifier.Policy, len(cfg.Identifiers))
+	for name, p := range cfg.Identifiers {
+		policies[name] = identifier.Policy{
 			Required:     p.Required,
 			Verify:       flow.Method(p.Verify),
 			SignIn:       p.SignIn,
 			CallingCodes: p.CallingCodes,
 		}
 	}
-	return identifier.NewRegistry(identifier.Builtin(), out)
-}
-
-// identifierProblems returns one problem per *identifier.PolicyError joined in err.
-func identifierProblems(err error) []*config.Problem {
-	var out []*config.Problem
-	if j, ok := err.(interface{ Unwrap() []error }); ok {
-		for _, e := range j.Unwrap() {
-			out = append(out, identifierProblems(e)...)
-		}
-		return out
+	r, err := identifier.NewRegistry(identifier.Builtin(), policies)
+	var pe identifier.PolicyErrors
+	if !errors.As(err, &pe) {
+		return r, nil
 	}
-	var pe *identifier.PolicyError
-	if errors.As(err, &pe) {
-		out = append(out, &config.Problem{Path: pe.Path(), Message: pe.Message})
+	out := make([]*config.Problem, len(pe))
+	for i, e := range pe {
+		out[i] = &config.Problem{Path: e.Path(), Message: e.Message}
 	}
-	return out
+	return nil, out
 }
 
 // printProblems writes the problem count and each problem to out, and returns errConfigInvalid.

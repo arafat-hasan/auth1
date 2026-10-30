@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -56,31 +57,39 @@ func TestConfigCheckBroken(t *testing.T) {
 	}
 }
 
-// TestConfigCheckIdentifiers checks that the identifier policy is checked against the
-// identifier-type registry (TDD-01 §2.4).
+// TestConfigCheckIdentifiers checks that a configuration that passes Validate still has its
+// identifier policy checked against the identifier-type registry (TDD-01 §2.4). It runs from the
+// repository root, like TestConfigCheckExample.
 func TestConfigCheckIdentifiers(t *testing.T) {
-	t.Parallel()
+	t.Chdir(filepath.Join("..", ".."))
 
-	path := filepath.Join(t.TempDir(), "identifiers.yaml")
+	example, err := os.ReadFile("config.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`(?m)^identifiers:.*\n(?:  .*\n)+`)
+	if !re.Match(example) {
+		t.Fatal("config.example.yaml has no identifiers block")
+	}
 	policy := "identifiers:\n" +
-		"  email: { verify: sms_otp }\n" +
-		"  phone: { required: true, verify: sms_otp }\n" +
+		"  email: { required: true, verify: email_link, sign_in: true, calling_codes: [\"44\"] }\n" +
+		"  phone: { required: true, verify: email_code }\n" +
 		"  username: { verify: email_code }\n"
-	if err := os.WriteFile(path, []byte(policy), 0o600); err != nil {
+	path := filepath.Join(t.TempDir(), "identifiers.yaml")
+	if err := os.WriteFile(path, re.ReplaceAll(example, []byte(policy)), 0o600); err != nil { //nolint:gosec // a test file in a temporary directory
 		t.Fatal(err)
 	}
 	out, err := runConfigCheck(t, path)
 	if !errors.Is(err, errConfigInvalid) {
 		t.Fatalf("config check error = %v, want errConfigInvalid\n%s", err, out)
 	}
-	for _, line := range []string{
-		"  - identifiers.email.verify: must be email_link or email_code\n",
-		"  - identifiers.phone.calling_codes: is empty, so no phone is allowed; required or sign_in needs at least one\n",
-		"  - identifiers.username: unknown identifier type; known: email, phone\n",
-	} {
-		if !strings.Contains(out, line) {
-			t.Errorf("output does not have %q:\n%s", line, out)
-		}
+	want := "configuration has 4 problem(s):\n" +
+		"  - identifiers.email.calling_codes: applies to phone only\n" +
+		"  - identifiers.phone.verify: must be sms_otp\n" +
+		"  - identifiers.phone.calling_codes: is empty, so no phone is allowed; required or sign_in needs at least one\n" +
+		"  - identifiers.username: unknown identifier type; known: email, phone\n"
+	if !strings.HasPrefix(out, want) {
+		t.Errorf("output:\n%s\nwant it to start with:\n%s", out, want)
 	}
 }
 
