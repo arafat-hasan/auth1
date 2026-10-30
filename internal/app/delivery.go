@@ -24,10 +24,12 @@ type DeliveryRow struct {
 // DeliveryResult is what the relay does with a row after MessageDelivery.Send (TDD-06 §3.2).
 type DeliveryResult int
 
-// The results.
+// The results. The zero value is none of them: an adapter that returns DeliveryOutcome{} has
+// forgotten to say what happened, and the relay parks the row rather than publish it.
 const (
+	_ DeliveryResult = iota
 	// DeliverySent: the message was handed over (2xx, or a duplicate). The row is published.
-	DeliverySent DeliveryResult = iota
+	DeliverySent
 	// DeliveryDropped: a reference is closed, so the message must not be sent. The row is
 	// published without sending.
 	DeliveryDropped

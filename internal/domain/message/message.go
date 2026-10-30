@@ -3,6 +3,7 @@ package message
 import (
 	"maps"
 	"slices"
+	"strings"
 )
 
 // Purpose is why a message is sent. Its value is the key of delivery.types and the default
@@ -140,8 +141,13 @@ func NewTypes(overrides map[string]string) (*Types, TypeErrors) {
 	return t, nil
 }
 
-// Type returns the message type of p; empty for an unknown purpose.
-func (t *Types) Type(p Purpose) string { return t.types[p] }
+// Type returns the message type of p; empty for an unknown purpose or a nil t.
+func (t *Types) Type(p Purpose) string {
+	if t == nil {
+		return ""
+	}
+	return t.types[p]
+}
 
 // TypeError is a problem of delivery.types found at start-up.
 type TypeError struct {
@@ -155,5 +161,14 @@ func (e *TypeError) Path() string { return "delivery.types." + e.Purpose }
 // Error returns "<path>: <message>".
 func (e *TypeError) Error() string { return e.Path() + ": " + e.Message }
 
-// TypeErrors is every problem NewTypes found.
+// TypeErrors is every problem NewTypes found. Match it with errors.As.
 type TypeErrors []TypeError
+
+// Error returns each problem on a line of its own.
+func (e TypeErrors) Error() string {
+	lines := make([]string, len(e))
+	for i := range e {
+		lines[i] = e[i].Error()
+	}
+	return strings.Join(lines, "\n")
+}

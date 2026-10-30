@@ -192,12 +192,16 @@ variables; `message.NewTypes` applies `delivery.types`, checked by `loadMessageT
 `cmd/auth1` after `Validate` (`internal/config` cannot import domain). Identifier types say their
 `Channel()`. In `internal/app`, `MessageDelivery.Send(ctx, DeliveryRow) DeliveryOutcome` (sent,
 dropped, retry, parked; the relay owns retries) and `DeliveryResolver` (TDD-06 §6) are the ports;
-`Messages` builds every request (`ChallengeCode`, `ChallengeLink`, `Notice`) with references only
-(`IdentifierRef`, `ChallengeTargetRef`, `SecretRef`, `LinkRef`) and plain string or integer
-variables, refusing anything else with `ErrMessageInvalid`; never build a `DeliveryRequest` by
-hand. `Notices.Send` writes a notice in the caller's transaction, choosing the recipient (an
-explicit `Notice.To` while current or retired less than `retired_address_window` ago, else the
-verified email, else the first verified identifier by type name). `internal/adapters/delivery/capture`
+`Messages` builds the requests (`ChallengeCode`, `ChallengeLink`, `Notice`; not yet the
+invitation's `display_name` reference) with references only (`IdentifierRef`, `ChallengeTargetRef`,
+`SecretRef`, `LinkRef`) and exactly the purpose's variables, plain strings or integers, refusing
+anything else with `ErrMessageInvalid`; a link goes only by email; never build a
+`DeliveryRequest` by hand. `MessageDelivery` adapters always set a `DeliveryOutcome` result: the
+zero value is none. `Notices.Send` writes a notice in the caller's transaction and returns a
+`NoticeSkip` when it writes none. It chooses the recipient: an explicit `Notice.To` if current or
+retired less than `retired_address_window` ago (no fallback); otherwise the verified email or, only
+when the deployment has no email type, the first verified identifier by type name. With an email
+type, notices go only by email. `internal/adapters/delivery/capture`
 keeps the last 1000 messages resolved and serves `GET /dev/messages?to=`; `newDelivery` builds it
 only in `development` and `serve` mounts it through `server.Options.Dev` at the root, outside the
 contract. `test/contract` checks stored delivery bodies against `DeliveryRequest` with
