@@ -110,7 +110,12 @@ PostgreSQL (TDD-01 §4, §6): `postgres.Open` builds the bun pool on pgx from `d
 `postgres.OpenProbe` builds the one-connection pool that the `/readyz` check pings.
 `internal/app.UnitOfWork` is the transaction port; `postgres.UnitOfWork` runs one `READ COMMITTED`
 transaction, a nested `Do` joins it, and an acquire timeout or a connection lost before
-`COMMIT` is sent is `UNAVAILABLE`. Repositories take
+`COMMIT` is sent is `UNAVAILABLE`. A use case that changes an account locks it with
+`Accounts.GetForUpdate`; `Do` then sets its version, before `COMMIT`, past the events
+`postgres.Outbox` wrote about it (by one when none; TDD-06 §2), so nothing bumps the version by
+hand. `Outbox.Event` needs that lock and `Outbox.Delivery` a transaction (I-7); both
+`pg_notify('auth1_outbox', destination)`. `postgres.Audit` joins the transaction, or writes alone
+outside one. Repositories take
 their executor from `postgres.Conn(ctx, db)`: the open transaction, else the pool. bun uses `?`
 placeholders. Migrations are plain SQL in `migrations/` (embedded as `migrations.FS`), run by
 `internal/adapters/postgres/migrate` under an advisory lock; never edit an applied one.
