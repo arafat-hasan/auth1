@@ -170,7 +170,7 @@ paths:
       tags: [Registration]
       operationId: verifyRegistrationResume
       summary: Resume a flow with a code
-      description: 'For identifier types verified by code. Emailed resume links go to `/v1/verification-links/confirm`. The old handle stops working.'
+      description: 'For identifier types verified by code. Emailed resume links go to `/v1/verification-links/confirm`. The request carries no flow id: the code, sent to the identifier for each open flow holding it, picks the flow. A wrong code counts against every open resume challenge to that identifier. Every failure answers `CODE_INVALID` without `attempts_left`, so the answer does not tell whether a flow holds the value. The old handle stops working.'
       security: []
       requestBody:
         required: true
@@ -1697,9 +1697,8 @@ components:
 
     ResumeVerify:
       type: object
-      required: [flow_id, identifier, code]
+      required: [identifier, code]
       properties:
-        flow_id: { type: string, format: uuid }
         identifier: { $ref: '#/components/schemas/IdentifierInput' }
         code: { $ref: '#/components/schemas/OtpCode' }
 

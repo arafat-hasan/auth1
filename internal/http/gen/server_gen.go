@@ -1223,9 +1223,8 @@ type ResumeRequest struct {
 
 // ResumeVerify defines model for ResumeVerify.
 type ResumeVerify struct {
-	Code       OtpCode            `json:"code"`
-	FlowId     openapi_types.UUID `json:"flow_id"`
-	Identifier IdentifierInput    `json:"identifier"`
+	Code       OtpCode         `json:"code"`
+	Identifier IdentifierInput `json:"identifier"`
 }
 
 // Role A role from the deployment's catalog
