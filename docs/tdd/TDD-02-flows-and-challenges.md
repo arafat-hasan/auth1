@@ -34,7 +34,7 @@ here match `api/openapi.yaml`, which is the final word on shapes.
 | `totp_replacement` | 10 min | — (the pending secret is in `flows.pending_secret`, encrypted) |
 
 - **Opening** a flow draws a 256-bit handle (base64url, 43 characters) and stores its SHA-256.
-- **Opening a flow of the same kind** for the same account cancels the previous open one (`close_reason = 'replaced'`), except `sign_in`, where several may be open (several devices).
+- **Opening a flow of the same kind** for the same account cancels the previous open one (`close_reason = 'replaced'`, or `expired` when it is past `expires_at` and the expiry job (§2.5) has not closed it yet), except `sign_in`, where several may be open (several devices).
 - **Finding** a flow: `SELECT … FROM flows WHERE id = $1 AND handle_hash = sha256($2) AND completed_at IS NULL AND cancelled_at IS NULL AND expires_at > now() FOR UPDATE`. No match answers `CHALLENGE_CLOSED`; the answer is the same for an unknown id, a wrong handle and an expired flow.
 - **Closing** sets `completed_at` or `cancelled_at` with `close_reason` (`replaced`, `expired`, `account_closed`, `attempts`), and closes the flow's open challenges (§2.3).
 
@@ -51,7 +51,7 @@ The columns behind this (`state`, `pending_secret`, `close_reason`, `attempts`) 
 **Verifying** an OTP:
 1. Compute the MAC of the input and compare it in constant time with `secret_mac`.
 2. Under the challenge row lock, increment `attempts` with `UPDATE … SET attempts = attempts + 1 WHERE id = $1 AND closed_at IS NULL AND attempts < max_attempts RETURNING attempts` (I-4).
-3. On a wrong code, answer `CODE_INVALID` with `attempts_left`. At `max_attempts`, close the challenge (`exhausted`) and answer `CHALLENGE_CLOSED`.
+3. On a wrong code, answer `CODE_INVALID` with `attempts_left`. At `max_attempts`, close the challenge (`exhausted`: no reason is stored; a challenge closed unconsumed with `attempts = max_attempts` is exhausted) and answer `CHALLENGE_CLOSED`.
 4. Count the failure against the account's second-factor failures (TDD-07).
 
 A **link token** is found by `secret_mac = sha256(token)` through the unique index, so there is no attempt counter: a wrong token simply matches nothing.
@@ -79,7 +79,7 @@ it (TDD-07 §5).
 
 **Sending** a challenge, inside the use case's transaction:
 1. Check the send limits for `target_bidx` (TDD-07 §5). On refusal, answer `RESEND_TOO_SOON` or `RATE_LIMITED`.
-2. Increment `sends` and set `last_sent_at`.
+2. Increment `sends`, set `last_sent_at` and record the send in `challenge_sends`, in one statement.
 3. Write a delivery outbox row (TDD-06 §5): `request_id = <challenge id>:<sends>`.
 
 **Resend** (`POST …/resend` with the handle and the identifier type):
@@ -142,9 +142,16 @@ On success, `[tx]`:
 
 **Following it:**
 - an emailed link goes to `POST /v1/verification-links/confirm`;
-- a code goes to `POST /v1/registrations/resume/verify` (`flow_id`, `identifier`, `code`).
+- a code goes to `POST /v1/registrations/resume/verify` (`identifier`, `code`). The request has no flow id: `resume` answers 202 with no body and the message carries only the code, so the code picks the flow (I-20).
 
-On success, `[tx]`:
+Verifying a code:
+1. Normalise the identifier. Find the open `resume` challenges with its blind index whose flows are open, at most 3, newest first: the candidates. None answers as step 4 does.
+2. `[tx]` Lock the candidates' accounts in id order, then each flow, then its challenges (G-5). Compute the input's MAC for each candidate (each MAC is bound to its challenge id, §2.2) and compare in constant time.
+3. The try counts on every candidate (§2.2 step 2), so several open flows give no more guesses than one. A candidate whose attempts are used up closes (`exhausted`).
+4. No match: answer `CODE_INVALID` without `attempts_left`, whether there are candidates, open or exhausted, or none, as §5.2 does for a sign-in code. `resume` always answers 202, so its verify must not tell whether a flow holds the value. Count the failure per IP (L-12) and against each candidate's account (L-11).
+5. A match picks its flow (the newest, should two codes match). Its challenge is consumed; the other candidates stay open.
+
+On success, in the same transaction:
 - the identifier becomes verified, if it was not (the unique index applies);
 - the flow's handle is replaced (I-20: the old one stops working);
 - answer `200` with `flow_id`, the new `handle` and `pending_types`. For an invitation not yet accepted, the answer says so, and the client continues with acceptance (§8).

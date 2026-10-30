@@ -12,7 +12,7 @@ import (
 
 // tables are the tables of TDD-01 §4, sorted.
 var tables = []string{
-	"account_roles", "accounts", "auth_audit", "challenges", "client_assertions", "flows",
+	"account_roles", "accounts", "auth_audit", "challenge_sends", "challenges", "client_assertions", "flows",
 	"idempotency_keys", "identifiers", "outbox", "password_credentials", "recovery_codes",
 	"refresh_tokens", "sessions", "sign_in_throttles", "signing_keys", "sms_budget", "totp_factors",
 }
@@ -39,8 +39,8 @@ func queryStrings(t *testing.T, db *sql.DB, query string, args ...any) []string 
 	return out
 }
 
-// TestUpDownUp applies 000001 to an empty database as the migrator, reverts it, checks that
-// nothing is left behind, and applies it again.
+// TestUpDownUp applies every migration to an empty database as the migrator, reverts them all,
+// checks that nothing is left behind, and applies them again.
 func TestUpDownUp(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -51,8 +51,12 @@ func TestUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if len(applied) != 1 || applied[0].File() != "000001_init.up.sql" {
-		t.Fatalf("up applied %v; want 000001_init", applied)
+	var files []string
+	for _, m := range applied {
+		files = append(files, m.File())
+	}
+	if want := []string{"000001_init.up.sql", "000002_challenge_sends.up.sql"}; !slices.Equal(files, want) {
+		t.Fatalf("up applied %q; want %q", files, want)
 	}
 	got := queryStrings(t, db, `
 		SELECT relname FROM pg_class
@@ -63,7 +67,7 @@ func TestUpDownUp(t *testing.T) {
 		t.Errorf("tables after up:\n got %q\nwant %q", got, tables)
 	}
 
-	if _, err := r.Down(ctx, 1); err != nil {
+	if _, err := r.Down(ctx, len(applied)); err != nil {
 		t.Fatalf("down: %v", err)
 	}
 	if left := queryStrings(t, db, `

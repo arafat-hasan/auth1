@@ -80,22 +80,31 @@ the body for native clients)*
 
 ## 5. Send limits per value (L-7)
 
-Before a send, in the transaction, with the account locked:
+Before a send, in the transaction, with the account locked, take a transaction-scoped lock on the
+value, then count:
 
 ```sql
-SELECT count(*) FILTER (WHERE last_sent_at > now() - interval '60 seconds') AS last_minute,
-       coalesce(sum(sends) FILTER (WHERE created_at > now() - interval '1 hour'), 0) AS last_hour
-FROM challenges
-WHERE target_bidx = $1 AND created_at > now() - interval '1 hour';
+SELECT pg_advisory_xact_lock(hashtextextended(encode($1, 'hex'), 0));
+
+SELECT count(*) FILTER (WHERE sent_at > now() - interval '60 seconds') AS last_minute,
+       count(*) AS last_hour
+FROM challenge_sends
+WHERE target_bidx = $1 AND sent_at > now() - interval '1 hour';
 ```
 
-The query covers every challenge to that value, whatever account or flow opened it (I-21). Two
-concurrent sends to one value from different accounts can each pass the check once: the limit is
-approximate by at most the concurrency. *(guideline: if exactness is needed, take
-`pg_advisory_xact_lock(hashtext(target_bidx))` first)*.
+The query covers every send to that value, whatever account, flow or challenge it was for (I-21).
+`challenge_sends` holds one row per send (TDD-01 §4), written in the statement that counts the send
+on the challenge, so each window counts exactly the sends made within it. Counting on `challenges`
+cannot: `sends` and `last_sent_at` do not say when the earlier sends were, and a verification link
+lives 24 h, so counting all of a challenge's sends whenever one was recent would let one send an
+hour hold the value at its limit for every account. The windows are configuration *(cfg)*. The lock makes the check and the send
+exact: two concurrent sends to one value from different accounts cannot both pass. It is taken
+after the account, flow and challenge locks and held until commit; a use case sending to several
+values checks them in one order, by type.
 
-The 15-minute cooldown after an exhausted challenge (L-9) is checked the same way, on
-`closed_at` of exhausted challenges to that value.
+The 15-minute cooldown after an exhausted challenge (L-9) is checked the same way, on `closed_at`
+of the challenges to that value closed unconsumed with `attempts >= max_attempts`: no close reason
+is stored for a challenge, and this is what exhausted means (TDD-02 §2.2).
 
 ## 6. SMS budget (L-13)
 

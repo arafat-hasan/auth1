@@ -4,11 +4,11 @@
 |---|---|
 | Document | Software Design Description (SDD). High level: *what* auth1 is and *why* it is built this way |
 | Status | Draft |
-| Version | 0.12 (design of auth1 1.0) |
-| Date | 2026-10-29 |
+| Version | 0.13 (design of auth1 1.0) |
+| Date | 2026-10-30 |
 | Owner | Arafat Hasan |
 | Detailed designs | [`docs/tdd/`](tdd/): TDD-01 … TDD-08 (§16) |
-| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.9 |
+| Contracts | [`api/openapi.yaml`](../api/openapi.yaml) (OpenAPI 3.1), [`api/asyncapi.yaml`](../api/asyncapi.yaml) (AsyncAPI 3.0), aligned with 0.13 |
 | Depends on | PostgreSQL 18, Redis, an AMQP 0-9-1 broker, a workload-identity source (a service mesh, or client credentials), a message-delivery service or provider |
 
 auth1 is an identity service: accounts, credentials, second factors, identifier verification,
@@ -312,7 +312,9 @@ relying service when the account was created, which is not sensitive for any kno
 
 **Rule (I-20): no id is a capability.** A v7 id has only 74 random bits and is visible to many
 parties. Possession of an id never authorises anything. Every operation on a flow also needs the
-flow's handle or link token, which are separate 256-bit random values.
+flow's handle or a link token, which are separate 256-bit random values, or, to resume a flow
+whose handle is lost, a code sent to the flow's address. A code is short, so it is bounded as every
+OTP is: attempts per challenge (I-4) and sends per address (I-21).
 
 | Option | Verdict |
 |---|---|
@@ -355,7 +357,7 @@ encrypted, so that it can be resolved at delivery time (D-16). When it closes, t
 - **OTP:** 6 digits *(cfg, at least 6)* from a CSPRNG, verified by HMAC-SHA256 under a server key, in constant time. **Link token:** 256 bits, stored as SHA-256.
 - **Resending** reuses the open challenge and its secret. A new secret is drawn only when a new challenge opens. Sends are counted when the delivery is requested, never when it is resolved.
 - **Send limits are per target value** (the blind index), not per row: ten pending accounts with the same address share one budget (D-17).
-- **Resuming a flow by possession.** A browser that loses its handle calls `POST /v1/registrations/resume` with an identifier. The answer is always 202. For each open registration or invitation that holds that value, auth1 sends a resume message to that address, by the identifier type's verification method. Following it proves possession, so it also verifies the identifier, and it gives a new handle in place of the old one. Sign-in never resumes a flow. A pending account whose sign-in identifier is verified, with the correct password, gets `403 REGISTRATION_INCOMPLETE` and the client offers resume.
+- **Resuming a flow by possession.** A browser that loses its handle calls `POST /v1/registrations/resume` with an identifier. The answer is always 202. For each open registration or invitation that holds that value, auth1 sends a resume message to that address, by the identifier type's verification method. Following it proves possession, so it also verifies the identifier, and it gives a new handle in place of the old one. A resume code is entered with the identifier alone: the browser has no flow id, and the code picks the flow. Sign-in never resumes a flow. A pending account whose sign-in identifier is verified, with the correct password, gets `403 REGISTRATION_INCOMPLETE` and the client offers resume.
 
 | Option | Verdict |
 |---|---|
@@ -704,6 +706,7 @@ A **`MessageDelivery` port** with three adapters, chosen by `delivery.adapter`:
 | No storing or caching | Resolved values are used for one delivery and never stored, cached, logged or emitted (`Cache-Control: no-store`) |
 | Idempotent per request | Resolving the same request again returns the same values while the challenge is open, and moves no counter |
 | Addresses under verification | A recipient may be a value that is not yet an identifier (an address being changed to) |
+| Display names | A display-name reference resolves to the account's current display name while the account is not deleted. Like every reference, only if it appears in a delivery request auth1 sent under that request id (I-20). A display name is personal, so it is never a plain variable |
 
 **Secret-bearing messages:**
 - verifying a phone or an email
@@ -1052,7 +1055,7 @@ enforced is in the TDD named.
 | I-17 | Every account that is not `pending` or `deleted` has a password | TDD-01 |
 | I-18 | A recovery code is accepted at most once | TDD-03 |
 | I-19 | A TOTP time step is accepted at most once per account | TDD-03 |
-| I-20 | No id is a capability: every flow operation needs the handle or link token | TDD-02 |
+| I-20 | No id is a capability: every flow operation needs the handle, a link token, or (resume only) a code sent to the flow's address | TDD-02 |
 | I-21 | Send limits apply per target value, across accounts | TDD-07 |
 
 ## 12. Threat model
@@ -1240,3 +1243,4 @@ The build order is part of the implementation plan, written after the TDDs are a
 | 0.10 | 2026-10-29 | §8.1: `banned → banned` changes the reason, like `suspended → suspended`; before, it was a no-op and a repeated ban kept the old reason |
 | 0.11 | 2026-10-29 | §10: the codes of a `VALIDATION_FAILED` field error (`required`, `not_allowed`, `unknown`, `not_future`); before, the code was free text |
 | 0.12 | 2026-10-29 | D-4 lists the `totp_replacement` flow kind, which TDD-02 §2.1 and the schema already have |
+| 0.13 | 2026-10-30 | D-16: a display-name reference, `auth1:display-name:<account id>`, so the invitation can carry the display name without a plain personal value in the outbox; before, TDD-06 §7 called it a reference but none was defined. `api/openapi.yaml` names the reference forms |

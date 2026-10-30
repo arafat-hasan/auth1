@@ -170,7 +170,7 @@ paths:
       tags: [Registration]
       operationId: verifyRegistrationResume
       summary: Resume a flow with a code
-      description: 'For identifier types verified by code. Emailed resume links go to `/v1/verification-links/confirm`. The old handle stops working.'
+      description: 'For identifier types verified by code. Emailed resume links go to `/v1/verification-links/confirm`. The request carries no flow id: the code, sent to the identifier for each open flow holding it, picks the flow. A wrong code counts against every open resume challenge to that identifier. Every failure answers `CODE_INVALID` without `attempts_left`, so the answer does not tell whether a flow holds the value. The old handle stops working.'
       security: []
       requestBody:
         required: true
@@ -1274,7 +1274,8 @@ paths:
         Called by the notification service for requests auth1 submitted. auth1 resolves a
         reference only if it appears in the delivery request it sent under that `request_id`, and,
         for a secret or an address under change, only while its challenge is open. A retired
-        identifier resolves only for a notice, within `delivery.retired_address_window`.
+        identifier resolves only for a notice, within `delivery.retired_address_window`. A display
+        name resolves while its account is not deleted.
 
         The caller must not store, cache, log or emit the values, and must drop a delivery whose
         values are absent. Idempotent per `request_id`: resolving again returns the same values
@@ -1696,9 +1697,8 @@ components:
 
     ResumeVerify:
       type: object
-      required: [flow_id, identifier, code]
+      required: [identifier, code]
       properties:
-        flow_id: { type: string, format: uuid }
         identifier: { $ref: '#/components/schemas/IdentifierInput' }
         code: { $ref: '#/components/schemas/OtpCode' }
 
@@ -2161,7 +2161,12 @@ components:
           pattern: '^auth1:(identifier|challenge-target):[0-9a-f-]{36}$'
         variables:
           type: object
-          description: References (for `code`, `link` and personal values) or plain non-secret values
+          description: |
+            References (for `code`, `link` and personal values) or plain non-secret values. The
+            reference forms: `auth1:secret:<challenge id>` (the OTP), `auth1:link:<challenge id>`
+            (the full link), `auth1:identifier:<identifier id>` (an identifier's value),
+            `auth1:challenge-target:<challenge id>` (an address under change) and
+            `auth1:display-name:<account id>` (the account's display name).
           additionalProperties:
             oneOf:
               - { type: string }

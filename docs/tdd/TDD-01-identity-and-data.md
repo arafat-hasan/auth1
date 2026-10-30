@@ -221,9 +221,20 @@ CREATE TABLE challenges (
 CREATE UNIQUE INDEX challenges_link ON challenges (secret_mac) WHERE method = 'email_link';
 CREATE INDEX challenges_open ON challenges (expires_at) WHERE closed_at IS NULL;
 CREATE INDEX challenges_flow ON challenges (flow_id);
-CREATE INDEX challenges_target ON challenges (target_bidx, created_at);  -- send limits per value
+CREATE INDEX challenges_target ON challenges (target_bidx, created_at);  -- the L-9 cooldown (TDD-07 §5)
 CREATE INDEX challenges_identifier ON challenges (identifier_id);  -- FK; the purge (§5)
 CREATE INDEX challenges_closed ON challenges (closed_at) WHERE closed_at IS NOT NULL;  -- retention (§5)
+
+-- One row per send, for the send limits per value (TDD-07 §5): challenges.sends and last_sent_at
+-- cannot tell which of a long-lived challenge's sends fell within a window. Added in 000002.
+CREATE TABLE challenge_sends (
+    challenge_id uuid NOT NULL REFERENCES challenges (id),
+    send         integer NOT NULL CHECK (send > 0),            -- challenges.sends after this send
+    target_bidx  bytea NOT NULL,                               -- the challenge's
+    sent_at      timestamptz NOT NULL,
+    PRIMARY KEY (challenge_id, send)
+);
+CREATE INDEX challenge_sends_target ON challenge_sends (target_bidx, sent_at);  -- send limits per value
 
 CREATE TABLE sessions (
     id                   uuid PRIMARY KEY,
@@ -372,7 +383,7 @@ What a failure was, and other non-secret facts, go in `details`.
 | Data | Kept | Then |
 |---|---|---|
 | Pending account of an expired flow | Identifiers retired at expiry | Rows purged 7 days later *(cfg)* |
-| Closed challenges | 30 days | Deleted |
+| Closed challenges | 30 days | Deleted, after their `challenge_sends` rows |
 | Closed flows | 30 days after `completed_at` or `cancelled_at` | Deleted, after their challenges |
 | Revoked or expired sessions and their refresh tokens | 90 days | Deleted |
 | Refresh successor | Grace window | `successor_enc` set to null within a minute |
