@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,5 +155,37 @@ func TestPanicKeepsServing(t *testing.T) {
 	}
 	if code, body := get("/v1/ping"); code != http.StatusOK || body != "pong" {
 		t.Errorf("after the panic: status %d body %q", code, body)
+	}
+}
+
+// TestRouterDev: the development routes sit at the root, beside the probes, whatever the base
+// path, behind the same middleware, so the access log carries their route pattern.
+func TestRouterDev(t *testing.T) {
+	t.Parallel()
+
+	for _, basePath := range []string{"", "/auth"} {
+		var logs bytes.Buffer
+		o := testOptions(t, basePath)
+		o.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+		o.Dev = func(r chi.Router) {
+			r.Get("/dev/messages", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) })
+		}
+		h := NewRouter(o)
+		for path, want := range map[string]int{"/dev/messages?to=a": 200, basePath + "/v1/ping": 200, "/auth/dev/messages": 404} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != want {
+				t.Errorf("base %q: GET %s = %d, want %d", basePath, path, rec.Code, want)
+			}
+		}
+		if !strings.Contains(logs.String(), `"route":"/dev/messages"`) {
+			t.Errorf("base %q: the access log lacks the route pattern:\n%s", basePath, logs.String())
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	NewRouter(testOptions(t, "")).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/dev/messages?to=a", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("without Dev: GET /dev/messages = %d, want 404", rec.Code)
 	}
 }

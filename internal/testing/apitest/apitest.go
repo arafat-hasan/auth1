@@ -10,10 +10,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/pb33f/libopenapi"
 	validator "github.com/pb33f/libopenapi-validator"
 	verrors "github.com/pb33f/libopenapi-validator/errors"
+	"github.com/pb33f/libopenapi-validator/schema_validation"
+	v3 "github.com/pb33f/libopenapi/datamodel/high/v3"
 )
 
 // TB is the part of testing.TB that the harness reports through.
@@ -25,7 +28,11 @@ type TB interface {
 
 // Validator checks requests and responses against api/openapi.yaml.
 type Validator struct {
-	v validator.Validator
+	v     validator.Validator
+	model *v3.Document
+	// schemaMu serialises CheckSchema: the model builds its schemas lazily, unsafely for
+	// concurrent use.
+	schemaMu sync.Mutex
 }
 
 // New loads api/openapi.yaml, failing t if the document does not load.
@@ -51,7 +58,12 @@ func New(t TB) *Validator {
 		t.Fatalf("apitest: build the validator: %v", errs)
 		return nil
 	}
-	return &Validator{v: v}
+	model, err := doc.BuildV3Model()
+	if err != nil {
+		t.Fatalf("apitest: build the model: %v", err)
+		return nil
+	}
+	return &Validator{v: v, model: &model.Model}
 }
 
 // Serve serves req with h and checks both against the contract, reporting each violation through
@@ -111,6 +123,30 @@ func (v *Validator) Check(t TB, req *http.Request, resp *http.Response) {
 		}
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+}
+
+// CheckSchema checks body, JSON, against the contract's component schema named schema, reporting
+// each violation through t.Errorf. It is for payloads no operation of auth1 serves, such as the
+// outbound DeliveryRequest.
+func (v *Validator) CheckSchema(t TB, schema string, body []byte) {
+	t.Helper()
+	v.schemaMu.Lock()
+	defer v.schemaMu.Unlock()
+	proxy := v.model.Components.Schemas.GetOrZero(schema)
+	if proxy == nil {
+		t.Errorf("apitest: the contract has no schema %s", schema)
+		return
+	}
+	s := proxy.Schema()
+	if s == nil {
+		t.Errorf("apitest: build schema %s: %v", schema, proxy.GetBuildError())
+		return
+	}
+	if ok, errs := schema_validation.NewSchemaValidator().ValidateSchemaBytesWithVersion(s, body, 3.1); !ok {
+		for _, e := range errs {
+			t.Errorf("schema %s: %s", schema, describe(e))
+		}
+	}
 }
 
 // describe renders a validation error with its schema failures.

@@ -40,12 +40,15 @@ type Options struct {
 	RequestDuration metric.Float64Histogram // http.server.request.duration
 	Health          *health.Checker
 	Routes          func(chi.Router) // registers the API routes under BasePath; nil for none
+	// Dev registers the development-only routes, such as GET /dev/messages, at the root: they are
+	// not part of the API contract. nil outside development.
+	Dev func(chi.Router)
 }
 
 // NewRouter returns the API router. Every request passes request id, trace, access log, recover
-// and body limit, in that order, so the middleware also covers the probes and the 404s. /livez and
-// /readyz sit at the root; Routes are mounted under BasePath. An unknown path or an unsupported
-// method answers 404 NOT_FOUND (SDD §10).
+// and body limit, in that order, so the middleware also covers the probes and the 404s. /livez,
+// /readyz and the Dev routes sit at the root; Routes are mounted under BasePath. An unknown path
+// or an unsupported method answers 404 NOT_FOUND (SDD §10).
 func NewRouter(o Options) http.Handler {
 	r := chi.NewRouter()
 	r.Use(
@@ -65,6 +68,9 @@ func NewRouter(o Options) http.Handler {
 	for _, m := range []string{http.MethodGet, http.MethodHead} {
 		r.Method(m, "/livez", o.Health.Live())
 		r.Method(m, "/readyz", o.Health.Ready())
+	}
+	if o.Dev != nil {
+		r.Group(o.Dev)
 	}
 	if o.Routes != nil {
 		if o.BasePath == "" {

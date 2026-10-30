@@ -186,5 +186,26 @@ for `config check` and `serve`. Refusals are `IDENTIFIER_NOT_ALLOWED` and never 
 An empty `calling_codes` allows no phone. `TestSimpleFoldUnicodeVersion` fails when Go's Unicode
 version changes: re-check `simpleFold` against CaseFolding.txt. Both normalisers are fuzzed (`FuzzEmail`, `FuzzPhone`: deterministic and idempotent).
 
+Delivery (TDD-06 §5–§9): `internal/domain/message` holds the purposes of TDD-06 §7 as constants
+(`message.SignInCode` …, each the default type without `auth.`) with their channel, secret and
+variables; `message.NewTypes` applies `delivery.types`, checked by `loadMessageTypes` in
+`cmd/auth1` after `Validate` (`internal/config` cannot import domain). Identifier types say their
+`Channel()`. In `internal/app`, `MessageDelivery.Send(ctx, DeliveryRow) DeliveryOutcome` (sent,
+dropped, retry, parked; the relay owns retries) and `DeliveryResolver` (TDD-06 §6) are the ports;
+`Messages` builds the requests (`ChallengeCode`, `ChallengeLink`, `Notice`; not yet the
+invitation's `display_name` reference) with references only (`IdentifierRef`, `ChallengeTargetRef`,
+`SecretRef`, `LinkRef`) and exactly the purpose's variables, plain strings or integers, refusing
+anything else with `ErrMessageInvalid`; a link goes only by email; never build a
+`DeliveryRequest` by hand. `MessageDelivery` adapters always set a `DeliveryOutcome` result: the
+zero value is none. `Notices.Send` writes a notice in the caller's transaction and returns a
+`NoticeSkip` when it writes none. It chooses the recipient: an explicit `Notice.To` if current or
+retired less than `retired_address_window` ago (no fallback); otherwise the verified email or, only
+when the deployment has no email type, the first verified identifier by type name. With an email
+type, notices go only by email. `internal/adapters/delivery/capture`
+keeps the last 1000 messages resolved and serves `GET /dev/messages?to=`; `newDelivery` builds it
+only in `development` and `serve` mounts it through `server.Options.Dev` at the root, outside the
+contract. `test/contract` checks stored delivery bodies against `DeliveryRequest` with
+`apitest.CheckSchema`.
+
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
