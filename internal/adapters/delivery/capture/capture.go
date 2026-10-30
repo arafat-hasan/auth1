@@ -3,6 +3,7 @@ package capture
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
 	"strings"
@@ -61,12 +62,16 @@ func (in *Inbox) Send(ctx context.Context, row app.DeliveryRow) app.DeliveryOutc
 		}
 	}
 	values, err := in.resolver.Resolve(ctx, req.RequestID, refs)
-	if err != nil {
+	switch {
+	case errors.Is(err, app.ErrResolverUnavailable):
+		return app.DeliveryOutcome{Result: app.DeliveryRetry, Reason: "capture: resolver unavailable"}
+	case err != nil:
 		return app.DeliveryOutcome{Result: app.DeliveryRetry, Reason: "capture: resolver failed"}
 	}
 	for _, ref := range refs {
 		if _, ok := values[ref]; !ok {
-			return app.DeliveryOutcome{Result: app.DeliveryDropped, Reason: "capture: a reference is closed"}
+			// A reference holds an id, never a value, so the reason may name it.
+			return app.DeliveryOutcome{Result: app.DeliveryDropped, Reason: "capture: " + ref + " is closed"}
 		}
 	}
 	vars := make(map[string]any, len(req.Variables))
@@ -114,6 +119,10 @@ func (in *Inbox) Messages(to string) []Message {
 			continue
 		}
 		m.Variables = maps.Clone(m.Variables)
+		if m.Deadline != nil {
+			d := *m.Deadline
+			m.Deadline = &d
+		}
 		out = append(out, m)
 	}
 	return out
@@ -128,6 +137,7 @@ func (in *Inbox) Routes(r chi.Router) {
 		if to == "" {
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusUnprocessableEntity)
+			// The status is sent; an encoding error can only be a gone client.
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"type": "about:blank", "title": http.StatusText(http.StatusUnprocessableEntity),
 				"status": http.StatusUnprocessableEntity, "code": domain.CodeValidationFailed,
@@ -140,6 +150,7 @@ func (in *Inbox) Routes(r chi.Router) {
 			msgs = []Message{}
 		}
 		w.Header().Set("Content-Type", "application/json")
+		// Messages hold only strings and integers, so encoding fails only on a gone client.
 		_ = json.NewEncoder(w).Encode(map[string]any{"messages": msgs})
 	})
 }

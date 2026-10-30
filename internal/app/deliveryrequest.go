@@ -77,7 +77,7 @@ func (m *Messages) ChallengeCode(p message.Purpose, c Challenge, locale string, 
 }
 
 // ChallengeLink builds the message that carries challenge c's link for purpose p, as the link
-// variable. Its request_id is "<challenge id>:<send number>" and its deadline the expiry.
+// variable; a link goes only by email. Its request_id is "<challenge id>:<send number>" and its deadline the expiry.
 func (m *Messages) ChallengeLink(p message.Purpose, c Challenge, locale string, to Recipient) (DeliveryRequest, error) {
 	return m.challenge(p, message.Link, "link", LinkRef(c.ID), c, locale, to)
 }
@@ -91,6 +91,9 @@ func (m *Messages) challenge(p message.Purpose, secret message.Secret, name, ref
 	}
 	if spec.Secret != secret && spec.Secret != message.CodeOrLink {
 		return DeliveryRequest{}, invalid(p, "does not carry a %s", name)
+	}
+	if secret == message.Link && ch != message.Email {
+		return DeliveryRequest{}, invalid(p, "sends a link by email, not %s", ch)
 	}
 	if c.ID == uuid.Nil || c.Send < 1 || c.ExpiresAt.IsZero() {
 		return DeliveryRequest{}, invalid(p, "needs a challenge id, a send number from 1 and an expiry")
@@ -107,10 +110,11 @@ func (m *Messages) challenge(p message.Purpose, secret message.Secret, name, ref
 	}, nil
 }
 
-// Notice builds the security notice p with plain variables vars: strings or integers, each one the
-// purpose lists, none of them a reference or a secret. The request_id is left empty, for the
-// outbox to make it the row's id, and there is no deadline. It goes by the recipient's channel when
-// given: with no email type, notices go to another identifier (TDD-06 §7).
+// Notice builds the security notice p with plain variables vars: strings or integers, exactly the
+// ones the purpose lists, none of them a reference or a secret. The request_id is left empty, for
+// the outbox to make it the row's id, and there is no deadline. It goes by the recipient's channel
+// when given, so the purpose's email channel is not enforced here: with no email type, notices go
+// to another identifier (TDD-06 §7), and Notices decides when that is allowed.
 func (m *Messages) Notice(p message.Purpose, locale string, to Recipient, vars map[string]any) (DeliveryRequest, error) {
 	spec, ch, err := m.check(p, locale, to, true)
 	if err != nil {
@@ -118,6 +122,11 @@ func (m *Messages) Notice(p message.Purpose, locale string, to Recipient, vars m
 	}
 	if spec.Secret != message.NoSecret {
 		return DeliveryRequest{}, invalid(p, "is not a notice")
+	}
+	for _, name := range spec.Variables {
+		if _, ok := vars[name]; !ok {
+			return DeliveryRequest{}, invalid(p, "needs variable %q", name)
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(vars)) {
 		if !slices.Contains(spec.Variables, name) {
@@ -151,8 +160,14 @@ func (m *Messages) check(p message.Purpose, locale string, to Recipient, recipie
 	if !ok {
 		return message.Spec{}, "", invalid(p, "is not a purpose")
 	}
+	if m.types.Type(p) == "" {
+		return message.Spec{}, "", invalid(p, "has no message type")
+	}
 	if locale == "" || to.Ref == "" {
 		return message.Spec{}, "", invalid(p, "needs a locale and a recipient")
+	}
+	if !strings.HasPrefix(to.Ref, refPrefix+"identifier:") && !strings.HasPrefix(to.Ref, refPrefix+"challenge-target:") {
+		return message.Spec{}, "", invalid(p, "needs an identifier or challenge-target reference as its recipient")
 	}
 	ch := spec.Channel
 	switch {

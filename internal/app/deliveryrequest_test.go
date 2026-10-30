@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,12 +132,13 @@ func TestNotice(t *testing.T) {
 func TestNoticeToPhone(t *testing.T) {
 	t.Parallel()
 	m := newMessages(t, nil)
-	got, err := m.Notice(message.NoticeMFAChanged, "en", app.ToIdentifier(identifierID, message.SMS), nil)
+	vars := map[string]any{"change": "enrolled", "occurred_at": "2026-10-30T12:00:00Z"}
+	got, err := m.Notice(message.NoticeMFAChanged, "en", app.ToIdentifier(identifierID, message.SMS), vars)
 	if err != nil {
 		t.Fatalf("Notice = %v", err)
 	}
-	if got.Channel != "sms" || got.Variables == nil {
-		t.Errorf("notice to a phone: channel %q, variables %v; want sms, empty map", got.Channel, got.Variables)
+	if got.Channel != "sms" {
+		t.Errorf("notice to a phone: channel %q, want sms", got.Channel)
 	}
 }
 
@@ -146,9 +148,19 @@ func TestBuildersRefuse(t *testing.T) {
 	c := app.Challenge{ID: challengeID, Send: 1, ExpiresAt: expiresAt}
 	email := app.ToIdentifier(identifierID, message.Email)
 	sms := app.ToIdentifier(identifierID, message.SMS)
+	// notice builds the recovery-codes notice with valid variables changed by vars; a nil value in
+	// vars is kept, and the key "-" removes the variable it names.
 	notice := func(vars map[string]any) func() error {
 		return func() error {
-			_, err := m.Notice(message.NoticeRecoveryCodes, "en", email, vars)
+			all := map[string]any{"change": "used", "remaining_codes": 3}
+			for k, v := range vars {
+				if k == "-" {
+					delete(all, v.(string))
+					continue
+				}
+				all[k] = v
+			}
+			_, err := m.Notice(message.NoticeRecoveryCodes, "en", email, all)
 			return err
 		}
 	}
@@ -197,10 +209,24 @@ func TestBuildersRefuse(t *testing.T) {
 			_, err := m.ChallengeCode(message.PhoneVerificationCode, app.Challenge{ID: challengeID, Send: 1}, "en", sms)
 			return err
 		},
+		"link by sms": func() error {
+			_, err := m.ChallengeLink(message.RegistrationResume, c, "en", sms)
+			return err
+		},
+		"recipient a secret reference": func() error {
+			_, err := m.ChallengeCode(message.PhoneVerificationCode, c, "en",
+				app.Recipient{Ref: app.SecretRef(challengeID), Channel: message.SMS})
+			return err
+		},
+		"no message types": func() error {
+			_, err := app.NewMessages(nil).ChallengeCode(message.PhoneVerificationCode, c, "en", sms)
+			return err
+		},
 		"notice for a challenge purpose": func() error {
 			_, err := m.Notice(message.PasswordResetLink, "en", email, nil)
 			return err
 		},
+		"missing variable":   notice(map[string]any{"-": "change"}),
 		"unknown variable":   notice(map[string]any{"code": "x"}),
 		"float variable":     notice(map[string]any{"remaining_codes": 3.5}),
 		"bool variable":      notice(map[string]any{"change": true}),
@@ -216,5 +242,17 @@ func TestBuildersRefuse(t *testing.T) {
 				t.Errorf("err = %v, want ErrMessageInvalid", err)
 			}
 		})
+	}
+}
+
+// TestBuilderErrorsHoldNoValue: a refusal names the purpose and the variable, never the value (G-6).
+func TestBuilderErrorsHoldNoValue(t *testing.T) {
+	t.Parallel()
+	m := newMessages(t, nil)
+	value := "auth1:identifier:" + identifierID.String()
+	_, err := m.Notice(message.NoticeRecoveryCodes, "en", app.ToIdentifier(identifierID, message.Email),
+		map[string]any{"change": value, "remaining_codes": 3})
+	if err == nil || strings.Contains(err.Error(), value) {
+		t.Errorf("err = %v; want a refusal without the value", err)
 	}
 }

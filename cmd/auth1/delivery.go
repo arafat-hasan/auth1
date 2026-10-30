@@ -14,7 +14,8 @@ import (
 // newDelivery builds the delivery adapter delivery.adapter names (SDD D-16), with the
 // development-only routes it serves, if any. The capture adapter exists only in development: it
 // is refused here as well as by Validate (T-17). The notification and direct adapters arrive with
-// WP-44 and WP-45; until then there is no adapter for them.
+// WP-44 and WP-45; until then there is no adapter for them and the MessageDelivery is nil, which
+// the relay (WP-42) must refuse at start-up rather than run without.
 func newDelivery(cfg *config.Config, resolver app.DeliveryResolver, clock app.Clock) (app.MessageDelivery, func(chi.Router), error) {
 	if cfg.Delivery.Adapter != config.DeliveryCapture {
 		return nil, nil, nil
@@ -26,8 +27,8 @@ func newDelivery(cfg *config.Config, resolver app.DeliveryResolver, clock app.Cl
 	return inbox, inbox.Routes, nil
 }
 
-// unavailableResolver stands in for the delivery resolver until WP-43 builds it: every reference
-// is unresolved for now, so a send is retried.
+// unavailableResolver stands in for the delivery resolver until WP-43 builds it: every call fails
+// with ErrResolverUnavailable, so a send is retried.
 type unavailableResolver struct{}
 
 func (unavailableResolver) Resolve(context.Context, string, []string) (map[string]string, error) {

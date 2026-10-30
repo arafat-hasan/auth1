@@ -85,27 +85,38 @@ func TestSendResolvesAndStores(t *testing.T) {
 	}
 }
 
-// TestSendDropsClosedReference: a reference the resolver omits is closed; nothing is stored.
+// TestSendDropsClosedReference: a reference the resolver omits, the secret or the recipient, is
+// closed; nothing is stored, and the reason names the reference, not a value.
 func TestSendDropsClosedReference(t *testing.T) {
 	t.Parallel()
-	in := newInbox(&resolver{values: map[string]string{idRef: "+447700900123"}})
-	got := in.Send(t.Context(), codeRow(1, idRef))
-	if got.Result != app.DeliveryDropped || got.Reason == "" {
-		t.Errorf("Send = %+v, want dropped with a reason", got)
-	}
-	if strings.Contains(got.Reason, "+44") {
-		t.Errorf("reason %q holds a value", got.Reason)
-	}
-	if m := in.Messages("+447700900123"); len(m) != 0 {
-		t.Errorf("Messages = %v, want none", m)
+	for closed, values := range map[string]map[string]string{
+		secretRef: {idRef: "+447700900123"},
+		idRef:     {secretRef: "123456"},
+	} {
+		in := newInbox(&resolver{values: values})
+		got := in.Send(t.Context(), codeRow(1, idRef))
+		if got.Result != app.DeliveryDropped || !strings.Contains(got.Reason, closed) {
+			t.Errorf("%s closed: Send = %+v, want dropped naming it", closed, got)
+		}
+		if strings.Contains(got.Reason, "+44") || strings.Contains(got.Reason, "123456") {
+			t.Errorf("reason %q holds a value", got.Reason)
+		}
+		if m := in.Messages(""); len(m) != 0 {
+			t.Errorf("%s closed: Messages = %v, want none", closed, m)
+		}
 	}
 }
 
 func TestSendRetriesOnResolverError(t *testing.T) {
 	t.Parallel()
-	in := newInbox(&resolver{err: errors.New("down")})
-	if got := in.Send(t.Context(), codeRow(1, idRef)); got.Result != app.DeliveryRetry {
-		t.Errorf("Send = %+v, want retry", got)
+	for err, reason := range map[error]string{
+		app.ErrResolverUnavailable: "capture: resolver unavailable",
+		errors.New("down"):         "capture: resolver failed",
+	} {
+		in := newInbox(&resolver{err: err})
+		if got := in.Send(t.Context(), codeRow(1, idRef)); got.Result != app.DeliveryRetry || got.Reason != reason {
+			t.Errorf("%v: Send = %+v, want retry, %q", err, got, reason)
+		}
 	}
 }
 
@@ -128,8 +139,15 @@ func TestRingEvictsOldest(t *testing.T) {
 			t.Errorf("message %d: %d kept, want 1", i, len(got))
 		}
 	}
-	if got := len(in.Messages("")); got != capture.Capacity {
-		t.Errorf("Messages(\"\") = %d messages, want %d", got, capture.Capacity)
+	all := in.Messages("")
+	if len(all) != capture.Capacity {
+		t.Fatalf("Messages(\"\") = %d messages, want %d", len(all), capture.Capacity)
+	}
+	// Newest first once the ring has wrapped: send 1001, then 1000, down to send 2.
+	for i, wantTo := range map[int]string{0: "to-1000", 1: "to-999", capture.Capacity - 1: "to-1"} {
+		if all[i].To != wantTo {
+			t.Errorf("Messages(\"\")[%d] is to %s, want %s", i, all[i].To, wantTo)
+		}
 	}
 }
 
@@ -137,17 +155,18 @@ func TestConcurrentSendAndRead(t *testing.T) {
 	t.Parallel()
 	in := newInbox(&resolver{values: map[string]string{idRef: "a@example.org", secretRef: "1"}})
 	var wg sync.WaitGroup
+	// 1600 sends, so the ring fills and wraps while it is read.
 	for i := range 8 {
 		wg.Go(func() {
-			for j := range 50 {
-				in.Send(t.Context(), codeRow(i*100+j+1, idRef))
+			for j := range 200 {
+				in.Send(t.Context(), codeRow(i*1000+j+1, idRef))
 				_ = in.Messages("a@example.org")
 			}
 		})
 	}
 	wg.Wait()
-	if got := len(in.Messages("a@example.org")); got != 400 {
-		t.Errorf("%d messages, want 400", got)
+	if got := len(in.Messages("a@example.org")); got != capture.Capacity {
+		t.Errorf("%d messages, want %d", got, capture.Capacity)
 	}
 }
 
@@ -156,9 +175,12 @@ func TestMessagesIsACopy(t *testing.T) {
 	t.Parallel()
 	in := newInbox(&resolver{values: map[string]string{idRef: "a@example.org", secretRef: "1"}})
 	in.Send(t.Context(), codeRow(1, idRef))
-	in.Messages("a@example.org")[0].Variables["code"] = "changed"
-	if got := in.Messages("a@example.org")[0].Variables["code"]; got != "1" {
-		t.Errorf("code = %v after changing a copy, want 1", got)
+	m := in.Messages("a@example.org")[0]
+	m.Variables["code"] = "changed"
+	*m.Deadline = m.Deadline.Add(time.Hour)
+	kept := in.Messages("a@example.org")[0]
+	if kept.Variables["code"] != "1" || !kept.Deadline.Equal(deadline) {
+		t.Errorf("code %v, deadline %v after changing a copy; want 1, %v", kept.Variables["code"], kept.Deadline, deadline)
 	}
 }
 

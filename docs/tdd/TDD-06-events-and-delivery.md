@@ -166,6 +166,8 @@ examples are in `api/asyncapi.yaml`, which is the final word.
 - **`request_id`** is `<challenge id>:<send number>` for a challenge, and `<outbox id>` for a notice.
 - **`deadline`** is the challenge's expiry, so the notification service can drop late messages itself.
 - **Plain variables** (for notices) are non-secret values only, for example `remaining_codes`, `client_id`, `occurred_at`.
+- **`traceparent`** is added by the outbox from the writer's trace. **`resolver`** is not stored in
+  the outbox row: the `notification` adapter adds it when it sends the request.
 
 ## 6. The resolver hook
 
@@ -231,7 +233,7 @@ the resolver (§6).
 
 - Keeps the last 1000 messages in memory, values resolved, readable at `GET /dev/messages?to=<value>`.
   The route is not part of the API contract and sits at the root, beside `/livez`, not under
-  `http.base_path`.
+  `http.base_path`. Without `to` it answers `422 VALIDATION_FAILED`.
 - Allowed only when `app.environment` is `development`. Start-up refuses it elsewhere (SDD T-17).
 - End-to-end tests use it, or a fake notification service that calls the resolver.
 

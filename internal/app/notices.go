@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/arafat-hasan/auth1/internal/domain/account"
@@ -31,11 +30,30 @@ type Notice struct {
 	To *account.Identifier
 }
 
+// NoticeSkip says why Notices.Send wrote no row, for the use case's audit; empty when it wrote one.
+// It holds no value (G-6).
+type NoticeSkip string
+
+// The reasons a notice is not written.
+const (
+	// NoticeOff: the purpose is turned off (delivery.notices.new_sign_in).
+	NoticeOff NoticeSkip = "notice off"
+	// NoticeNoRecipient: the account has no verified identifier the notice may go to, or the
+	// explicit one is unverified or of a type the deployment no longer has.
+	NoticeNoRecipient NoticeSkip = "no verified recipient"
+	// NoticeRetired: the explicit recipient was retired at least delivery.retired_address_window ago.
+	NoticeRetired NoticeSkip = "recipient retired"
+	// NoticeNotOwned: the explicit recipient is not the account's.
+	NoticeNotOwned NoticeSkip = "recipient not the account's"
+)
+
 // Notices writes security notices as delivery rows, in the caller's transaction (TDD-06 §7). It
-// chooses the recipient: the explicit one while current, or retired less than the window ago;
-// else the account's current verified email; or, when the deployment has no email type, the
-// account's first verified identifier by type name. A notice is best-effort: with no recipient,
-// or with the new-sign-in notice off, it writes nothing and returns nil.
+// chooses the recipient. An explicit one is used while current or retired less than the window
+// ago, and otherwise the notice is skipped: there is no fallback. With none, the notice goes to the
+// account's current verified email or, only when the deployment has no email type, to the
+// account's first verified identifier by type name. Notices go by email whenever the deployment
+// has an email type. A notice is best-effort: with no recipient, or with the new-sign-in notice
+// off, it writes nothing and says why.
 type Notices struct {
 	accounts Accounts
 	outbox   OutboxWriter
@@ -53,63 +71,76 @@ func NewNotices(accounts Accounts, outbox OutboxWriter, messages *Messages, regi
 }
 
 // Send writes notice n about account a. It runs inside UnitOfWork.Do, the use case's transaction;
-// the message goes in a's locale. An error is a caller's bug (ErrMessageInvalid) or the outbox's.
-func (n *Notices) Send(ctx context.Context, a account.Account, notice Notice) error {
+// the message goes in a's locale. It returns why no row was written, if none was. An error is a
+// caller's bug (ErrMessageInvalid) or the outbox's. notice.To must come from the use case's locked
+// read of a, so that its retirement and verification are current.
+func (n *Notices) Send(ctx context.Context, a account.Account, notice Notice) (NoticeSkip, error) {
 	if !notice.Purpose.Notice() {
-		return fmt.Errorf("%w: %s is not a notice", ErrMessageInvalid, notice.Purpose)
+		return "", fmt.Errorf("%w: %s is not a notice", ErrMessageInvalid, notice.Purpose)
 	}
 	if notice.Purpose == message.NoticeNewSignIn && !n.opts.NewSignIn {
-		return nil
+		return NoticeOff, nil
 	}
-	to, ok, err := n.recipient(ctx, a, notice.To)
-	if err != nil || !ok {
-		return err
+	to, skip, err := n.recipient(ctx, a, notice)
+	if err != nil || skip != "" {
+		return skip, err
 	}
 	req, err := n.messages.Notice(notice.Purpose, a.Locale, to, notice.Variables)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := n.outbox.Delivery(ctx, a.ID, req); err != nil {
-		return fmt.Errorf("write notice: %w", err)
+		return "", fmt.Errorf("write notice: %w", err)
 	}
-	return nil
+	return "", nil
 }
 
-// recipient returns the notice's recipient, and false when there is none.
-func (n *Notices) recipient(ctx context.Context, a account.Account, explicit *account.Identifier) (Recipient, bool, error) {
-	if explicit != nil {
-		return n.reach(*explicit, a)
+// recipient returns the notice's recipient, or why there is none.
+func (n *Notices) recipient(ctx context.Context, a account.Account, notice Notice) (Recipient, NoticeSkip, error) {
+	email := (identifier.Email{}).Name()
+	_, hasEmail := n.registry.Type(email)
+	if notice.To != nil {
+		to, skip := n.reach(*notice.To, a)
+		if skip == "" && hasEmail && to.Channel != message.Email {
+			return Recipient{}, "", fmt.Errorf("%w: %s goes by email, not to a %s identifier",
+				ErrMessageInvalid, notice.Purpose, notice.To.Type)
+		}
+		return to, skip, nil
 	}
 	ids, err := n.accounts.Identifiers(ctx, a.ID)
 	if err != nil {
-		return Recipient{}, false, fmt.Errorf("notice recipient: %w", err)
+		return Recipient{}, "", fmt.Errorf("notice recipient: %w", err)
 	}
 	types := n.registry.Types()
-	if email := (identifier.Email{}).Name(); slices.Contains(types, email) {
+	if hasEmail {
 		types = []string{email}
 	}
 	for _, typ := range types {
 		for _, id := range ids {
 			if id.Type == typ && id.VerifiedAt != nil {
-				return n.reach(id, a)
+				to, skip := n.reach(id, a)
+				return to, skip, nil
 			}
 		}
 	}
-	return Recipient{}, false, nil
+	return Recipient{}, NoticeNoRecipient, nil
 }
 
 // reach returns the recipient that is id, if it may receive a notice about a: it is a's, verified,
-// of a configured type, and current or retired less than the window ago.
-func (n *Notices) reach(id account.Identifier, a account.Account) (Recipient, bool, error) {
-	if id.AccountID != a.ID || id.VerifiedAt == nil {
-		return Recipient{}, false, nil
+// of a configured type, and current or retired less than the window ago. Otherwise it says why not.
+func (n *Notices) reach(id account.Identifier, a account.Account) (Recipient, NoticeSkip) {
+	if id.AccountID != a.ID {
+		return Recipient{}, NoticeNotOwned
+	}
+	if id.VerifiedAt == nil {
+		return Recipient{}, NoticeNoRecipient
 	}
 	if id.RetiredAt != nil && n.clock.Now().Sub(*id.RetiredAt) >= n.opts.RetiredAddressWindow {
-		return Recipient{}, false, nil
+		return Recipient{}, NoticeRetired
 	}
 	typ, ok := n.registry.Type(id.Type)
 	if !ok {
-		return Recipient{}, false, nil
+		return Recipient{}, NoticeNoRecipient
 	}
-	return ToIdentifier(id.ID, typ.Channel()), true, nil
+	return ToIdentifier(id.ID, typ.Channel()), ""
 }

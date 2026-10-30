@@ -1,6 +1,7 @@
 package message
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -88,5 +89,13 @@ func TestNewTypesRefuses(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("NewTypes problems (-want +got):\n%s", diff)
+	}
+	var err error = errs
+	if err.Error() != strings.Join(want, "\n") {
+		t.Errorf("TypeErrors.Error() = %q", err.Error())
+	}
+	var nilTypes *Types
+	if got := nilTypes.Type(SignInCode); got != "" {
+		t.Errorf("nil Types: Type = %q, want empty", got)
 	}
 }
