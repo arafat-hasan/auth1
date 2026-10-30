@@ -76,10 +76,15 @@ func (in *Inbox) Send(ctx context.Context, row app.DeliveryRow) app.DeliveryOutc
 		}
 		vars[k] = v
 	}
-	in.keep(Message{
+	m := Message{
 		RequestID: req.RequestID, Type: req.Type, Channel: req.Channel, Locale: req.Locale,
-		To: values[req.Recipient], Variables: vars, Deadline: req.Deadline, CapturedAt: in.clock.Now(),
-	})
+		To: values[req.Recipient], Variables: vars, CapturedAt: in.clock.Now(),
+	}
+	if req.Deadline != nil {
+		d := *req.Deadline
+		m.Deadline = &d
+	}
+	in.keep(m)
 	return app.DeliveryOutcome{Result: app.DeliverySent}
 }
 
