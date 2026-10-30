@@ -188,3 +188,64 @@ func (r *Flows) openColumn(ctx context.Context, op string, id uuid.UUID, column,
 	}
 	return plain, nil
 }
+
+// Attempt implements app.Flows. The condition is I-4's: no try counts on a closed challenge or
+// past max_attempts, whatever the caller decided.
+func (r *Flows) Attempt(ctx context.Context, id uuid.UUID) (int, bool, error) {
+	t, err := lockedChallenge(ctx, "count attempt", id)
+	if err != nil {
+		return 0, false, err
+	}
+	var attempts int
+	err = t.tx.QueryRowContext(ctx, `
+		UPDATE challenges SET attempts = attempts + 1
+		WHERE id = ? AND closed_at IS NULL AND attempts < max_attempts
+		RETURNING attempts`, id).Scan(&attempts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("count attempt: %w", err)
+	}
+	return attempts, true, nil
+}
+
+// RecordSend implements app.Flows.
+func (r *Flows) RecordSend(ctx context.Context, id uuid.UUID) (int, error) {
+	t, err := lockedChallenge(ctx, "record send", id)
+	if err != nil {
+		return 0, err
+	}
+	var sends int
+	err = t.tx.QueryRowContext(ctx, `
+		UPDATE challenges SET sends = sends + 1, last_sent_at = now()
+		WHERE id = ? AND closed_at IS NULL
+		RETURNING sends`, id).Scan(&sends)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, notFound("challenge")
+	}
+	if err != nil {
+		return 0, fmt.Errorf("record send: %w", err)
+	}
+	return sends, nil
+}
+
+// CloseChallenge implements app.Flows. Closing and erasing are one statement (I-5); the
+// closed_at condition makes a second consumption change nothing (I-4).
+func (r *Flows) CloseChallenge(ctx context.Context, id uuid.UUID, consumed bool) (bool, error) {
+	t, err := lockedChallenge(ctx, "close challenge", id)
+	if err != nil {
+		return false, err
+	}
+	res, err := t.tx.ExecContext(ctx, `
+		UPDATE challenges SET closed_at = now(), consumed_at = CASE WHEN ? THEN now() END, secret = NULL
+		WHERE id = ? AND closed_at IS NULL`, consumed, id)
+	if err != nil {
+		return false, fmt.Errorf("close challenge: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("close challenge: %w", err)
+	}
+	return n == 1, nil
+}

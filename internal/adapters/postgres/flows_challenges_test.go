@@ -298,6 +298,9 @@ func TestChallengeLockOrder(t *testing.T) {
 		},
 		"ChallengeSecret": func(ctx context.Context) error { _, err := e.flows.ChallengeSecret(ctx, c.ID); return err },
 		"ChallengeTarget": func(ctx context.Context) error { _, err := e.flows.ChallengeTarget(ctx, c.ID); return err },
+		"Attempt":         func(ctx context.Context) error { _, _, err := e.flows.Attempt(ctx, c.ID); return err },
+		"RecordSend":      func(ctx context.Context) error { _, err := e.flows.RecordSend(ctx, c.ID); return err },
+		"CloseChallenge":  func(ctx context.Context) error { _, err := e.flows.CloseChallenge(ctx, c.ID, true); return err },
 	}
 	// The flow locked, its challenges not loaded: only the flow-level ones may run.
 	flowLevel := map[string]bool{"LockChallenges": true, "OpenChallenge": true}
