@@ -165,6 +165,19 @@ database's `now()`). It implements `app.TokenSigner` (`Sign(payload, typ)`) and 
 `testdata/example/secrets/signing` holds public test keys; a fresh database makes its key wait
 `min_publish_before_use` (tests set `AUTH1_KEYS_MIN_PUBLISH_BEFORE_USE=0s`).
 
+Flows (TDD-02 §2, TDD-07 §5): `app.Flows` (`postgres.Flows`) stores `flow.Flow` /
+`flow.ChallengeRecord` (plaintext records in `internal/domain/flow/records.go`); callers pass the
+handle hash (`crypto.SHA256`), the link hash and the OTP MAC, and it seals `pending_secret`,
+`secret` and `target_value` and computes `target_bidx`. `Find`, `FindByHandle` and `FindLink` lock
+nothing and answer every miss with the same `CHALLENGE_CLOSED` (I-20); then lock the account
+(`GetForUpdate`), `LockFlow` (re-checks account and handle) and `LockChallenges`. The transaction
+records locked flows and challenges, and a method without its prerequisite lock returns
+`postgres.ErrLockOrder` before querying (G-5). `Attempt` (I-4), `RecordSend`, `CloseChallenge` and
+`Complete` / `Cancel` (which erase secrets in the closing statement, I-5) are conditional SQL.
+`RecordSend` also writes the send's `challenge_sends` row (migration `000002`), which `SendCounts`
+counts per window after taking a transaction-scoped advisory lock on the address, so
+check-then-send is exact (I-21); `ExhaustedSince` is the L-9 cooldown query.
+
 Identifiers (TDD-01 §2): `internal/domain/identifier` holds the `Type` interface (`Normalise`,
 `VerifyMethods`, `CanSignIn`, `Variants`, `CheckPolicy`), the built-in `Email` and `Phone`
 (`identifier.Builtin()`) and the `Registry`. `NewRegistry` checks the `identifiers` policy against
