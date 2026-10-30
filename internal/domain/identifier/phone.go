@@ -11,6 +11,7 @@ import (
 	"github.com/nyaruka/phonenumbers"
 
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
+	"github.com/arafat-hasan/auth1/internal/domain/message"
 )
 
 // maxPhoneInput bounds the work done on an input before libphonenumber parses it.
@@ -24,6 +25,9 @@ func (Phone) Name() string { return "phone" }
 
 // CanSignIn returns true.
 func (Phone) CanSignIn() bool { return true }
+
+// Channel returns sms.
+func (Phone) Channel() message.Channel { return message.SMS }
 
 // VerifyMethods returns sms_otp.
 func (Phone) VerifyMethods() []flow.Method { return []flow.Method{flow.MethodSMSOTP} }

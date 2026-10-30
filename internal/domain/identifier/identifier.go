@@ -5,6 +5,7 @@ import (
 
 	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
+	"github.com/arafat-hasan/auth1/internal/domain/message"
 )
 
 // Policy is the configured policy of one identifier type (SDD D-3): whether an account must have
@@ -27,6 +28,8 @@ type Type interface {
 	// CanSignIn reports whether the type can be a sign-in identifier; the policy may still turn
 	// it off.
 	CanSignIn() bool
+	// Channel is how a message reaches an identifier of the type (TDD-06 §7).
+	Channel() message.Channel
 	// Variants returns the forms of a normalised value that a password must not contain
 	// (TDD-03 §2).
 	Variants(normalised string) []string

@@ -10,6 +10,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
+	"github.com/arafat-hasan/auth1/internal/domain/message"
 )
 
 // The email limits of TDD-01 §2.2, in octets.
@@ -38,6 +39,9 @@ func (Email) Name() string { return "email" }
 
 // CanSignIn returns true.
 func (Email) CanSignIn() bool { return true }
+
+// Channel returns email.
+func (Email) Channel() message.Channel { return message.Email }
 
 // VerifyMethods returns email_link and email_code.
 func (Email) VerifyMethods() []flow.Method {
