@@ -24,6 +24,9 @@ func NewAudit(db *bun.DB) *Audit {
 
 // Write implements app.AuditWriter.
 func (w *Audit) Write(ctx context.Context, e app.AuditEntry) error {
+	if err := e.Check(); err != nil {
+		return fmt.Errorf("write audit entry: %w", err)
+	}
 	details := e.Details
 	if details == nil {
 		details = map[string]any{}
@@ -39,8 +42,8 @@ func (w *Audit) Write(ctx context.Context, e app.AuditEntry) error {
 	if _, err := Conn(ctx, w.db).ExecContext(ctx, `
 		INSERT INTO auth_audit (account_id, actor_kind, actor_id, on_behalf, action, outcome, client_id, ip, user_agent, details)
 		VALUES (?, ?, nullif(?, ''), nullif(?, ''), ?, ?, nullif(?, ''), ?::inet, nullif(?, ''), ?::jsonb)`,
-		uuid.NullUUID{UUID: e.AccountID, Valid: e.AccountID != uuid.Nil}, e.ActorKind, e.ActorID, e.OnBehalf,
-		e.Action, e.Outcome, e.ClientID, ip, e.UserAgent, string(body)); err != nil {
+		uuid.NullUUID{UUID: e.AccountID, Valid: e.AccountID != uuid.Nil}, string(e.ActorKind), e.ActorID, e.OnBehalf,
+		e.Action, string(e.Outcome), e.ClientID, ip, e.UserAgent, string(body)); err != nil {
 		return fmt.Errorf("write audit entry: %w", err)
 	}
 	return nil

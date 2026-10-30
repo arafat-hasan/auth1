@@ -20,9 +20,10 @@ var _ app.AuditWriter = (*postgres.Audit)(nil)
 // auditRow is an auth_audit row without id and at, nullable columns as their text.
 type auditRow struct {
 	AccountID               uuid.NullUUID
-	ActorKind               string
+	ActorKind               app.ActorKind
 	ActorID, OnBehalf       sql.NullString
-	Action, Outcome         string
+	Action                  string
+	Outcome                 app.Outcome
 	ClientID, IP, UserAgent sql.NullString
 	Details                 map[string]any
 	AtIsNow                 bool
@@ -70,12 +71,12 @@ func TestAuditWrite(t *testing.T) {
 	id := e.ids.New()
 
 	full := app.AuditEntry{
-		AccountID: id, ActorKind: "service", ActorID: "spiffe://example.org/support", OnBehalf: "agent 42",
-		Action: "account.suspend", Outcome: "success", ClientID: "support-console",
+		AccountID: id, ActorKind: app.ActorService, ActorID: "spiffe://example.org/support", OnBehalf: "agent 42",
+		Action: "account.suspend", Outcome: app.OutcomeSuccess, ClientID: "support-console",
 		IP: netip.MustParseAddr("2001:db8::1"), UserAgent: "curl/8.0",
 		Details: map[string]any{"reason_code": "abuse", "sessions_revoked": 2},
 	}
-	bare := app.AuditEntry{ActorKind: "anonymous", Action: "sign_in", Outcome: "failure"}
+	bare := app.AuditEntry{ActorKind: app.ActorAnonymous, Action: "sign_in", Outcome: app.OutcomeFailure}
 	for _, entry := range []app.AuditEntry{full, bare} {
 		if err := audit.Write(t.Context(), entry); err != nil {
 			t.Fatalf("Write(%s): %v", entry.Action, err)
@@ -84,13 +85,13 @@ func TestAuditWrite(t *testing.T) {
 
 	want := []auditRow{
 		{
-			AccountID: uuid.NullUUID{UUID: id, Valid: true}, ActorKind: "service",
+			AccountID: uuid.NullUUID{UUID: id, Valid: true}, ActorKind: app.ActorService,
 			ActorID: nullString("spiffe://example.org/support"), OnBehalf: nullString("agent 42"),
-			Action: "account.suspend", Outcome: "success", ClientID: nullString("support-console"),
+			Action: "account.suspend", Outcome: app.OutcomeSuccess, ClientID: nullString("support-console"),
 			IP: nullString("2001:db8::1"), UserAgent: nullString("curl/8.0"),
 			Details: map[string]any{"reason_code": "abuse", "sessions_revoked": float64(2)}, AtIsNow: true,
 		},
-		{ActorKind: "anonymous", Action: "sign_in", Outcome: "failure", Details: map[string]any{}, AtIsNow: true},
+		{ActorKind: app.ActorAnonymous, Action: "sign_in", Outcome: app.OutcomeFailure, Details: map[string]any{}, AtIsNow: true},
 	}
 	if diff := cmp.Diff(want, auditRows(t, e)); diff != "" {
 		t.Errorf("audit rows (-want +got):\n%s", diff)
@@ -105,11 +106,11 @@ func TestAuditInUnitOfWork(t *testing.T) {
 	audit := postgres.NewAudit(e.app)
 
 	e.do(t, func(ctx context.Context) error {
-		return audit.Write(ctx, app.AuditEntry{ActorKind: "system", Action: "committed", Outcome: "success"})
+		return audit.Write(ctx, app.AuditEntry{ActorKind: app.ActorSystem, Action: "committed", Outcome: app.OutcomeSuccess})
 	})
 	failed := errors.New("use case failed")
 	err := e.uow.Do(t.Context(), func(ctx context.Context) error {
-		if err := audit.Write(ctx, app.AuditEntry{ActorKind: "system", Action: "rolled_back", Outcome: "success"}); err != nil {
+		if err := audit.Write(ctx, app.AuditEntry{ActorKind: app.ActorSystem, Action: "rolled_back", Outcome: app.OutcomeSuccess}); err != nil {
 			return err
 		}
 		return failed
@@ -117,7 +118,7 @@ func TestAuditInUnitOfWork(t *testing.T) {
 	if !errors.Is(err, failed) {
 		t.Fatalf("Do = %v, want the use case's error", err)
 	}
-	if err := audit.Write(t.Context(), app.AuditEntry{ActorKind: "system", Action: "after_rollback", Outcome: "failure"}); err != nil {
+	if err := audit.Write(t.Context(), app.AuditEntry{ActorKind: app.ActorSystem, Action: "after_rollback", Outcome: app.OutcomeFailure}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,14 +131,31 @@ func TestAuditInUnitOfWork(t *testing.T) {
 	}
 }
 
-func TestAuditRefusesBadDetails(t *testing.T) {
+// TestAuditRefuses checks that an entry the audit log would not take, or would take with a value
+// nobody can query, is refused before the database: nothing is written.
+func TestAuditRefuses(t *testing.T) {
 	t.Parallel()
 	e := accountsDB(t)
 	audit := postgres.NewAudit(e.app)
-	err := audit.Write(t.Context(), app.AuditEntry{
-		ActorKind: "system", Action: "x", Outcome: "success", Details: map[string]any{"bad": make(chan int)},
-	})
-	if err == nil {
-		t.Error("Write with details that are not JSON succeeded")
+	for _, c := range []struct {
+		name  string
+		entry app.AuditEntry
+		want  error
+	}{
+		{"actor kind", app.AuditEntry{ActorKind: "servce", Action: "x", Outcome: app.OutcomeSuccess}, app.ErrAuditEntryInvalid},
+		{"no actor kind", app.AuditEntry{Action: "x", Outcome: app.OutcomeSuccess}, app.ErrAuditEntryInvalid},
+		{"outcome", app.AuditEntry{ActorKind: app.ActorSystem, Action: "x", Outcome: "sucess"}, app.ErrAuditEntryInvalid},
+		{"no action", app.AuditEntry{ActorKind: app.ActorSystem, Outcome: app.OutcomeSuccess}, app.ErrAuditEntryInvalid},
+		{"details", app.AuditEntry{
+			ActorKind: app.ActorSystem, Action: "x", Outcome: app.OutcomeSuccess, Details: map[string]any{"bad": make(chan int)},
+		}, nil},
+	} {
+		err := audit.Write(t.Context(), c.entry)
+		if err == nil || c.want != nil && !errors.Is(err, c.want) {
+			t.Errorf("%s: Write = %v, want %v", c.name, err, c.want)
+		}
+	}
+	if rows := auditRows(t, e); len(rows) != 0 {
+		t.Errorf("audit rows = %v, want none", rows)
 	}
 }
