@@ -116,3 +116,31 @@ func TestServeReturnsResponse(t *testing.T) {
 		t.Errorf("response %d %q, want 200 and the handler's body", resp.StatusCode, body)
 	}
 }
+
+func TestCheckSchema(t *testing.T) {
+	t.Parallel()
+	v := New(t)
+	const valid = `{"request_id":"0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b:1","type":"auth.sign_in_code",
+"channel":"sms","locale":"en","recipient":"auth1:identifier:0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b",
+"variables":{"code":"auth1:secret:0192f1c4-8d3a-7b2e-9f10-2c4d5e6f7a8b","n":3}}`
+	tests := []struct {
+		name, schema, body string
+		wantErrs           int
+	}{
+		{"valid", "DeliveryRequest", valid, 0},
+		{"no recipient", "DeliveryRequest", strings.Replace(valid, `"recipient"`, `"to"`, 1), 1},
+		{"float variable", "DeliveryRequest", strings.Replace(valid, `"n":3`, `"n":3.5`, 1), 1},
+		{"not JSON", "DeliveryRequest", `{`, 1},
+		{"unknown schema", "Nope", valid, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r := &recorder{}
+			v.CheckSchema(r, tt.schema, []byte(tt.body))
+			if (len(r.errs) == 0) != (tt.wantErrs == 0) {
+				t.Errorf("CheckSchema reported %q, want errors: %v", r.errs, tt.wantErrs > 0)
+			}
+		})
+	}
+}
