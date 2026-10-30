@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,11 +21,14 @@ import (
 // txKey is the context key of the open transaction, a *txn.
 type txKey struct{}
 
-// txn is the transaction Do opened and the accounts locked in it. A use case runs on one
-// goroutine, so txn has no lock of its own, as bun.Tx has none.
+// txn is the transaction Do opened and the rows locked in it: accounts, and the flows and
+// challenges whose methods check the lock order (G-5). A use case runs on one goroutine, so txn
+// has no lock of its own, as bun.Tx has none.
 type txn struct {
-	tx     bun.Tx
-	locked []*lockedAccount // in lock order
+	tx         bun.Tx
+	locked     []*lockedAccount // in lock order
+	flows      []uuid.UUID
+	challenges []uuid.UUID
 }
 
 // lockedAccount is an account locked in the transaction: the version read under the lock and the
@@ -41,6 +45,21 @@ type lockedAccount struct {
 func (t *txn) lock(id uuid.UUID, version int64) {
 	if t.account(id) == nil {
 		t.locked = append(t.locked, &lockedAccount{id: id, version: version})
+	}
+}
+
+// lockFlow records that the transaction locked the flow id. As for lock, take the lock outside a
+// savepoint.
+func (t *txn) lockFlow(id uuid.UUID) {
+	if !slices.Contains(t.flows, id) {
+		t.flows = append(t.flows, id)
+	}
+}
+
+// lockChallenge records that the transaction locked the challenge id, as lockFlow.
+func (t *txn) lockChallenge(id uuid.UUID) {
+	if !slices.Contains(t.challenges, id) {
+		t.challenges = append(t.challenges, id)
 	}
 }
 
