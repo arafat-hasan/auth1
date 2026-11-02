@@ -336,6 +336,9 @@ func TestValidateRules(t *testing.T) {
 			want: []string{"passwords.argon2.memory"}},
 		{name: "negative length", change: func(c *Config) { c.Passwords.MinLength = -1 },
 			want: []string{"passwords.min_length"}},
+		// Only the range check reports a negative maximum, not min_length above it as well.
+		{name: "negative max length", change: func(c *Config) { c.Passwords.MaxLength = -1 },
+			want: []string{"passwords.max_length"}},
 		{name: "zero access ttl", change: func(c *Config) { c.Tokens.AccessTTL = 0 },
 			want: []string{"tokens.access_ttl"}},
 		{name: "zero reset ttl", change: func(c *Config) { c.Links.ResetTTL = 0 },
@@ -358,6 +361,14 @@ func TestValidateRules(t *testing.T) {
 			want: []string{"passwords.argon2.max_concurrent"}},
 		{name: "zero argon2 queue timeout", change: func(c *Config) { c.Passwords.Argon2.QueueTimeout = 0 },
 			want: []string{"passwords.argon2.queue_timeout"}},
+
+		// Password lengths that would refuse every password, in every environment.
+		{name: "password min_length equal to max_length", change: func(c *Config) {
+			c.Passwords.MinLength, c.Passwords.MaxLength = 64, 64
+		}},
+		{name: "password min_length above max_length", change: func(c *Config) {
+			c.Passwords.MinLength, c.Passwords.MaxLength = 65, 64
+		}, want: []string{"passwords.min_length"}},
 
 		// Argon2id bounds a stored hash may carry (TDD-03 §1.3), in every environment.
 		{name: "argon2 memory 1GiB", change: func(c *Config) { c.Passwords.Argon2.Memory = GiB }},

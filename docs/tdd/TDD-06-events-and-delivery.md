@@ -3,8 +3,8 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Version | 0.3 |
-| Date | 2026-10-30 |
+| Version | 0.4 |
+| Date | 2026-11-02 |
 | SDD | [design.md](../design.md) 0.13: D-15, D-16, I-7, I-8, I-15 |
 | Owner | Arafat Hasan |
 
@@ -78,12 +78,22 @@ For each claimed row, in its own small transaction:
 The claim is `destination = 'delivery' AND published_at IS NULL AND parked_at IS NULL AND
 next_attempt_at <= now()`, ordered by `next_attempt_at`, with `FOR UPDATE SKIP LOCKED`.
 
-1. **Drop what can no longer work.** For a secret-bearing row, if the challenge has closed, mark it published with `last_error = 'dropped: challenge closed'` and do not send. A notice is dropped after 24 h.
+Deliveries need no order, so the claim is a lease and no transaction is open during the send
+(SDD §6.3):
+- **Claim**, in one short transaction: drop what can no longer work (step 1), then set
+  `attempts = attempts + 1` and `next_attempt_at = now() + lease` on the rest, and commit. No other
+  replica claims a leased row until the lease ends.
+- **Send** outside any transaction (step 2).
+- **Record** the outcome (step 3) in a second short transaction, only if `attempts` is still the
+  claimed value. A relay that dies mid-send leaves the row leased; when the lease ends another
+  replica sends it again with the same `request_id`, the idempotency key. Delivery is at least once.
+
+1. **Drop what can no longer work.** For a secret-bearing row (its `request_id` names a challenge), if the challenge is not open (closed, expired, out of attempts, or purged; as in §6 rule 2), mark it published with `last_error = 'dropped: challenge closed'` and do not send. A notice is dropped after 24 h.
 2. **Hand the row to the adapter** (§8).
 3. **By outcome:**
    - 2xx, or a duplicate: published.
    - A 4xx other than 408 or 429: parked, and alert. The request is wrong; retrying will not help.
-   - Anything else: backoff as for events, capped at the challenge's expiry.
+   - Anything else: backoff as for events, capped at the challenge's expiry; parked at `outbox.max_attempts`, as for events.
 
 ### 3.3 Latency
 
@@ -246,6 +256,7 @@ the resolver (§6).
 - `OutboxWriter` (inside the unit of work): `Event(type, accountID, data)` and `Delivery(request)`. The use case never builds CloudEvents itself.
 - `MessageDelivery` port: `Send(ctx, row) Outcome`. The relay owns retries, so adapters stay stateless.
 - One relay goroutine pool per destination, so a slow broker never delays OTPs.
+- The relay `LISTEN`s on a dedicated connection outside the pool, and reconnects with backoff; after a reconnect it claims at once, since notifications in the gap are lost.
 
 ## 10. To be detailed
 

@@ -119,6 +119,31 @@ func TestServeRefusesInvalidConfig(t *testing.T) {
 	}
 }
 
+// TestServeRefusesBadDenyList: serve parses passwords.deny_list_file before binding anything.
+func TestServeRefusesBadDenyList(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+	restoreDefaults(t)
+	deny := filepath.Join(t.TempDir(), "deny.txt")
+	writeFile(t, deny, "password\nsecret\xff\n")
+	var bound atomic.Bool
+	deps := serveDeps{listen: func(string, string) (net.Listener, error) {
+		bound.Store(true)
+		return nil, errors.New("must not bind")
+	}, telemetryTimeout: time.Second}
+	var out bytes.Buffer
+	environ := append(slices.Clone(developmentEnv), "AUTH1_PASSWORDS_DENY_LIST_FILE="+deny)
+	err := newTestServeCmd(deps, &out, environ, "--config", "config.example.yaml")(context.Background())
+	if !errors.Is(err, errConfigInvalid) {
+		t.Fatalf("serve = %v, want errConfigInvalid\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "  - passwords.deny_list_file: line 2: not UTF-8\n") {
+		t.Errorf("output does not name the deny-list problem:\n%s", out.String())
+	}
+	if bound.Load() {
+		t.Error("serve bound a listener with a bad deny-list")
+	}
+}
+
 func TestServeRequiresConfig(t *testing.T) {
 	t.Parallel()
 
@@ -150,7 +175,7 @@ func TestServeBindFailure(t *testing.T) {
 			},
 			drainDelay: time.Millisecond, shutdownTimeout: time.Second, telemetryTimeout: time.Second,
 		}
-		err := newTestServeCmd(deps, &bytes.Buffer{}, developmentEnv, "--config", "config.example.yaml")(context.Background())
+		err := newTestServeCmd(deps, &bytes.Buffer{}, serveEnv, "--config", "config.example.yaml")(context.Background())
 		if err == nil || !strings.Contains(err.Error(), tt.wantKey) || !strings.Contains(err.Error(), "address already in use") {
 			t.Errorf("fail %s: serve = %v, want the %s bind error", tt.failAddr, err, tt.wantKey)
 		}
@@ -219,8 +244,6 @@ func TestServeRuns(t *testing.T) {
 	expect(api+"/.well-known/jwks.json", 200, "application/json", `"kty":"RSA"`)
 	expect(api+"/.well-known/oauth-authorization-server", 200, "application/json", `"jwks_uri":"https://id.example.com/.well-known/jwks.json"`)
 	expect(api+"/nope", 404, "application/problem+json", `"NOT_FOUND"`)
-	// The development routes exist only with the capture adapter (TestServeCaptureInDevelopment).
-	expect(api+"/dev/messages?to=a@example.org", 404, "application/problem+json", `"NOT_FOUND"`)
 	expect(metrics+"/metrics", 200, "", "http_server_request_duration_seconds_bucket")
 
 	cancel()
@@ -244,6 +267,10 @@ func TestServeRuns(t *testing.T) {
 		t.Fatal("serve did not stop")
 	}
 }
+
+// serveEnv is development with the capture adapter, the only delivery adapter until WP-44: serve
+// refuses to start without one (TestServeRefusesMissingAdapter).
+var serveEnv = append(slices.Clone(developmentEnv), "AUTH1_DELIVERY_ADAPTER=capture")
 
 // promoteAtOnce lets the example's signing key sign as soon as it is published, so that serve can
 // become ready on a fresh database.
@@ -277,26 +304,30 @@ func dsnEnv(t *testing.T, dsn string) []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "dsn")
 	writeFile(t, path, dsn)
-	return append(slices.Clone(developmentEnv), "AUTH1_DATABASE_DSN_FILE="+path)
+	return append(slices.Clone(serveEnv), "AUTH1_DATABASE_DSN_FILE="+path)
 }
 
 // startServe runs serve on the example configuration with environ, from the repository root, and
-// returns the API's base URL. The test's cleanup stops serve and checks that it returned nil.
-func startServe(t *testing.T, environ []string) string {
+// returns the API's base URL; opts adjust testDeps. The test's cleanup stops serve and checks that it returned nil.
+func startServe(t *testing.T, environ []string, opts ...func(*serveDeps)) string {
 	t.Helper()
-	api, _ := startServeWithMetrics(t, environ)
+	api, _ := startServeWithMetrics(t, environ, opts...)
 	return api
 }
 
 // startServeWithMetrics is startServe, also returning the metrics server's base URL.
-func startServeWithMetrics(t *testing.T, environ []string) (api, metrics string) {
+func startServeWithMetrics(t *testing.T, environ []string, opts ...func(*serveDeps)) (api, metrics string) {
 	t.Helper()
 	t.Chdir(filepath.Join("..", ".."))
 	restoreDefaults(t)
 
 	addrs := make(chan [2]string, 2)
 	ctx, cancel := context.WithCancel(context.Background())
-	run := newTestServeCmd(testDeps(addrs), &bytes.Buffer{}, environ, "--config", "config.example.yaml")
+	deps := testDeps(addrs)
+	for _, o := range opts {
+		o(&deps)
+	}
+	run := newTestServeCmd(deps, &bytes.Buffer{}, environ, "--config", "config.example.yaml")
 	done := make(chan error, 1)
 	go func() { done <- run(ctx) }()
 	t.Cleanup(func() {

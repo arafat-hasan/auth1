@@ -139,3 +139,38 @@ func TestConfigCheckInvalidKeyring(t *testing.T) {
 		t.Errorf("output does not name the keyring problem:\n%s", &out)
 	}
 }
+
+// TestConfigCheckDenyList: config check parses passwords.deny_list_file and names the line of a
+// bad one; a missing file is Validate's to report.
+func TestConfigCheckDenyList(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+
+	bad := filepath.Join(t.TempDir(), "deny.txt")
+	writeFile(t, bad, "password\nsecret\xff\n")
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{"not UTF-8", bad, "  - passwords.deny_list_file: line 2: not UTF-8\n"},
+		{"missing", filepath.Join(t.TempDir(), "missing.txt"), "  - passwords.deny_list_file: "},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newConfigCmd(func() []string { return []string{"AUTH1_PASSWORDS_DENY_LIST_FILE=" + tc.file} })
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs([]string{"check", "--config", "config.example.yaml"})
+			if err := cmd.Execute(); !errors.Is(err, errConfigInvalid) {
+				t.Fatalf("config check error = %v, want errConfigInvalid\n%s", err, &out)
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Errorf("output does not contain %q:\n%s", tc.want, &out)
+			}
+			if strings.Contains(out.String(), "secret") {
+				t.Errorf("output holds a deny-list line:\n%s", &out)
+			}
+		})
+	}
+}

@@ -42,7 +42,7 @@ make spec-lint             # vacuum (api/vacuum.yaml) on openapi.yaml, AsyncAPI 
 make spec-diff             # oasdiff breaking against the newest v* tag (warn-only in CI until v1.0.0)
 ./bin/auth1 version        # version, commit, Go version
 ./bin/auth1 config check --config config.example.yaml   # load and validate a configuration
-AUTH1_APP_ENVIRONMENT=development ./bin/auth1 serve --config config.example.yaml   # API on :8080, metrics on :9090
+AUTH1_APP_ENVIRONMENT=development AUTH1_DELIVERY_ADAPTER=capture ./bin/auth1 serve --config config.example.yaml   # API on :8080, metrics on :9090
 AUTH1_APP_ENVIRONMENT=development make migrate ARGS="status --config config.example.yaml --dsn-file testdata/example/secrets/db/migrator-dsn"   # also up, down [N]
 ./bin/auth1 migrate create <name>   # next numbered empty pair in migrations/
 ```
@@ -186,6 +186,15 @@ for `config check` and `serve`. Refusals are `IDENTIFIER_NOT_ALLOWED` and never 
 An empty `calling_codes` allows no phone. `TestSimpleFoldUnicodeVersion` fails when Go's Unicode
 version changes: re-check `simpleFold` against CaseFolding.txt. Both normalisers are fuzzed (`FuzzEmail`, `FuzzPhone`: deterministic and idempotent).
 
+Password policy (TDD-03 §2): `internal/domain/password.Check(password []byte, variants, Policy)
+[]Reason` returns every reason that applies, in the order of `Reasons()` (checked against the
+contract's `Problem.reasons` in `test/contract`); `Rejected(reasons)` is the `PASSWORD_REJECTED`
+error. The caller passes the account's identifier variants (`Registry.Variants`). Lengths are code
+points of the NFKC form; the password, variants and deny-list entries are compared as
+`NFKC(fold(NFKC(s)))` with full case folding, and variants under 4 code points are ignored.
+`ParseDenyList(io.Reader)` is pure; `loadPasswordPolicy` in `cmd/auth1` opens
+`passwords.deny_list_file` for `config check` and `serve`, so a bad file fails start-up.
+
 Delivery (TDD-06 §5–§9): `internal/domain/message` holds the purposes of TDD-06 §7 as constants
 (`message.SignInCode` …, each the default type without `auth.`) with their channel, secret and
 variables; `message.NewTypes` applies `delivery.types`, checked by `loadMessageTypes` in
@@ -207,6 +216,27 @@ only in `development` and `serve` mounts it through `server.Options.Dev` at the 
 contract. `test/contract` checks stored delivery bodies against `DeliveryRequest` with
 `apitest.CheckSchema`.
 
+Relay (TDD-06 §3.2, §3.3): `internal/worker/relay.Deliveries` sends delivery rows through
+`app.DeliveryOutbox` (`postgres.DeliveryOutbox`). The claim is a lease: one short transaction
+(`FOR UPDATE OF o SKIP LOCKED`) drops rows whose challenge is not open (`dropped: challenge
+closed`) and notices older than 24 h, parks bodies that are not delivery requests, and sets
+`attempts + 1` and `next_attempt_at = now() + lease` on the rest. `Send` runs outside any
+transaction (G-4), and `Publish` / `Retry` (capped at the request's `deadline`) / `Park` apply only
+while `attempts` is still the claimed value, else `app.ErrClaimLost`. A dead relay's row is sent
+again when its 30 s lease ends, with the same `request_id`. `relay.Backoff` is TDD-06 §3.1's (1 s
+doubling to 5 min, ±20%); a retry at `outbox.max_attempts`, a parked outcome and the zero outcome
+park. `Claim` returns an `app.DeliveryClaim`: the leased rows, how many rows it locked (the relay
+claims again while that is all it asked for, so dropped rows never hold back due ones) and the rows
+it parked for their body, which the relay logs. Each relay has 8 senders and claims only for idle
+ones; it wakes on
+`postgres.Listener` (a pgx connection of its own on `auth1_outbox`, reconnecting, so `max_conns` + 2
+per instance) and on `outbox.poll_interval`, and records `auth1_outbox_age_seconds` /
+`auth1_outbox_parked` (destination `delivery`) every 15 s, from the partial indexes
+`outbox_delivery_pending` and `outbox_parked` (migration `000003`). `serve` runs both in its errgroup and
+refuses a `delivery.adapter` with no adapter yet, so until WP-44 run it with
+`AUTH1_DELIVERY_ADAPTER=capture` (the serve tests use `serveEnv`); `serveDeps.resolver` replaces
+`unavailableResolver` in tests until WP-43.
+
 Rate limits (TDD-07 §1, §2, §8): `app.RateLimiter` (`Hit`) is the sliding-window port and
 `app.RateLimits` the helper use cases call: `CheckIP(ctx, rule, ip)` (keyed by `app.IPKey`: IPv4
 whole, IPv6 by /64) or `Check(ctx, rule, key)` for L-15's client id; it returns a `RATE_LIMITED`
@@ -220,7 +250,8 @@ The client IP comes from `internal/http/clientip` (`Resolver` over `http.trusted
 middleware installed by the router for every request via `server.Options.ClientIP`; read it with
 `clientip.From(ctx)` and pass it into commands; never log it). L-1 is `middleware.RateLimit`, in
 `server.Options.APIMiddleware`, which runs on the API routes and every 404 (not the probes or
-`/dev`); `gen.ServiceRoute(basePath)` exempts service operations. Tests use `fakes.NewRateLimiter` (counts, no window; `Fail(err)`) and
+`/dev`); `gen.ServiceRoute(basePath)` exempts service operations. Tests use
+`fakes.NewRateLimiter` (counts, no window; `Fail(err)`) and
 `internal/testing/redistest` (`Addr` with a per-test `Prefix`, needing `redistest.Main` in
 `TestMain`; `NewServer` with `Stop`/`Start`, which does not). The Docker gate and the restart proxy
 of pgtest and redistest live in `internal/testing/dockertest`.

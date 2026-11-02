@@ -13,10 +13,18 @@ import (
 	"github.com/arafat-hasan/auth1/internal/adapters/crypto"
 )
 
+// wantReloads is how many times TestReloadDuringSealOpen swaps the keyring, and reloadDeadline
+// bounds it on a slow host.
+const (
+	wantReloads    = 20
+	reloadDeadline = 30 * time.Second
+)
+
 // TestReloadDuringSealOpen is R-1 (#69): the field keyring file is swapped back and forth while
 // many goroutines seal and open. No call may see a half-loaded keyring: every Open of a ciphertext
 // sealed under a key that stays in the keyring succeeds, and every Seal uses one of its keys. Run
-// under -race (make test).
+// under -race (make test). The swapping is driven by a count of reloads, not a time window, so a
+// loaded host slows the test down instead of failing it.
 func TestReloadDuringSealOpen(t *testing.T) {
 	t.Parallel()
 	ringA := keyringYAML(entry{1, 1, "active"}, entry{2, 50, "decrypt"})
@@ -31,21 +39,31 @@ func TestReloadDuringSealOpen(t *testing.T) {
 		2: mustSeal(t, crypto.NewFieldCrypto(mustKeyring(t, entry{2, 50, "active"})), place, []byte("under 2")),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// The workers run until the swapper has seen every reload, or the deadline passes.
+	ctx, cancel := context.WithTimeout(context.Background(), reloadDeadline)
 	defer cancel()
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		// Not the test's goroutine, so a failed write is reported with t.Error, not t.Fatal.
-		for i := 0; ctx.Err() == nil; i++ {
-			ring := ringA
-			if i%2 == 0 {
-				ring = ringB
+		defer cancel()
+		// Not the test's goroutine, so a failure is reported with t.Error, not t.Fatal.
+		for i := range wantReloads {
+			ring := ringB
+			if i%2 == 1 {
+				ring = ringA
 			}
 			if err := replaceFile(path, ring); err != nil {
 				t.Errorf("swap the keyring file: %v", err)
 				return
 			}
-			time.Sleep(2 * time.Millisecond)
+			// Wait for the watcher to load this file before writing the next, so that every
+			// write is a reload.
+			for strings.Count(logs.String(), "keyring reloaded") <= i {
+				if ctx.Err() != nil {
+					t.Errorf("only %d of %d reloads within %s", i, wantReloads, reloadDeadline)
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
 		}
 	})
 	var ops atomic.Int64
@@ -80,8 +98,8 @@ func TestReloadDuringSealOpen(t *testing.T) {
 
 	reloads := strings.Count(logs.String(), "keyring reloaded")
 	t.Logf("%d seal-open rounds across %d reloads", ops.Load(), reloads)
-	if reloads < 10 {
-		t.Errorf("only %d reloads: the test did not exercise swapping", reloads)
+	if reloads != wantReloads {
+		t.Errorf("%d reloads, want %d", reloads, wantReloads)
 	}
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("a valid file failed to load: %s", logs)
