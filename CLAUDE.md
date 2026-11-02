@@ -42,7 +42,7 @@ make spec-lint             # vacuum (api/vacuum.yaml) on openapi.yaml, AsyncAPI 
 make spec-diff             # oasdiff breaking against the newest v* tag (warn-only in CI until v1.0.0)
 ./bin/auth1 version        # version, commit, Go version
 ./bin/auth1 config check --config config.example.yaml   # load and validate a configuration
-AUTH1_APP_ENVIRONMENT=development ./bin/auth1 serve --config config.example.yaml   # API on :8080, metrics on :9090
+AUTH1_APP_ENVIRONMENT=development AUTH1_DELIVERY_ADAPTER=capture ./bin/auth1 serve --config config.example.yaml   # API on :8080, metrics on :9090
 AUTH1_APP_ENVIRONMENT=development make migrate ARGS="status --config config.example.yaml --dsn-file testdata/example/secrets/db/migrator-dsn"   # also up, down [N]
 ./bin/auth1 migrate create <name>   # next numbered empty pair in migrations/
 ```
@@ -216,10 +216,14 @@ transaction (G-4), and `Publish` / `Retry` (capped at the request's `deadline`) 
 while `attempts` is still the claimed value, else `app.ErrClaimLost`. A dead relay's row is sent
 again when its 30 s lease ends, with the same `request_id`. `relay.Backoff` is TDD-06 §3.1's (1 s
 doubling to 5 min, ±20%); a retry at `outbox.max_attempts`, a parked outcome and the zero outcome
-park. Each relay has 8 senders and claims only for idle ones; it wakes on
+park. `Claim` returns an `app.DeliveryClaim`: the leased rows, how many rows it locked (the relay
+claims again while that is all it asked for, so dropped rows never hold back due ones) and the rows
+it parked for their body, which the relay logs. Each relay has 8 senders and claims only for idle
+ones; it wakes on
 `postgres.Listener` (a pgx connection of its own on `auth1_outbox`, reconnecting, so `max_conns` + 2
 per instance) and on `outbox.poll_interval`, and records `auth1_outbox_age_seconds` /
-`auth1_outbox_parked` (destination `delivery`) every 15 s. `serve` runs both in its errgroup and
+`auth1_outbox_parked` (destination `delivery`) every 15 s, from the partial indexes
+`outbox_delivery_pending` and `outbox_parked` (migration `000003`). `serve` runs both in its errgroup and
 refuses a `delivery.adapter` with no adapter yet, so until WP-44 run it with
 `AUTH1_DELIVERY_ADAPTER=capture` (the serve tests use `serveEnv`); `serveDeps.resolver` replaces
 `unavailableResolver` in tests until WP-43.
