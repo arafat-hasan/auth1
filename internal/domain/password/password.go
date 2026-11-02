@@ -29,10 +29,11 @@ func Reasons() []Reason { return []Reason{TooShort, TooLong, ContainsIdentifier,
 const minVariant = 4
 
 // Policy is the configured password policy: passwords.min_length and passwords.max_length, in code
-// points of the NFKC form.
+// points of the NFKC form, and the deny-list, which refuses nothing when nil.
 type Policy struct {
 	MinLength int
 	MaxLength int
+	DenyList  *DenyList
 }
 
 // Check returns every reason password fails p, in the order of Reasons, or nil when it passes.
@@ -53,6 +54,9 @@ func Check(password []byte, variants []string, p Policy) []Reason {
 			out = append(out, ContainsIdentifier)
 			break
 		}
+	}
+	if p.DenyList != nil && p.DenyList.contains(folded) {
+		out = append(out, Common)
 	}
 	return out
 }
