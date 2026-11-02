@@ -186,6 +186,15 @@ for `config check` and `serve`. Refusals are `IDENTIFIER_NOT_ALLOWED` and never 
 An empty `calling_codes` allows no phone. `TestSimpleFoldUnicodeVersion` fails when Go's Unicode
 version changes: re-check `simpleFold` against CaseFolding.txt. Both normalisers are fuzzed (`FuzzEmail`, `FuzzPhone`: deterministic and idempotent).
 
+Password policy (TDD-03 §2): `internal/domain/password.Check(password []byte, variants, Policy)
+[]Reason` returns every reason that applies, in the order of `Reasons()` (checked against the
+contract's `Problem.reasons` in `test/contract`); `Rejected(reasons)` is the `PASSWORD_REJECTED`
+error. The caller passes the account's identifier variants (`Registry.Variants`). Lengths are code
+points of the NFKC form; the password, variants and deny-list entries are compared as
+`NFKC(fold(NFKC(s)))` with full case folding, and variants under 4 code points are ignored.
+`ParseDenyList(io.Reader)` is pure; `loadPasswordPolicy` in `cmd/auth1` opens
+`passwords.deny_list_file` for `config check` and `serve`, so a bad file fails start-up.
+
 Delivery (TDD-06 §5–§9): `internal/domain/message` holds the purposes of TDD-06 §7 as constants
 (`message.SignInCode` …, each the default type without `auth.`) with their channel, secret and
 variables; `message.NewTypes` applies `delivery.types`, checked by `loadMessageTypes` in
