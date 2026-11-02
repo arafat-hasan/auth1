@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -98,5 +99,28 @@ func TestFromWith(t *testing.T) {
 	ip := netip.MustParseAddr("192.0.2.1")
 	if got := From(With(context.Background(), ip)); got != ip {
 		t.Errorf("From(With) = %v, want %v", got, ip)
+	}
+}
+
+// TestResolveDoesNotAllocate: walking a long header behind a trusted proxy allocates nothing, so
+// a 1 MiB X-Forwarded-For costs no more memory than a short one.
+func TestResolveDoesNotAllocate(t *testing.T) {
+	r := mustNew(t, trusted)
+	long := []string{strings.Repeat("198.51.100.1, ", 50000) + "198.51.100.2, 10.0.0.3"}
+	if got := r.Resolve("10.0.0.2:80", long); got != netip.MustParseAddr("198.51.100.2") {
+		t.Fatalf("Resolve = %v, want 198.51.100.2", got)
+	}
+	if n := testing.AllocsPerRun(10, func() { r.Resolve("10.0.0.2:80", long) }); n != 0 {
+		t.Errorf("Resolve allocated %v times, want 0", n)
+	}
+}
+
+// TestResolveMappedTrustedPrefix: a trusted prefix written in IPv4-mapped form trusts the IPv4
+// addresses it maps, since addresses are compared as IPv4.
+func TestResolveMappedTrustedPrefix(t *testing.T) {
+	t.Parallel()
+	r := mustNew(t, []string{"::ffff:10.0.0.0/104"})
+	if got := r.Resolve("10.0.0.2:80", []string{"198.51.100.1"}); got != netip.MustParseAddr("198.51.100.1") {
+		t.Errorf("Resolve = %v, want 198.51.100.1: the mapped prefix must trust 10.0.0.2", got)
 	}
 }

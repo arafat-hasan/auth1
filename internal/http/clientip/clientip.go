@@ -27,6 +27,10 @@ func New(cidrs []string) (*Resolver, error) {
 		if err != nil {
 			return nil, fmt.Errorf("trusted proxy %q: not a CIDR", c)
 		}
+		// Addresses are compared as IPv4 when they map one, so a mapped prefix is too.
+		if p.Addr().Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
 		r.trusted = append(r.trusted, p.Masked())
 	}
 	return r, nil
@@ -48,9 +52,16 @@ func (r *Resolver) Resolve(remoteAddr string, xff []string) netip.Addr {
 	}
 	client := peer
 	for i := len(xff) - 1; i >= 0; i-- {
-		entries := strings.Split(xff[i], ",")
-		for j := len(entries) - 1; j >= 0; j-- {
-			e := strings.TrimSpace(entries[j])
+		// Walk the header's entries from the right without splitting it, so a long header costs
+		// no allocation and only the entries actually read.
+		for rest := xff[i]; rest != ""; {
+			var e string
+			if k := strings.LastIndexByte(rest, ','); k >= 0 {
+				rest, e = rest[:k], rest[k+1:]
+			} else {
+				rest, e = "", rest
+			}
+			e = strings.TrimSpace(e)
 			if e == "" {
 				continue
 			}
