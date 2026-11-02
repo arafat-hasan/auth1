@@ -45,8 +45,10 @@ func NewLimiter(c goredis.Scripter, o Options) *Limiter {
 }
 
 // Hit implements app.RateLimiter. A refusal adds one to auth1_rate_limited_total{rule}; any Redis
-// error adds one to auth1_rate_limiter_errors_total. Neither records the key (G-6).
+// error, the call timeout included, adds one to auth1_rate_limiter_errors_total, but not a failure
+// caused by ctx itself ending. Neither records the key (G-6).
 func (l *Limiter) Hit(ctx context.Context, rule app.Rule, key string, limit app.RateLimit) (app.RateDecision, error) {
+	caller := ctx
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	now := l.o.Clock.Now().UnixMicro()
@@ -57,7 +59,10 @@ func (l *Limiter) Hit(ctx context.Context, rule app.Rule, key string, limit app.
 	retry, err := hitScript.Run(ctx, l.c, []string{l.o.Prefix + "rl:" + string(rule) + ":" + key},
 		now, limit.Window.Microseconds(), limit.Limit, member).Int64()
 	if err != nil {
-		l.o.Errors.Add(context.WithoutCancel(ctx), 1)
+		// The caller's own end (a client that went away) says nothing about Redis.
+		if caller.Err() == nil {
+			l.o.Errors.Add(context.WithoutCancel(ctx), 1)
+		}
 		return app.RateDecision{}, fmt.Errorf("rate limiter: %w", err)
 	}
 	if retry == 0 {

@@ -256,3 +256,18 @@ func TestPing(t *testing.T) {
 		t.Fatal("Ping with Redis stopped succeeded")
 	}
 }
+
+// TestHitCallerCancelled: a request whose own context has ended (the client went away) is not a
+// Redis failure, so it does not count towards the "Redis down" alert.
+func TestHitCallerCancelled(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, redistest.Addr(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := r.limiter.Hit(ctx, app.RuleGlobalIP, "k", app.RateLimit{Limit: 1, Window: time.Minute}); err == nil {
+		t.Fatal("Hit with a cancelled context succeeded")
+	}
+	if got := r.sums(t)["auth1_rate_limiter_errors_total{}"]; got != 0 {
+		t.Errorf("auth1_rate_limiter_errors_total = %d, want 0 for the caller's own cancellation", got)
+	}
+}
