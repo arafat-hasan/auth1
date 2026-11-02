@@ -271,3 +271,18 @@ func TestHitCallerCancelled(t *testing.T) {
 		t.Errorf("auth1_rate_limiter_errors_total = %d, want 0 for the caller's own cancellation", got)
 	}
 }
+
+// TestHitRetryAfterLoweredLimit: when the window holds more hits than the limit (it was lowered),
+// Retry-After is the time until enough of them have left, not just the oldest.
+func TestHitRetryAfterLoweredLimit(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, redistest.Addr(t))
+	for range 3 {
+		r.hit(t, app.RuleGlobalIP, "k", app.RateLimit{Limit: 3, Window: time.Minute})
+		r.clock.Advance(10 * time.Second)
+	}
+	// Hits at 0s, 10s and 20s; now 30s, and the limit is 2: the hit at 10s must leave too, at 70s.
+	if d := r.hit(t, app.RuleGlobalIP, "k", app.RateLimit{Limit: 2, Window: time.Minute}); d.Allowed || d.RetryAfter != 40*time.Second {
+		t.Fatalf("hit = %+v, want refused with RetryAfter 40s", d)
+	}
+}
