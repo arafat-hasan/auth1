@@ -81,7 +81,7 @@ Checks, in order. Each failure adds a reason to `PASSWORD_REJECTED.reasons`.
 - **Lengths** are counted on the NFKC form (§1.1), before case folding.
 - **Case folding** is full Unicode case folding (CaseFolding.txt, statuses C and F, so `ß` matches `ss`), between NFKC normalisations: `NFKC(fold(NFKC(s)))`. The password, every variant and every deny-list entry are compared in this form.
 - No composition rules, no periodic expiry, no hints.
-- **The deny-list** is a file of one password per line, loaded at start-up into a hash set; `config check` and `serve` refuse a file that is not UTF-8. Blank lines are skipped; a line ending (`\n` or `\r\n`) is removed and other white space is kept, since a password may hold any character. There is no comment syntax. *(guideline: start from a public list of the 100 000 most common passwords, plus product-specific words in the product's configuration repository)*.
+- **The deny-list** is a file of one password per line, loaded at start-up into a hash set; `config check` and `serve` refuse a file that is not UTF-8. A leading UTF-8 byte order mark is removed. Blank lines are skipped; a line ending (`\n` or `\r\n`) is removed and other white space is kept, since a password may hold any character. There is no comment syntax. *(guideline: start from a public list of the 100 000 most common passwords, plus product-specific words in the product's configuration repository)*.
 - **Every character is accepted**, including spaces and emoji.
 
 ## 3. Second-factor verification
