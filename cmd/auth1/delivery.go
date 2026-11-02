@@ -15,7 +15,7 @@ import (
 // development-only routes it serves, if any. The capture adapter exists only in development: it
 // is refused here as well as by Validate (T-17). The notification and direct adapters arrive with
 // WP-44 and WP-45; until then there is no adapter for them and the MessageDelivery is nil, which
-// the relay (WP-42) must refuse at start-up rather than run without.
+// serve refuses at start-up rather than run the relay without.
 func newDelivery(cfg *config.Config, resolver app.DeliveryResolver, clock app.Clock) (app.MessageDelivery, func(chi.Router), error) {
 	if cfg.Delivery.Adapter != config.DeliveryCapture {
 		return nil, nil, nil
