@@ -15,6 +15,7 @@ send limits and budgets, and overload behaviour.
 
 - `http.trusted_proxies` lists CIDRs: the product's edge and load balancers.
 - **The client IP** is the right-most address in `X-Forwarded-For` that is not trusted, after appending the TCP peer address. If every hop is trusted, it is the left-most. With no trusted proxies, it is the TCP peer.
+- **Parsing.** Entries are split on commas across every `X-Forwarded-For` header, in order. An entry may carry a port (`192.0.2.1:443`, `[2001:db8::1]:443`); zones are dropped and IPv4-mapped IPv6 addresses are read as IPv4. An entry that is not an address ends the walk: the client is the trusted hop to its right.
 - **Limit key:** IPv4 addresses are used whole; IPv6 addresses by their /64 prefix.
 - The audit records the full address (cleared after 90 days, TDD-01 §5).
 
@@ -22,7 +23,7 @@ send limits and budgets, and overload behaviour.
 
 | # | Control | Key | Store | Default *(cfg)* | Answer | On store failure |
 |---|---|---|---|---|---|---|
-| L-1 | Global | IP | Redis | 600 / 1 min | `RATE_LIMITED` | Fail open, alert |
+| L-1 | Global: every public API request (not service operations, probes or development routes) | IP | Redis | 600 / 1 min | `RATE_LIMITED` | Fail open, alert |
 | L-2 | Sign-in attempts | IP | Redis | 30 / 5 min | `RATE_LIMITED` | Fail open, alert |
 | L-3 | Failed sign-ins | Account × device bucket (§4) | PostgreSQL | From the 5th failure, a delay doubling from 1 s to 15 min; reset on success | `SIGN_IN_DELAYED` | — |
 | L-4 | Registrations | IP | Redis | 5 / 1 h | `RATE_LIMITED` | Fail open, alert |
@@ -122,6 +123,8 @@ is stored for a challenge, and this is what exhausted means (TDD-02 §2.2).
 
 The existing sliding-window limiter (sorted sets, `rl:<rule>:<key>`) is kept for L-1, L-2, L-4,
 L-5, L-8, L-12, L-14 and L-15. Keys are prefixed with `redis.prefix`.
+
+Service operations are exempt from L-1: their callers arrive through a sidecar or a few service addresses, so a per-IP window would limit a whole service. They are authenticated and scoped (TDD-05) instead.
 
 - **Fail open**, metric and alert on any Redis error. These limits slow abuse; the PostgreSQL controls protect accounts.
 - **Headers** on `429`: `Retry-After`. *(guideline: also `RateLimit-Policy` and `RateLimit` when the IETF draft is final)*.

@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/arafat-hasan/auth1/internal/domain"
+	"github.com/arafat-hasan/auth1/internal/http/clientip"
 	"github.com/arafat-hasan/auth1/internal/http/health"
 	"github.com/arafat-hasan/auth1/internal/http/middleware"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
@@ -40,19 +41,31 @@ type Options struct {
 	RequestDuration metric.Float64Histogram // http.server.request.duration
 	Health          *health.Checker
 	Routes          func(chi.Router) // registers the API routes under BasePath; nil for none
+	// ClientIP finds each request's client IP through the trusted proxies (TDD-07 §1); nil uses
+	// the TCP peer.
+	ClientIP *clientip.Resolver
+	// APIMiddleware runs on the Routes and on every 404, after the router's own middleware: only
+	// the probes and the Dev routes never pass it. It holds the L-1 rate limit.
+	APIMiddleware []func(http.Handler) http.Handler
 	// Dev registers the development-only routes, such as GET /dev/messages, at the root: they are
 	// not part of the API contract. nil outside development.
 	Dev func(chi.Router)
 }
 
-// NewRouter returns the API router. Every request passes request id, trace, access log, recover
-// and body limit, in that order, so the middleware also covers the probes and the 404s. /livez,
-// /readyz and the Dev routes sit at the root; Routes are mounted under BasePath. An unknown path
-// or an unsupported method answers 404 NOT_FOUND (SDD §10).
+// NewRouter returns the API router. Every request passes request id, client IP, trace, access log,
+// recover and body limit, in that order, so the middleware also covers the probes and the 404s;
+// the Routes and the 404s then pass APIMiddleware. /livez, /readyz and the Dev routes sit at the root; Routes
+// are mounted under BasePath. An unknown path or an unsupported method answers 404 NOT_FOUND
+// (SDD §10).
 func NewRouter(o Options) http.Handler {
+	ips := o.ClientIP
+	if ips == nil {
+		ips, _ = clientip.New(nil) // trusts nothing, so cannot fail
+	}
 	r := chi.NewRouter()
 	r.Use(
 		requestid.Middleware,
+		ips.Middleware,
 		middleware.Trace(o.TracerProvider, o.Propagator),
 		middleware.AccessLog(o.Logger, o.RequestDuration),
 		middleware.Recover(o.Logger, o.Problems),
@@ -61,8 +74,10 @@ func NewRouter(o Options) http.Handler {
 	notFound := func(w http.ResponseWriter, r *http.Request) {
 		o.Problems.Write(w, r, &domain.Error{Code: domain.CodeNotFound, Detail: notFoundDetail})
 	}
-	r.NotFound(notFound)
-	r.MethodNotAllowed(notFound)
+	// Unknown paths and unsupported methods are API requests too, so they pass APIMiddleware (L-1).
+	limitedNotFound := chi.Chain(o.APIMiddleware...).HandlerFunc(notFound).ServeHTTP
+	r.NotFound(limitedNotFound)
+	r.MethodNotAllowed(limitedNotFound)
 
 	// The probes also answer HEAD, which some load balancers send; net/http drops the body.
 	for _, m := range []string{http.MethodGet, http.MethodHead} {
@@ -73,10 +88,20 @@ func NewRouter(o Options) http.Handler {
 		r.Group(o.Dev)
 	}
 	if o.Routes != nil {
+		api := func(r chi.Router) {
+			r.Use(o.APIMiddleware...)
+			o.Routes(r)
+		}
 		if o.BasePath == "" {
-			r.Group(o.Routes)
+			r.Group(api)
 		} else {
-			r.Route(o.BasePath, o.Routes)
+			r.Route(o.BasePath, func(r chi.Router) {
+				// The subrouter's Use already wraps its 404s; the root's handler would pass
+				// APIMiddleware twice.
+				r.NotFound(notFound)
+				r.MethodNotAllowed(notFound)
+				api(r)
+			})
 		}
 	}
 	return r

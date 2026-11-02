@@ -237,5 +237,21 @@ refuses a `delivery.adapter` with no adapter yet, so until WP-44 run it with
 `AUTH1_DELIVERY_ADAPTER=capture` (the serve tests use `serveEnv`); `serveDeps.resolver` replaces
 `unavailableResolver` in tests until WP-43.
 
-`internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
-`internal/adapters/redis`.
+Rate limits (TDD-07 §1, §2, §8): `app.RateLimiter` (`Hit`) is the sliding-window port and
+`app.RateLimits` the helper use cases call: `CheckIP(ctx, rule, ip)` (keyed by `app.IPKey`: IPv4
+whole, IPv6 by /64) or `Check(ctx, rule, key)` for L-15's client id; it returns a `RATE_LIMITED`
+`*domain.Error` with `RetryAfter`, and nil when allowed or when the limiter errs (fail open). The
+rules are `app.Rule` constants named after their `rate_limits` keys; `newRateLimits` in
+`cmd/auth1/ratelimit.go` builds them. `internal/adapters/redis` is the adapter: one Lua script per
+hit at `<redis.prefix>rl:<rule>:<key>`, scored by `app.Clock`, refused hits not counted, every call
+bounded at 100 ms with no retries; it records `auth1_rate_limited_total{rule}` and
+`auth1_rate_limiter_errors_total`. `serve` registers `redis` as a non-critical readiness check.
+The client IP comes from `internal/http/clientip` (`Resolver` over `http.trusted_proxies`, its
+middleware installed by the router for every request via `server.Options.ClientIP`; read it with
+`clientip.From(ctx)` and pass it into commands; never log it). L-1 is `middleware.RateLimit`, in
+`server.Options.APIMiddleware`, which runs on the API routes and every 404 (not the probes or
+`/dev`); `gen.ServiceRoute(basePath)` exempts service operations. Tests use
+`fakes.NewRateLimiter` (counts, no window; `Fail(err)`) and
+`internal/testing/redistest` (`Addr` with a per-test `Prefix`, needing `redistest.Main` in
+`TestMain`; `NewServer` with `Stop`/`Start`, which does not). The Docker gate and the restart proxy
+of pgtest and redistest live in `internal/testing/dockertest`.

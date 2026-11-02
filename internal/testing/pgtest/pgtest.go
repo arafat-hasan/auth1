@@ -17,6 +17,7 @@ import (
 
 	deploypg "github.com/arafat-hasan/auth1/deploy/postgres"
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres/migrate"
+	"github.com/arafat-hasan/auth1/internal/testing/dockertest"
 	"github.com/arafat-hasan/auth1/migrations"
 )
 
@@ -39,24 +40,18 @@ const bootstrapName = "t_bootstrap"
 // templateName is the database that holds the migrated schema; DSN copies it.
 const templateName = "t_template"
 
-// requireDockerEnv, set to 1, turns a missing Docker into a test failure.
-const requireDockerEnv = "AUTH1_REQUIRE_DOCKER"
-
 // startTimeout bounds starting a container and waiting for it to accept connections.
 const startTimeout = 2 * time.Minute
 
 // stopTimeout bounds removing the shared container when the test binary ends.
 const stopTimeout = time.Minute
 
-// The package's shared container and Docker health, each found once per test binary. Main
+// The package's shared container, started once per test binary. Main
 // removes the container after the tests; the testcontainers reaper is only a fallback for a binary
 // that dies before Main returns, since it relies on seeing its client disconnect, and some Docker
 // hosts' port proxy never passes the disconnect on.
 var (
 	inMain atomic.Bool
-
-	dockerOnce   sync.Once
-	dockerHealth error
 
 	sharedOnce sync.Once
 	sharedInst *instance
@@ -162,42 +157,12 @@ func shared(t testing.TB) *instance {
 	if !inMain.Load() {
 		t.Fatal("pgtest: the test package's TestMain must call pgtest.Main")
 	}
-	checkDocker(t)
+	dockertest.Check(t)
 	sharedOnce.Do(func() { sharedInst, sharedErr = start() })
 	if sharedErr != nil {
 		t.Fatalf("pgtest: %v", sharedErr)
 	}
 	return sharedInst
-}
-
-// checkDocker skips or fails t when Docker is not reachable.
-func checkDocker(t testing.TB) {
-	t.Helper()
-	dockerOnce.Do(func() {
-		p, err := testcontainers.NewDockerProvider()
-		if err != nil {
-			dockerHealth = err
-			return
-		}
-		defer func() { _ = p.Close() }()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		dockerHealth = p.Health(ctx)
-	})
-	switch skip, fail := gate(dockerHealth, os.Getenv(requireDockerEnv) == "1"); {
-	case fail:
-		t.Fatalf("pgtest: Docker unavailable and %s=1: %v", requireDockerEnv, dockerHealth)
-	case skip:
-		t.Skipf("pgtest: Docker unavailable (set %s=1 to fail): %v", requireDockerEnv, dockerHealth)
-	}
-}
-
-// gate decides what a test does given Docker's health: run, skip, or fail when Docker is required.
-func gate(health error, require bool) (skip, fail bool) {
-	if health == nil {
-		return false, false
-	}
-	return !require, require
 }
 
 // start runs a container tuned for tests and opens an admin connection to it. On an error it

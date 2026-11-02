@@ -268,6 +268,7 @@ paths:
         '410': { $ref: '#/components/responses/Gone' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/verification-links/confirm:
     post:
@@ -476,6 +477,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/sessions/current:
     delete:
@@ -492,6 +494,7 @@ paths:
           headers:
             Set-Cookie: { $ref: '#/components/headers/ClearRefreshCookie' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me:
     get:
@@ -508,6 +511,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Me' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
     patch:
       tags: [Me]
       operationId: updateMe
@@ -530,6 +534,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/sessions:
     get:
@@ -546,6 +551,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SessionList' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
     delete:
       tags: [Me]
       operationId: signOutOtherSessions
@@ -557,6 +563,7 @@ paths:
         '204': { description: Done }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/sessions/{sessionId}:
     delete:
@@ -573,6 +580,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/password:
     post:
@@ -675,6 +683,7 @@ paths:
         '410': { $ref: '#/components/responses/Gone' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/phone-changes/{flowId}/resend:
     post:
@@ -827,6 +836,7 @@ paths:
         '410': { $ref: '#/components/responses/Gone' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /v1/me/recovery-codes:
     post:

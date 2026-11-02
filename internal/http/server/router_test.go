@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/arafat-hasan/auth1/internal/http/clientip"
 	"github.com/arafat-hasan/auth1/internal/http/health"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/requestid"
@@ -187,5 +189,88 @@ func TestRouterDev(t *testing.T) {
 	NewRouter(testOptions(t, "")).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/dev/messages?to=a", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("without Dev: GET /dev/messages = %d, want 404", rec.Code)
+	}
+}
+
+// TestRouterAPIMiddleware: APIMiddleware runs on the API routes only, so the probes and the
+// development routes are never rate limited.
+func TestRouterAPIMiddleware(t *testing.T) {
+	t.Parallel()
+
+	for _, basePath := range []string{"", "/auth"} {
+		o := testOptions(t, basePath)
+		o.Dev = func(r chi.Router) {
+			r.Get("/dev/messages", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) })
+		}
+		o.APIMiddleware = []func(http.Handler) http.Handler{func(http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+		}}
+		h := NewRouter(o)
+		for path, want := range map[string]int{
+			"/livez": 200, "/readyz": 200, "/dev/messages": 200, basePath + "/v1/ping": http.StatusTeapot,
+		} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != want {
+				t.Errorf("base %q: GET %s = %d, want %d", basePath, path, rec.Code, want)
+			}
+		}
+	}
+}
+
+// TestRouterClientIP: every request carries its client IP, through ClientIP's trusted proxies,
+// or the TCP peer without them.
+func TestRouterClientIP(t *testing.T) {
+	t.Parallel()
+
+	trusted, err := clientip.New([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		resolver *clientip.Resolver
+		want     string
+	}{{nil, "10.0.0.2"}, {trusted, "198.51.100.1"}} {
+		var got netip.Addr
+		o := testOptions(t, "")
+		o.ClientIP = tc.resolver
+		o.Routes = func(r chi.Router) {
+			r.Get("/v1/ip", func(_ http.ResponseWriter, r *http.Request) { got = clientip.From(r.Context()) })
+		}
+		req := httptest.NewRequest(http.MethodGet, "/v1/ip", nil)
+		req.RemoteAddr = "10.0.0.2:80"
+		req.Header.Set("X-Forwarded-For", "198.51.100.1")
+		NewRouter(o).ServeHTTP(httptest.NewRecorder(), req)
+		if got != netip.MustParseAddr(tc.want) {
+			t.Errorf("resolver %v: client IP %v, want %s", tc.resolver != nil, got, tc.want)
+		}
+	}
+}
+
+// TestRouterAPIMiddlewareOn404: every unknown path and unsupported method passes APIMiddleware
+// exactly once, whatever the base path, so L-1 also limits 404 floods.
+func TestRouterAPIMiddlewareOn404(t *testing.T) {
+	t.Parallel()
+
+	for _, basePath := range []string{"", "/auth"} {
+		ran := 0
+		o := testOptions(t, basePath)
+		o.APIMiddleware = []func(http.Handler) http.Handler{func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ran++; next.ServeHTTP(w, r) })
+		}}
+		h := NewRouter(o)
+		for _, req := range []*http.Request{
+			httptest.NewRequest(http.MethodGet, "/nope", nil),
+			httptest.NewRequest(http.MethodGet, basePath+"/v1/nope", nil),
+			httptest.NewRequest(http.MethodPost, basePath+"/v1/ping", nil),
+		} {
+			ran = 0
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound || ran != 1 {
+				t.Errorf("base %q: %s %s = %d with APIMiddleware run %d times; want 404, once",
+					basePath, req.Method, req.URL.Path, rec.Code, ran)
+			}
+		}
 	}
 }
