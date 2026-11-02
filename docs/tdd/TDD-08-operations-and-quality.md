@@ -3,8 +3,8 @@
 | Field | Contents |
 |---|---|
 | Status | Draft |
-| Version | 0.4 |
-| Date | 2026-10-29 |
+| Version | 0.5 |
+| Date | 2026-11-02 |
 | SDD | [design.md](../design.md) 0.8: D-1, D-18, D-19, §6, §13, §14, §15 |
 | Owner | Arafat Hasan |
 
@@ -394,7 +394,8 @@ Each is a short procedure kept in `docs/runbooks/`. To be written with the imple
 - **Resources:** CPU request 1, limit 2. Memory: 256 MiB + `max_concurrent × argon2.memory` + 25%.
 - **Probes:** `/livez` (liveness), `/readyz` (readiness). `/readyz` pings PostgreSQL over one
   connection of its own, outside the `database.max_conns` pool, so a pool whose connections are
-  all busy does not fail it; each instance opens at most `max_conns` + 1 connections.
+  all busy does not fail it. The relay's `LISTEN` (TDD-06 §3.3) holds one more, so each instance
+  opens at most `max_conns` + 2 connections.
 - **Stopping:** on SIGTERM, `/readyz` fails for 5 s, requests in flight get 15 s (the write timeout of TDD-07 §7), then telemetry gets 5 s to flush. At most 25 s, within the default `terminationGracePeriodSeconds` of 30 s.
 - **Migrations:** a pre-deploy job runs `auth1 migrate up`, and `auth1 config check` runs before it.
 - **Image:** distroless, non-root, read-only root filesystem. Secrets are mounted read-only.
