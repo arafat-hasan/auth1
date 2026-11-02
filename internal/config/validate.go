@@ -242,9 +242,9 @@ func (v *validator) argon2() {
 }
 
 // passwordLengths refuses passwords.min_length above passwords.max_length, which would refuse every
-// password (TDD-08 §3.1).
+// password (TDD-08 §3.1). A negative length is the range check's to report.
 func (v *validator) passwordLengths() {
-	if p := v.c.Passwords; p.MinLength > p.MaxLength {
+	if p := v.c.Passwords; p.MaxLength >= 0 && p.MinLength > p.MaxLength {
 		v.add("passwords.min_length", "%d is above passwords.max_length, %d", p.MinLength, p.MaxLength)
 	}
 }

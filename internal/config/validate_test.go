@@ -325,6 +325,9 @@ func TestValidateRules(t *testing.T) {
 			want: []string{"passwords.argon2.memory"}},
 		{name: "negative length", change: func(c *Config) { c.Passwords.MinLength = -1 },
 			want: []string{"passwords.min_length"}},
+		// Only the range check reports a negative maximum, not min_length above it as well.
+		{name: "negative max length", change: func(c *Config) { c.Passwords.MaxLength = -1 },
+			want: []string{"passwords.max_length"}},
 		{name: "zero access ttl", change: func(c *Config) { c.Tokens.AccessTTL = 0 },
 			want: []string{"tokens.access_ttl"}},
 		{name: "zero reset ttl", change: func(c *Config) { c.Links.ResetTTL = 0 },
