@@ -193,6 +193,34 @@ func TestClosedChallengeNotSent(t *testing.T) {
 	}
 }
 
+// TestDroppedBacklogDoesNotDelay checks that messages whose challenge is gone, due before a fresh
+// one, are cleared at once rather than a few per poll: one wake-up, no poll, and the fresh notice is
+// sent.
+func TestDroppedBacklogDoesNotDelay(t *testing.T) {
+	t.Parallel()
+	e := newPGEnv(t)
+	var reqs []app.DeliveryRequest
+	for range 100 {
+		gone := uuid.New()
+		deadline := time.Now().Add(time.Hour)
+		reqs = append(reqs, app.DeliveryRequest{
+			RequestID: gone.String() + ":1", Type: "auth.sign_in_code", Channel: "sms", Locale: "en",
+			Recipient: app.IdentifierRef(uuid.New()), Variables: map[string]any{"code": app.SecretRef(gone)},
+			Deadline: &deadline,
+		})
+	}
+	e.write(t, reqs...)
+	e.write(t, notice())
+	c := &counter{sends: map[string]int{}}
+	start(t, options(e.relayOn(t), c)) // poll 1 h: only Run's first claim
+	e.waitPending(t, 5*time.Second)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.sends) != 1 {
+		t.Errorf("sent %d messages, want the notice", len(c.sends))
+	}
+}
+
 // TestRetryThenPark checks the issue's third done-when item against the database: a transient
 // failure (a 5xx) is retried after the backoff, and parked once max_attempts is spent; a request
 // error (a 4xx) is parked at once.

@@ -72,12 +72,12 @@ func (e *relayEnv) write(t *testing.T, accountID uuid.UUID, req app.DeliveryRequ
 // claim claims up to 100 rows for lease and returns them by row id.
 func (e *relayEnv) claim(t *testing.T, lease time.Duration) map[uuid.UUID]app.ClaimedDelivery {
 	t.Helper()
-	cs, err := e.relay.Claim(t.Context(), 100, lease)
+	claim, err := e.relay.Claim(t.Context(), 100, lease)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := map[uuid.UUID]app.ClaimedDelivery{}
-	for _, c := range cs {
+	for _, c := range claim.Rows {
 		out[c.Row.ID] = c
 	}
 	return out
@@ -172,12 +172,12 @@ func TestDeliveryClaimSkipsLocked(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	cs, err := e.relay.Claim(ctx, 100, time.Minute)
+	claim, err := e.relay.Claim(ctx, 100, time.Minute)
 	if err != nil {
 		t.Fatalf("claim while a row is locked: %v", err)
 	}
-	if len(cs) != 1 || cs[0].Row.ID != free {
-		t.Errorf("claim = %v, want only the unlocked row", cs)
+	if len(claim.Rows) != 1 || claim.Rows[0].Row.ID != free || claim.Locked != 1 {
+		t.Errorf("claim = %+v, want only the unlocked row", claim)
 	}
 }
 
@@ -248,6 +248,8 @@ func TestDeliveryClaimParksInvalidBody(t *testing.T) {
 		"no recipient":     `{"request_id":"r","type":"t","channel":"email","locale":"en","variables":{}}`,
 		"challenge not id": `{"request_id":"nope:1","type":"t","channel":"email","locale":"en","recipient":"auth1:identifier:x","variables":{}}`,
 		"not an object":    `[]`,
+		"null variable":    `{"request_id":"r","type":"t","channel":"email","locale":"en","recipient":"auth1:identifier:x","variables":{"n":null}}`,
+		"bool variable":    `{"request_id":"r","type":"t","channel":"email","locale":"en","recipient":"auth1:identifier:x","variables":{"n":true}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -262,6 +264,35 @@ func TestDeliveryClaimParksInvalidBody(t *testing.T) {
 				t.Errorf("row = %+v, want parked: body invalid", s)
 			}
 		})
+	}
+}
+
+// TestDeliveryClaimReportsLocked checks what a claim reports beyond its leased rows: how many rows
+// it locked, dropped and parked ones included, so the relay knows more may be due, and which rows it
+// parked for their body, so the relay can log them.
+func TestDeliveryClaimReportsLocked(t *testing.T) {
+	t.Parallel()
+	e := relayDB(t)
+	challengeID, _ := e.challengeMessage(t)
+	e.exec(t, "DELETE FROM challenges WHERE id = ?", challengeID)
+	// Below every id the fake generator gives, so that write still finds its own row last.
+	invalid := uuid.MustParse("00000000-0000-4000-8000-000000000001")
+	e.exec(t, `INSERT INTO outbox (id, destination, type, body, created_at, next_attempt_at)
+		VALUES (?, 'delivery', 't', '[]', now(), now())`, invalid)
+	leased := e.notice(t, e.flowAccount(t))
+
+	claim, err := e.relay.Claim(t.Context(), 10, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claim.Locked != 3 || len(claim.Rows) != 1 || claim.Rows[0].Row.ID != leased {
+		t.Errorf("claim = %+v, want 3 locked and the notice leased", claim)
+	}
+	if diff := cmp.Diff([]uuid.UUID{invalid}, claim.Invalid); diff != "" {
+		t.Errorf("invalid (-want +got):\n%s", diff)
+	}
+	if claim, err := e.relay.Claim(t.Context(), 10, time.Minute); err != nil || claim.Locked != 0 {
+		t.Errorf("second claim = %+v, %v; want nothing locked", claim, err)
 	}
 }
 

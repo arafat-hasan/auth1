@@ -33,7 +33,9 @@ type call struct {
 type fakeOutbox struct {
 	mu       sync.Mutex
 	queue    []app.ClaimedDelivery
-	claims   []int // n of each Claim
+	dropped  int         // rows due before queue that a claim locks and finishes without leasing
+	invalid  []uuid.UUID // rows the next claim parks for their body
+	claims   []int       // n of each Claim
 	calls    []call
 	stats    app.OutboxStats
 	recorded chan struct{} // signalled after each outcome write
@@ -44,17 +46,22 @@ func newFakeOutbox(rows ...app.ClaimedDelivery) *fakeOutbox {
 	return &fakeOutbox{queue: rows, recorded: make(chan struct{}, 100)}
 }
 
-func (f *fakeOutbox) Claim(_ context.Context, n int, _ time.Duration) ([]app.ClaimedDelivery, error) {
+func (f *fakeOutbox) Claim(_ context.Context, n int, _ time.Duration) (app.DeliveryClaim, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claims = append(f.claims, n)
 	if f.claimErr != nil {
-		return nil, f.claimErr
+		return app.DeliveryClaim{}, f.claimErr
 	}
-	k := min(n, len(f.queue))
-	out := f.queue[:k]
+	c := app.DeliveryClaim{Invalid: f.invalid}
+	f.invalid = nil
+	c.Locked = min(n, f.dropped+len(c.Invalid))
+	f.dropped -= min(f.dropped, c.Locked)
+	k := min(n-c.Locked, len(f.queue))
+	c.Rows = f.queue[:k]
 	f.queue = f.queue[k:]
-	return out, nil
+	c.Locked += k
+	return c, nil
 }
 
 func (f *fakeOutbox) record(c call) error {
@@ -434,6 +441,37 @@ func TestDeliveriesLogsClaimFailureOnce(t *testing.T) {
 	for deadline := time.Now().Add(5 * time.Second); logs.count(`msg="claim deliveries recovered"`) == 0; time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the recovery was not logged")
+		}
+	}
+}
+
+// TestDeliveriesClaimsPastDroppedRows checks that a claim whose rows were all dropped is followed
+// by another at once: rows still due behind them, fresh OTPs among them, wait for no poll.
+func TestDeliveriesClaimsPastDroppedRows(t *testing.T) {
+	t.Parallel()
+	o := newFakeOutbox(claimed(1, 1))
+	o.dropped = 100
+	start(t, options(o, answer(app.DeliveryOutcome{Result: app.DeliverySent}))) // poll 1 h, no wake-up
+	if got := o.waitCalls(t, 1); got[0].Op != "publish" {
+		t.Errorf("outcome = %+v, want the row behind the dropped ones published", got[0])
+	}
+}
+
+// TestDeliveriesLogsInvalidBodies checks that a row the claim parks for its body is logged like
+// any other parked row: it needs an operator.
+func TestDeliveriesLogsInvalidBodies(t *testing.T) {
+	t.Parallel()
+	o := newFakeOutbox()
+	bad := claimed(7, 0).Row.ID
+	o.invalid = []uuid.UUID{bad}
+	var logs syncBuffer
+	opt := options(o, answer(app.DeliveryOutcome{Result: app.DeliverySent}))
+	opt.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	start(t, opt)
+	want := `msg="delivery parked" row=` + bad.String() + ` reason="parked: body invalid"`
+	for deadline := time.Now().Add(5 * time.Second); logs.count(want) == 0; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no log line %s", want)
 		}
 	}
 }

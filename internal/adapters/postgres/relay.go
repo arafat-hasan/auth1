@@ -54,10 +54,10 @@ type claimedRow struct {
 }
 
 // Claim implements app.DeliveryOutbox.
-func (o *DeliveryOutbox) Claim(ctx context.Context, n int, lease time.Duration) ([]app.ClaimedDelivery, error) {
-	var out []app.ClaimedDelivery
+func (o *DeliveryOutbox) Claim(ctx context.Context, n int, lease time.Duration) (app.DeliveryClaim, error) {
+	var out app.DeliveryClaim
 	err := o.uow.Do(ctx, func(ctx context.Context) error {
-		out = nil
+		out = app.DeliveryClaim{}
 		db := Conn(ctx, o.db)
 		var rows []claimedRow
 		if err := db.NewRaw(`
@@ -69,6 +69,7 @@ func (o *DeliveryOutbox) Claim(ctx context.Context, n int, lease time.Duration) 
 			FOR UPDATE SKIP LOCKED`, noticeMaxAge.Microseconds(), n).Scan(ctx, &rows); err != nil {
 			return fmt.Errorf("claim deliveries: %w", err)
 		}
+		out.Locked = len(rows)
 		if len(rows) == 0 {
 			return nil
 		}
@@ -86,6 +87,7 @@ func (o *DeliveryOutbox) Claim(ctx context.Context, n int, lease time.Duration) 
 			switch {
 			case err != nil:
 				finish[errBodyInvalid] = append(finish[errBodyInvalid], r.ID)
+				out.Invalid = append(out.Invalid, r.ID)
 			case challenge == uuid.Nil && r.Expired:
 				finish[errNoticeExpired] = append(finish[errNoticeExpired], r.ID)
 			default:
@@ -106,7 +108,7 @@ func (o *DeliveryOutbox) Claim(ctx context.Context, n int, lease time.Duration) 
 				continue
 			}
 			leased = append(leased, d.row.ID)
-			out = append(out, app.ClaimedDelivery{
+			out.Rows = append(out.Rows, app.ClaimedDelivery{
 				Attempt: d.row.Attempts + 1,
 				Row:     app.DeliveryRow{ID: d.row.ID, AccountID: d.row.Subject.UUID, Request: d.req},
 			})
@@ -131,7 +133,7 @@ func (o *DeliveryOutbox) Claim(ctx context.Context, n int, lease time.Duration) 
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return app.DeliveryClaim{}, err
 	}
 	return out, nil
 }
@@ -178,6 +180,10 @@ func decodeDelivery(body string) (app.DeliveryRequest, uuid.UUID, error) {
 	}
 	vars := make(map[string]any, len(b.Variables))
 	for k, v := range b.Variables {
+		if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+			// null unmarshals into a string without error, as nothing.
+			return app.DeliveryRequest{}, uuid.Nil, errBody
+		}
 		var s string
 		if err := json.Unmarshal(v, &s); err == nil {
 			vars[k] = s

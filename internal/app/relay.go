@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ErrClaimLost is returned by a DeliveryOutbox outcome write when the row is no longer leased to
@@ -18,6 +20,17 @@ type ClaimedDelivery struct {
 	Attempt int
 }
 
+// DeliveryClaim is what one DeliveryOutbox.Claim did.
+type DeliveryClaim struct {
+	// Rows are the rows leased to the caller.
+	Rows []ClaimedDelivery
+	// Locked counts the rows the claim locked: leased, dropped and parked. Fewer than asked means
+	// no other row is due; as many means more may be.
+	Locked int
+	// Invalid are the rows parked because their body is not a delivery request.
+	Invalid []uuid.UUID
+}
+
 // OutboxStats is the delivery backlog the relay reports (TDD-08 §5.2).
 type OutboxStats struct {
 	// OldestAge is the age of the oldest row neither published nor parked; zero when none.
@@ -29,11 +42,11 @@ type OutboxStats struct {
 // DeliveryOutbox is the delivery relay's view of the outbox (TDD-06 §3.2). Each method is one
 // short transaction of its own; none is open while the relay sends (G-4).
 type DeliveryOutbox interface {
-	// Claim leases up to n due rows for lease: their attempts grow by one and they are not due
-	// again until the lease ends. Before leasing, it marks published, unsent, the rows that can
-	// no longer work (a challenge not open, a notice older than 24 h), and parks rows whose body
-	// is not a delivery request.
-	Claim(ctx context.Context, n int, lease time.Duration) ([]ClaimedDelivery, error)
+	// Claim locks up to n due rows and leases them for lease: their attempts grow by one and they
+	// are not due again until the lease ends. Before leasing, it marks published, unsent, the rows
+	// that can no longer work (a challenge not open, a notice older than 24 h), and parks rows
+	// whose body is not a delivery request.
+	Claim(ctx context.Context, n int, lease time.Duration) (DeliveryClaim, error)
 	// Publish marks the row published, with lastError (empty when it was sent; the reason when
 	// it was dropped).
 	Publish(ctx context.Context, c ClaimedDelivery, lastError string) error

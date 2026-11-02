@@ -148,7 +148,7 @@ func (d *Deliveries) claim(ctx context.Context, busy chan struct{}, freed chan s
 		if n == 0 {
 			return
 		}
-		rows, err := d.o.Outbox.Claim(ctx, n, d.o.Lease)
+		claim, err := d.o.Outbox.Claim(ctx, n, d.o.Lease)
 		if err != nil {
 			if ctx.Err() == nil && !d.claimFailing {
 				d.claimFailing = true
@@ -160,7 +160,10 @@ func (d *Deliveries) claim(ctx context.Context, busy chan struct{}, freed chan s
 			d.claimFailing = false
 			d.o.Logger.Info("claim deliveries recovered")
 		}
-		for _, c := range rows {
+		for _, id := range claim.Invalid {
+			d.logParked(ctx, id.String(), "", "parked: body invalid")
+		}
+		for _, c := range claim.Rows {
 			busy <- struct{}{}
 			wg.Add(1)
 			go func() {
@@ -173,7 +176,9 @@ func (d *Deliveries) claim(ctx context.Context, busy chan struct{}, freed chan s
 				}
 			}()
 		}
-		if len(rows) < n {
+		// A claim that locked fewer rows than asked found no more due. One that locked as many may
+		// have dropped them all, with more due behind them: claim again.
+		if claim.Locked < n {
 			return
 		}
 	}
@@ -220,10 +225,19 @@ func (d *Deliveries) park(ctx context.Context, c app.ClaimedDelivery, reason str
 	if err := d.o.Outbox.Park(ctx, c, reason); err != nil {
 		return err
 	}
-	// The reason names references and statuses, never values (G-6).
-	d.o.Logger.Warn("delivery parked", slog.String("row", c.Row.ID.String()),
-		slog.String("type", c.Row.Request.Type), slog.String("reason", reason))
+	d.logParked(ctx, c.Row.ID.String(), c.Row.Request.Type, reason)
 	return nil
+}
+
+// logParked logs a parked row; typ is empty when the body could not be read. The reason names
+// references and statuses, never values (G-6).
+func (d *Deliveries) logParked(ctx context.Context, row, typ, reason string) {
+	attrs := []slog.Attr{slog.String("row", row)}
+	if typ != "" {
+		attrs = append(attrs, slog.String("type", typ))
+	}
+	attrs = append(attrs, slog.String("reason", reason))
+	d.o.Logger.LogAttrs(ctx, slog.LevelWarn, "delivery parked", attrs...)
 }
 
 // recordStats refreshes the backlog gauges. A failure is logged and the gauges keep their values.
