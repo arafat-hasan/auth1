@@ -1,10 +1,12 @@
 package relay_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -390,4 +392,48 @@ func TestDeliveriesRecordsMetrics(t *testing.T) {
 		}
 	}
 	t.Errorf("gauges = %v, want %v", got, want)
+}
+
+// syncBuffer is a bytes.Buffer safe for the relay's goroutines.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) count(sub string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Count(s.b.String(), sub)
+}
+
+// TestDeliveriesLogsClaimFailureOnce checks that a database outage logs one error, not one per
+// poll, and that the recovery is logged.
+func TestDeliveriesLogsClaimFailureOnce(t *testing.T) {
+	t.Parallel()
+	o := newFakeOutbox()
+	o.claimErr = errors.New("database down")
+	var logs syncBuffer
+	opt := options(o, answer(app.DeliveryOutcome{Result: app.DeliverySent}))
+	opt.PollInterval, opt.Logger = 5*time.Millisecond, slog.New(slog.NewTextHandler(&logs, nil))
+	start(t, opt)
+	for deadline := time.Now().Add(5 * time.Second); o.claimCount() < 10 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := logs.count(`msg="claim deliveries"`); n != 1 {
+		t.Errorf("%d claim errors logged over %d failed claims, want 1", n, o.claimCount())
+	}
+	o.mu.Lock()
+	o.claimErr = nil
+	o.mu.Unlock()
+	for deadline := time.Now().Add(5 * time.Second); logs.count(`msg="claim deliveries recovered"`) == 0; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the recovery was not logged")
+		}
+	}
 }

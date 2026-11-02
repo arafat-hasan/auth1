@@ -64,6 +64,9 @@ type Options struct {
 // Deliveries relays delivery rows to the MessageDelivery adapter (TDD-06 §3.2).
 type Deliveries struct {
 	o Options
+	// claimFailing is set while claims fail, so an outage is logged once, not at every poll. Only
+	// Run's goroutine reads and writes it.
+	claimFailing bool
 }
 
 // NewDeliveries returns the delivery relay. It refuses a missing outbox or adapter: the
@@ -147,10 +150,15 @@ func (d *Deliveries) claim(ctx context.Context, busy chan struct{}, freed chan s
 		}
 		rows, err := d.o.Outbox.Claim(ctx, n, d.o.Lease)
 		if err != nil {
-			if ctx.Err() == nil {
+			if ctx.Err() == nil && !d.claimFailing {
+				d.claimFailing = true
 				d.o.Logger.Error("claim deliveries", slog.Any("error", err))
 			}
 			return
+		}
+		if d.claimFailing {
+			d.claimFailing = false
+			d.o.Logger.Info("claim deliveries recovered")
 		}
 		for _, c := range rows {
 			busy <- struct{}{}

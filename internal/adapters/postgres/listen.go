@@ -58,7 +58,7 @@ func (l *Listener) Run(ctx context.Context) error {
 		if connected {
 			delay = listenRetryFirst
 		}
-		l.logger.Warn("outbox listener lost", slog.Any("error", err), slog.Duration("retry_in", delay))
+		l.logger.Warn("outbox listener lost", slog.Any("error", err), slog.Float64("retry_in", delay.Seconds()))
 		select {
 		case <-ctx.Done():
 			return nil
