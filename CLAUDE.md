@@ -219,8 +219,8 @@ bounded at 100 ms with no retries; it records `auth1_rate_limited_total{rule}` a
 The client IP comes from `internal/http/clientip` (`Resolver` over `http.trusted_proxies`, its
 middleware installed by the router for every request via `server.Options.ClientIP`; read it with
 `clientip.From(ctx)` and pass it into commands; never log it). L-1 is `middleware.RateLimit`, in
-`server.Options.APIMiddleware`, which runs on the API routes only; `gen.ServiceRoute(basePath)`
-exempts service operations. Tests use `fakes.NewRateLimiter` (counts, no window; `Fail(err)`) and
+`server.Options.APIMiddleware`, which runs on the API routes and every 404 (not the probes or
+`/dev`); `gen.ServiceRoute(basePath)` exempts service operations. Tests use `fakes.NewRateLimiter` (counts, no window; `Fail(err)`) and
 `internal/testing/redistest` (`Addr` with a per-test `Prefix`, needing `redistest.Main` in
 `TestMain`; `NewServer` with `Stop`/`Start`, which does not). The Docker gate and the restart proxy
 of pgtest and redistest live in `internal/testing/dockertest`.
