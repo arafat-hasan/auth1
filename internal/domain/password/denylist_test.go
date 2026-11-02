@@ -32,6 +32,30 @@ func TestParseDenyList(t *testing.T) {
 	}
 }
 
+// TestParseDenyListByteOrderMark: a leading byte order mark is removed; one elsewhere is kept.
+func TestParseDenyListByteOrderMark(t *testing.T) {
+	t.Parallel()
+	const bom = "\xef\xbb\xbf"
+	d, err := ParseDenyList(strings.NewReader(bom + "password1\n" + bom + "letmein\n"))
+	if err != nil {
+		t.Fatalf("ParseDenyList: %v", err)
+	}
+	if !d.contains(fold([]byte("password1"))) {
+		t.Error("first entry not listed after a leading byte order mark")
+	}
+	if d.contains(fold([]byte("letmein"))) {
+		t.Error("a byte order mark on line 2 was removed")
+	}
+	longest := strings.Repeat("x", maxLine)
+	d, err = ParseDenyList(strings.NewReader(bom + longest + "\r\n"))
+	if err != nil {
+		t.Fatalf("a first line of %d bytes after a byte order mark: %v", maxLine, err)
+	}
+	if !d.contains(fold([]byte(longest))) {
+		t.Error("the longest first line not listed")
+	}
+}
+
 func TestParseDenyListEmpty(t *testing.T) {
 	t.Parallel()
 	d, err := ParseDenyList(strings.NewReader(""))
