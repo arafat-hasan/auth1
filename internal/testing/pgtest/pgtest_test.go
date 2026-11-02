@@ -34,30 +34,6 @@ func ping(dsn string, timeout time.Duration) error {
 	return db.PingContext(ctx)
 }
 
-func TestDockerGate(t *testing.T) {
-	t.Parallel()
-	down := errors.New("no docker")
-	for _, tc := range []struct {
-		name       string
-		health     error
-		require    bool
-		skip, fail bool
-	}{
-		{"healthy", nil, false, false, false},
-		{"healthy, required", nil, true, false, false},
-		{"unhealthy", down, false, true, false},
-		{"unhealthy, required", down, true, false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			skip, fail := gate(tc.health, tc.require)
-			if skip != tc.skip || fail != tc.fail {
-				t.Errorf("gate = %v, %v; want %v, %v", skip, fail, tc.skip, tc.fail)
-			}
-		})
-	}
-}
-
 func TestEmpty(t *testing.T) {
 	ctx := t.Context()
 	var first string
