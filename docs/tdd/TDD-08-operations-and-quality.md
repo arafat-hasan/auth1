@@ -261,6 +261,8 @@ telemetry:
   not a whole number of KiB, `iterations` or `parallelism` above 16; or `memory` below Argon2's
   own 8KiB per lane of `parallelism`. These apply in every environment;
 - `delivery.adapter: capture` or no `service_auth.mode` outside `development`;
+- an `http.trusted_proxies` entry that is not a CIDR; outside `development`, one with a /0 prefix,
+  which would trust every peer and let any client choose its own address (TDD-07 §1);
 - a client role outside the catalog;
 - a client origin that is not exactly a scheme and host, or that is not `https` outside
   `development`; a service client's `jwks_uri` that is not an absolute URL, or not `https`
