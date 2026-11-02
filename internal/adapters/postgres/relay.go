@@ -250,16 +250,27 @@ func (o *DeliveryOutbox) finish(ctx context.Context, c app.ClaimedDelivery, set 
 	return nil
 }
 
+// The backlog queries. Each reads one partial index (outbox_delivery_pending, outbox_parked), not
+// the outbox, which keeps published rows for 7 days: their WHERE clauses must match the indexes'.
+const (
+	statsAgeQuery = `
+		SELECT extract(epoch FROM now() - min(created_at)) FROM outbox
+		WHERE destination = 'delivery' AND published_at IS NULL AND parked_at IS NULL`
+	statsParkedQuery = `
+		SELECT count(*) FROM outbox
+		WHERE destination = 'delivery' AND published_at IS NULL AND parked_at IS NOT NULL`
+)
+
 // Stats implements app.DeliveryOutbox.
 func (o *DeliveryOutbox) Stats(ctx context.Context) (app.OutboxStats, error) {
 	var age sql.NullFloat64
 	var parked int
-	err := Conn(ctx, o.db).NewRaw(`
-		SELECT extract(epoch FROM now() - min(created_at) FILTER (WHERE parked_at IS NULL)),
-		       count(*) FILTER (WHERE parked_at IS NOT NULL)
-		FROM outbox WHERE destination = 'delivery' AND published_at IS NULL`).Scan(ctx, &age, &parked)
-	if err != nil {
+	db := Conn(ctx, o.db)
+	if err := db.NewRaw(statsAgeQuery).Scan(ctx, &age); err != nil {
 		return app.OutboxStats{}, fmt.Errorf("read delivery backlog: %w", err)
+	}
+	if err := db.NewRaw(statsParkedQuery).Scan(ctx, &parked); err != nil {
+		return app.OutboxStats{}, fmt.Errorf("read parked deliveries: %w", err)
 	}
 	return app.OutboxStats{OldestAge: time.Duration(age.Float64 * float64(time.Second)), Parked: parked}, nil
 }
