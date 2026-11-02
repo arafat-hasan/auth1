@@ -40,14 +40,15 @@ type Policy struct {
 // variants are the Variants of the account's identifiers (TDD-01 §2). password is not modified.
 func Check(password []byte, variants []string, p Policy) []Reason {
 	var out []Reason
-	n := utf8.RuneCount(norm.NFKC.Bytes(password))
+	nfkc := norm.NFKC.Bytes(password) // may be password itself; never written to
+	n := utf8.RuneCount(nfkc)
 	if n < p.MinLength {
 		out = append(out, TooShort)
 	}
 	if n > p.MaxLength {
 		out = append(out, TooLong)
 	}
-	folded := fold(password)
+	folded := foldNFKC(nfkc)
 	for _, v := range variants {
 		fv := fold([]byte(v))
 		if utf8.RuneCount(fv) >= minVariant && bytes.Contains(folded, fv) {
@@ -74,7 +75,8 @@ func Rejected(reasons []Reason) error {
 }
 
 // fold returns the comparison form of s, NFKC(fold(NFKC(s))) with full case folding (TDD-03 §2),
-// in a new slice. A Caser holds state, so each call makes its own.
-func fold(s []byte) []byte {
-	return norm.NFKC.Bytes(cases.Fold().Bytes(norm.NFKC.Bytes(s)))
-}
+// in a new slice.
+func fold(s []byte) []byte { return foldNFKC(norm.NFKC.Bytes(s)) }
+
+// foldNFKC is fold for s already in NFKC. A Caser holds state, so each call makes its own.
+func foldNFKC(s []byte) []byte { return norm.NFKC.Bytes(cases.Fold().Bytes(s)) }
