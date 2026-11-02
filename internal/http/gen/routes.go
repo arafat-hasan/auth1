@@ -3,6 +3,7 @@ package gen
 import (
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/go-chi/chi/v5"
 
@@ -33,5 +34,29 @@ func Routes(si StrictServerInterface, pw *problem.Writer) func(chi.Router) {
 	})
 	return func(r chi.Router) {
 		HandlerWithOptions(h, ChiServerOptions{BaseRouter: r, ErrorHandlerFunc: invalid})
+	}
+}
+
+// ServiceRoute returns a predicate telling, before dispatch, whether a request is for a service
+// operation (security workload or serviceToken) mounted under basePath. L-1 exempts them: their
+// callers share a sidecar's address (TDD-07 §8). It finds the route through the Chi router that
+// is handling the request, so it works in middleware installed with Use.
+func ServiceRoute(basePath string) func(*http.Request) bool {
+	service := map[string]bool{}
+	for _, op := range Operations {
+		if slices.Contains(op.Security, "workload") || slices.Contains(op.Security, "serviceToken") {
+			service[op.Method+" "+basePath+op.Path] = true
+		}
+	}
+	return func(r *http.Request) bool {
+		rctx := chi.RouteContext(r.Context())
+		if rctx == nil || rctx.Routes == nil {
+			return false
+		}
+		path := r.URL.RawPath
+		if path == "" {
+			path = r.URL.Path
+		}
+		return service[r.Method+" "+rctx.Routes.Find(chi.NewRouteContext(), r.Method, path)]
 	}
 }
