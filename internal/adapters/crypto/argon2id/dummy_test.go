@@ -58,10 +58,13 @@ func TestVerifyDummyAfterKeyRemoved(t *testing.T) {
 }
 
 // TestDummyTiming: verifying against the dummy takes as long as against a real hash, within 20%
-// (TDD-03 §1.4 step 4). Real and dummy verifications are interleaved, so load on the machine
-// affects both alike, and their medians are compared. Argon2id's core is assembly, which the race
-// detector does not instrument, so -race slows both alike too. A noisy neighbour can still skew
-// one attempt; the test passes if one of three is within 20%, and logs every attempt.
+// (TDD-03 §1.4 step 4). Each round times a real and a dummy verification back to back, in
+// alternating order, and the test compares the median of the per-round ratios: load on the machine
+// that drifts over the run then affects both halves of a round alike, where a ratio of two medians
+// taken over the whole run moves by more than 20% even between two real verifications. Argon2id's
+// core is assembly, which the race detector does not instrument, so -race slows both alike too. A
+// noisy neighbour can still skew one attempt; the test passes if one of three is within 20%, and
+// logs every attempt.
 func TestDummyTiming(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing test")
@@ -92,13 +95,20 @@ func TestDummyTiming(t *testing.T) {
 	verifyDummy()
 	for attempt := 1; attempt <= attempts; attempt++ {
 		var rs, ds []time.Duration
-		for range rounds {
-			rs = append(rs, timed(verifyReal))
-			ds = append(ds, timed(verifyDummy))
+		var ratios []float64
+		for i := range rounds {
+			var r, d time.Duration
+			if i%2 == 0 {
+				r, d = timed(verifyReal), timed(verifyDummy)
+			} else {
+				d, r = timed(verifyDummy), timed(verifyReal)
+			}
+			rs, ds = append(rs, r), append(ds, d)
+			ratios = append(ratios, float64(d)/float64(r))
 		}
-		r, d := median(rs), median(ds)
-		ratio := float64(d) / float64(r)
-		t.Logf("attempt %d: median real %s, dummy %s, ratio %.3f", attempt, r, d, ratio)
+		slices.Sort(ratios)
+		ratio := ratios[len(ratios)/2]
+		t.Logf("attempt %d: median real %s, dummy %s, median ratio %.3f", attempt, median(rs), median(ds), ratio)
 		if ratio >= 0.8 && ratio <= 1.2 {
 			return
 		}
