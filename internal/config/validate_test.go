@@ -293,6 +293,10 @@ func TestValidateRules(t *testing.T) {
 			want: []string{"delivery.adapter"}, devRelaxed: true},
 		{name: "no service auth mode", change: func(c *Config) { c.ServiceAuth.Mode = "" },
 			want: []string{"service_auth.mode"}, devRelaxed: true},
+		{name: "trusted proxy of every IPv4 address", change: func(c *Config) { c.HTTP.TrustedProxies = []string{"10.0.0.0/8", "0.0.0.0/0"} },
+			want: []string{"http.trusted_proxies[1]"}, devRelaxed: true},
+		{name: "trusted proxy of every IPv6 address", change: func(c *Config) { c.HTTP.TrustedProxies = []string{"::/0"} },
+			want: []string{"http.trusted_proxies[0]"}, devRelaxed: true},
 		{name: "plain http origin", change: func(c *Config) {
 			c.Clients[0].Origins = []string{"https://a.example.test", "http://b.example.test"}
 		}, want: []string{"clients[0].origins[1]"}, devRelaxed: true},

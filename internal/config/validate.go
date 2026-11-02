@@ -304,6 +304,11 @@ func (v *validator) productionOnly() {
 	if c.ServiceAuth.Mode == "" {
 		v.add("service_auth.mode", "required outside development")
 	}
+	for i, p := range c.HTTP.TrustedProxies {
+		if pf, err := netip.ParsePrefix(p); err == nil && pf.Bits() == 0 {
+			v.add(index("http.trusted_proxies", i), "%q trusts every peer, so any client could choose its address", p)
+		}
+	}
 }
 
 // oneOf reports a value outside its set. An empty value is allowed only when allowEmpty is set.
