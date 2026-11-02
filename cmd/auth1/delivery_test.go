@@ -14,9 +14,15 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/arafat-hasan/auth1/internal/adapters/delivery/capture"
+	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
 	"github.com/arafat-hasan/auth1/internal/adapters/system"
+	"github.com/arafat-hasan/auth1/internal/app"
 	"github.com/arafat-hasan/auth1/internal/config"
 	"github.com/arafat-hasan/auth1/internal/testing/pgtest"
 )
@@ -75,7 +81,7 @@ func TestServeT17Capture(t *testing.T) {
 }
 
 // TestServeCaptureInDevelopment: in development with capture, serve answers GET /dev/messages at
-// the root; with another adapter it does not.
+// the root.
 func TestServeCaptureInDevelopment(t *testing.T) {
 	env := append(dsnEnv(t, pgtest.DSN(t)), promoteAtOnce, "AUTH1_DELIVERY_ADAPTER=capture")
 	api := startServe(t, env)
@@ -93,6 +99,87 @@ func TestServeCaptureInDevelopment(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-store" ||
 		strings.TrimSpace(string(b)) != `{"messages":[]}` {
 		t.Errorf("GET /dev/messages = %d %v %s", resp.StatusCode, resp.Header, b)
+	}
+}
+
+// TestServeRefusesMissingAdapter: serve does not start with a delivery adapter that is not built
+// yet (notification until WP-44, direct until WP-45), since its relay could send nothing.
+func TestServeRefusesMissingAdapter(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+	restoreDefaults(t)
+
+	var bound atomic.Bool
+	deps := serveDeps{listen: func(string, string) (net.Listener, error) {
+		bound.Store(true)
+		return nil, errors.New("must not bind")
+	}}
+	for _, adapter := range []string{"notification", "direct"} {
+		env := append(slices.Clone(developmentEnv), "AUTH1_DELIVERY_ADAPTER="+adapter)
+		if adapter == "direct" {
+			// direct needs its settings to pass Validate.
+			env = append(env, "AUTH1_DELIVERY_DIRECT_SMTP_HOST=smtp.example.org", "AUTH1_DELIVERY_DIRECT_SMTP_FROM=a@example.org",
+				"AUTH1_DELIVERY_DIRECT_SMTP_PASSWORD_FILE=go.mod", "AUTH1_DELIVERY_DIRECT_TEMPLATES_DIR=docs")
+		}
+		var out bytes.Buffer
+		err := newTestServeCmd(deps, &out, env, "--config", "config.example.yaml")(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "delivery.adapter: "+adapter+" has no adapter yet") {
+			t.Errorf("%s: serve = %v, want the missing adapter refused\n%s", adapter, err, out.String())
+		}
+	}
+	if bound.Load() {
+		t.Error("serve bound a listener without a delivery adapter")
+	}
+}
+
+// resolveAll is a delivery resolver that answers every reference: the recipient as
+// ada@example.org, any other reference as "value of <reference>".
+type resolveAll struct{}
+
+func (resolveAll) Resolve(_ context.Context, _ string, refs []string) (map[string]string, error) {
+	out := map[string]string{}
+	for i, r := range refs {
+		out[r] = "value of " + r
+		if i == 0 {
+			out[r] = "ada@example.org"
+		}
+	}
+	return out, nil
+}
+
+// TestServeRelaysDeliveries: serve runs the delivery relay, which hands a committed delivery row to
+// the adapter (TDD-06 §3.2): with capture, it appears at GET /dev/messages.
+func TestServeRelaysDeliveries(t *testing.T) {
+	dsn := pgtest.DSN(t)
+	api := startServe(t, append(dsnEnv(t, dsn), promoteAtOnce), func(d *serveDeps) { d.resolver = resolveAll{} })
+
+	path := filepath.Join(t.TempDir(), "dsn")
+	writeFile(t, path, pgtest.As(t, dsn, pgtest.App))
+	db, err := postgres.Open(config.Database{DSNFile: config.NewSecretFile(path), MaxConns: 2}, config.EnvDevelopment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	uow := postgres.NewUnitOfWork(db, 5*time.Second, noop.NewTracerProvider())
+	outbox := postgres.NewOutbox(db, system.UUIDv7{})
+	if err := uow.Do(t.Context(), func(ctx context.Context) error {
+		return outbox.Delivery(ctx, uuid.Nil, app.DeliveryRequest{
+			Type: "auth.notice_password_changed", Channel: "email", Locale: "en",
+			Recipient: app.IdentifierRef(uuid.New()), Variables: map[string]any{"how": "reset"},
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		code, body := get(t, api+"/dev/messages?to=ada@example.org")
+		if code == http.StatusOK && strings.Contains(body, `"type":"auth.notice_password_changed"`) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET /dev/messages = %d %s; want the relayed notice", code, body)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

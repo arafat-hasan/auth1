@@ -55,7 +55,7 @@ func TestUpDownUp(t *testing.T) {
 	for _, m := range applied {
 		files = append(files, m.File())
 	}
-	if want := []string{"000001_init.up.sql", "000002_challenge_sends.up.sql"}; !slices.Equal(files, want) {
+	if want := []string{"000001_init.up.sql", "000002_challenge_sends.up.sql", "000003_outbox_parked.up.sql"}; !slices.Equal(files, want) {
 		t.Fatalf("up applied %q; want %q", files, want)
 	}
 	got := queryStrings(t, db, `

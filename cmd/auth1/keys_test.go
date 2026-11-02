@@ -46,7 +46,7 @@ func badKeyEnv(t *testing.T, env, content string) []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "bad")
 	writeFile(t, path, content)
-	return append(slices.Clone(developmentEnv), env+"="+path)
+	return append(slices.Clone(serveEnv), env+"="+path)
 }
 
 func TestLoadCryptoKeysExample(t *testing.T) {

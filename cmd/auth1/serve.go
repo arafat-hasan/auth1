@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/uptrace/bun"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/arafat-hasan/auth1/internal/adapters/crypto"
@@ -18,6 +20,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/adapters/keyring"
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
 	"github.com/arafat-hasan/auth1/internal/adapters/system"
+	"github.com/arafat-hasan/auth1/internal/app"
 	"github.com/arafat-hasan/auth1/internal/config"
 	"github.com/arafat-hasan/auth1/internal/http/gen"
 	"github.com/arafat-hasan/auth1/internal/http/handlers"
@@ -25,6 +28,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/server"
 	"github.com/arafat-hasan/auth1/internal/telemetry"
+	"github.com/arafat-hasan/auth1/internal/worker/relay"
 )
 
 // The stop sequence on SIGTERM: /readyz fails for drainDelay, so load balancers stop sending
@@ -49,6 +53,8 @@ type serveDeps struct {
 	drainDelay       time.Duration
 	shutdownTimeout  time.Duration
 	telemetryTimeout time.Duration
+	// resolver resolves delivery references for the adapter; nil until WP-43 builds it.
+	resolver app.DeliveryResolver
 }
 
 func defaultServeDeps() serveDeps {
@@ -95,12 +101,18 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if _, problems := loadMessageTypes(cfg); len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
-	// The adapter is handed rows by the delivery relay (WP-42); the resolver arrives with WP-43.
-	delivery, devRoutes, err := newDelivery(cfg, unavailableResolver{}, system.Clock{})
+	// The delivery relay hands the adapter its rows; the resolver arrives with WP-43.
+	var resolver app.DeliveryResolver = unavailableResolver{}
+	if deps.resolver != nil {
+		resolver = deps.resolver
+	}
+	delivery, devRoutes, err := newDelivery(cfg, resolver, system.Clock{})
 	if err != nil {
 		return err
 	}
-	_ = delivery
+	if delivery == nil {
+		return fmt.Errorf("delivery.adapter: %s has no adapter yet", cfg.Delivery.Adapter)
+	}
 
 	tel, err := telemetry.New(ctx, cfg.Telemetry, telemetry.BuildInfo{Version: info.Version})
 	if err != nil {
@@ -165,6 +177,10 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
+	deliveries, listener, err := newDeliveryRelay(cfg, db, delivery, metrics, tel.TracerProvider(), logger)
+	if err != nil {
+		return err
+	}
 	mode := cfg.ServiceAuth.Mode
 	api, err := handlers.NewAPI(kr, handlers.MetadataOptions{
 		Issuer: cfg.HTTP.Issuer, BasePath: cfg.HTTP.BasePath,
@@ -201,13 +217,16 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		Dev:             devRoutes,
 	})
 
-	// The keyring pollers run until the servers have stopped. They return only when their context
-	// ends, so they never stop the servers.
+	// The keyring pollers and the relay run until the servers have stopped, or until the stop
+	// begins: their context derives from ctx. They return only when it ends, so they never stop
+	// the servers. g.Wait waits for the relay's sends in flight, before the pool closes.
 	pollCtx, stopPolling := context.WithCancel(ctx)
 	g, gctx := errgroup.WithContext(pollCtx)
 	g.Go(func() error { return keys.fields.Run(gctx) })
 	g.Go(func() error { return keys.pepper.Run(gctx) })
 	g.Go(func() error { return kr.Run(gctx) })
+	g.Go(func() error { return listener.Run(gctx) })
+	g.Go(func() error { return deliveries.Run(gctx) })
 	err = server.Run(ctx, logger, []server.Listener{
 		{Name: "http", Listener: listeners[0], Handler: router},
 		{Name: "metrics", Listener: listeners[1], Handler: tel.MetricsHandler()},
@@ -234,6 +253,35 @@ func bind(listen func(network, addr string) (net.Listener, error), httpAddr, met
 		out = append(out, ln)
 	}
 	return out, nil
+}
+
+// newDeliveryRelay builds the delivery relay on db for the adapter (TDD-06 §3.2), with its LISTEN
+// connection (§3.3), which holds a connection outside the pool (TDD-08 §8).
+func newDeliveryRelay(cfg *config.Config, db *bun.DB, delivery app.MessageDelivery, metrics *telemetry.Metrics,
+	tp trace.TracerProvider, logger *slog.Logger,
+) (*relay.Deliveries, *postgres.Listener, error) {
+	listener, err := postgres.NewListener(cfg.Database, cfg.App.Environment, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	age, err := metrics.Gauge("auth1_outbox_age_seconds")
+	if err != nil {
+		return nil, nil, err
+	}
+	parked, err := metrics.Gauge("auth1_outbox_parked")
+	if err != nil {
+		return nil, nil, err
+	}
+	uow := postgres.NewUnitOfWork(db, cfg.Database.AcquireTimeout, tp)
+	deliveries, err := relay.NewDeliveries(relay.Options{
+		Outbox: postgres.NewDeliveryOutbox(db, uow), Delivery: delivery, Wake: listener.Wake("delivery"),
+		PollInterval: cfg.Outbox.PollInterval, BatchSize: cfg.Outbox.BatchSize, MaxAttempts: cfg.Outbox.MaxAttempts,
+		Logger: logger, Age: age, Parked: parked,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return deliveries, listener, nil
 }
 
 // newHasher builds the password hasher from passwords.argon2 (validated: whole KiB, within the
