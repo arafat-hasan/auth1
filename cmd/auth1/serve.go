@@ -93,12 +93,15 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
-	// The registry and the message types have no consumer until the use cases arrive; serve
-	// refuses a policy or a type table that start-up rejects.
+	// The registry, the message types and the password policy have no consumer until the use
+	// cases arrive; serve refuses a policy, a type table or a deny-list that start-up rejects.
 	if _, problems := loadIdentifiers(cfg); len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
 	if _, problems := loadMessageTypes(cfg); len(problems) > 0 {
+		return printProblems(cmd.ErrOrStderr(), problems)
+	}
+	if _, problems := loadPasswordPolicy(cfg); len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
 	// The delivery relay hands the adapter its rows; the resolver arrives with WP-43.

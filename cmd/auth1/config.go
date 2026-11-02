@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,6 +15,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
 	"github.com/arafat-hasan/auth1/internal/domain/identifier"
 	"github.com/arafat-hasan/auth1/internal/domain/message"
+	"github.com/arafat-hasan/auth1/internal/domain/password"
 )
 
 // errConfigInvalid is returned by "config check" after it has printed the problems.
@@ -57,6 +59,8 @@ func checkConfig(cmd *cobra.Command, path string, environ []string) error {
 		_, problems = loadIdentifiers(cfg)
 		_, typeProblems := loadMessageTypes(cfg)
 		problems = append(problems, typeProblems...)
+		_, passwordProblems := loadPasswordPolicy(cfg)
+		problems = append(problems, passwordProblems...)
 		_, keyProblems := loadCryptoKeys(cfg, slog.New(slog.DiscardHandler))
 		problems = append(problems, keyProblems...)
 		problems = append(problems, keyringProblems(cfg)...)
@@ -120,6 +124,22 @@ func loadIdentifiers(cfg *config.Config) (*identifier.Registry, []*config.Proble
 		out[i] = &config.Problem{Path: e.Path(), Message: e.Message}
 	}
 	return nil, out
+}
+
+// loadPasswordPolicy reads passwords.deny_list_file into the password policy (TDD-03 §2). It
+// runs after Validate, which has checked that the file exists; a problem names the line, never
+// its contents.
+func loadPasswordPolicy(cfg *config.Config) (password.Policy, []*config.Problem) {
+	p := password.Policy{MinLength: cfg.Passwords.MinLength, MaxLength: cfg.Passwords.MaxLength}
+	f, err := os.Open(cfg.Passwords.DenyListFile)
+	if err == nil {
+		defer func() { _ = f.Close() }()
+		p.DenyList, err = password.ParseDenyList(f)
+	}
+	if err != nil {
+		return password.Policy{}, []*config.Problem{{Path: "passwords.deny_list_file", Message: err.Error()}}
+	}
+	return p, nil
 }
 
 // loadMessageTypes applies delivery.types to the message purposes (TDD-06 §7). It runs after

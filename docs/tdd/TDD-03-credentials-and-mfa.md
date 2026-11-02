@@ -75,11 +75,13 @@ Checks, in order. Each failure adds a reason to `PASSWORD_REJECTED.reasons`.
 |---|---|
 | `too_short` | Fewer than `min_length` code points (default 12, floor 8; SDD D-7 records the deviation from NIST's 15 for single-factor passwords) |
 | `too_long` | More than `max_length` code points (default 128, at least 64) |
-| `contains_identifier` | The case-folded password contains any `Variants()` (TDD-01 §2) of the account's identifiers, ignoring variants shorter than 4 characters |
+| `contains_identifier` | The case-folded password contains any `Variants()` (TDD-01 §2) of the account's identifiers, ignoring variants shorter than 4 code points once case-folded |
 | `common` | The case-folded password is in the deny-list |
 
+- **Lengths** are counted on the NFKC form (§1.1), before case folding.
+- **Case folding** is full Unicode case folding (CaseFolding.txt, statuses C and F, so `ß` matches `ss`), between NFKC normalisations: `NFKC(fold(NFKC(s)))`. The password, every variant and every deny-list entry are compared in this form.
 - No composition rules, no periodic expiry, no hints.
-- **The deny-list** is a file of one password per line, loaded at start-up into a hash set. *(guideline: start from a public list of the 100 000 most common passwords, plus product-specific words in the product's configuration repository)*.
+- **The deny-list** is a file of one password per line, loaded at start-up into a hash set; `config check` and `serve` refuse a file that is not UTF-8. A leading UTF-8 byte order mark is removed. Blank lines are skipped; a line ending (`\n` or `\r\n`) is removed and other white space is kept, since a password may hold any character. There is no comment syntax. *(guideline: start from a public list of the 100 000 most common passwords, plus product-specific words in the product's configuration repository)*.
 - **Every character is accepted**, including spaces and emoji.
 
 ## 3. Second-factor verification

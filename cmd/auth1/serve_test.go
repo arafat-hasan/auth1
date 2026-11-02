@@ -117,6 +117,31 @@ func TestServeRefusesInvalidConfig(t *testing.T) {
 	}
 }
 
+// TestServeRefusesBadDenyList: serve parses passwords.deny_list_file before binding anything.
+func TestServeRefusesBadDenyList(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+	restoreDefaults(t)
+	deny := filepath.Join(t.TempDir(), "deny.txt")
+	writeFile(t, deny, "password\nsecret\xff\n")
+	var bound atomic.Bool
+	deps := serveDeps{listen: func(string, string) (net.Listener, error) {
+		bound.Store(true)
+		return nil, errors.New("must not bind")
+	}, telemetryTimeout: time.Second}
+	var out bytes.Buffer
+	environ := append(slices.Clone(developmentEnv), "AUTH1_PASSWORDS_DENY_LIST_FILE="+deny)
+	err := newTestServeCmd(deps, &out, environ, "--config", "config.example.yaml")(context.Background())
+	if !errors.Is(err, errConfigInvalid) {
+		t.Fatalf("serve = %v, want errConfigInvalid\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "  - passwords.deny_list_file: line 2: not UTF-8\n") {
+		t.Errorf("output does not name the deny-list problem:\n%s", out.String())
+	}
+	if bound.Load() {
+		t.Error("serve bound a listener with a bad deny-list")
+	}
+}
+
 func TestServeRequiresConfig(t *testing.T) {
 	t.Parallel()
 
