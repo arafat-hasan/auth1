@@ -246,3 +246,31 @@ func TestRouterClientIP(t *testing.T) {
 		}
 	}
 }
+
+// TestRouterAPIMiddlewareOn404: every unknown path and unsupported method passes APIMiddleware
+// exactly once, whatever the base path, so L-1 also limits 404 floods.
+func TestRouterAPIMiddlewareOn404(t *testing.T) {
+	t.Parallel()
+
+	for _, basePath := range []string{"", "/auth"} {
+		ran := 0
+		o := testOptions(t, basePath)
+		o.APIMiddleware = []func(http.Handler) http.Handler{func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ran++; next.ServeHTTP(w, r) })
+		}}
+		h := NewRouter(o)
+		for _, req := range []*http.Request{
+			httptest.NewRequest(http.MethodGet, "/nope", nil),
+			httptest.NewRequest(http.MethodGet, basePath+"/v1/nope", nil),
+			httptest.NewRequest(http.MethodPost, basePath+"/v1/ping", nil),
+		} {
+			ran = 0
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound || ran != 1 {
+				t.Errorf("base %q: %s %s = %d with APIMiddleware run %d times; want 404, once",
+					basePath, req.Method, req.URL.Path, rec.Code, ran)
+			}
+		}
+	}
+}
