@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -58,6 +59,11 @@ func (v *validator) required() {
 	if c.HTTP.BasePath != "" && !validBasePath(c.HTTP.BasePath) {
 		v.add("http.base_path", "%q is not /segment[/segment…] of letters, digits, '-', '.', '_' or '~'",
 			c.HTTP.BasePath)
+	}
+	for i, p := range c.HTTP.TrustedProxies {
+		if _, err := netip.ParsePrefix(p); err != nil {
+			v.add(index("http.trusted_proxies", i), "%q is not a CIDR, e.g. 10.0.0.0/8", p)
+		}
 	}
 
 	if len(c.Clients) == 0 {
@@ -195,6 +201,13 @@ func (v *validator) ranges() {
 		"passwords.argon2.queue_timeout":            c.Passwords.Argon2.QueueTimeout,
 	} {
 		if d == 0 {
+			v.add(path, "must be above 0")
+		}
+	}
+	// A zero limit refuses every request and a zero window counts none (TDD-08 §3.1).
+	for path, val := range flatten(*c) {
+		if strings.HasPrefix(path, "rate_limits.") && (strings.HasSuffix(path, ".limit") || strings.HasSuffix(path, ".window")) &&
+			(val == 0 || val == time.Duration(0)) {
 			v.add(path, "must be above 0")
 		}
 	}
