@@ -48,4 +48,3 @@ func FuzzResolve(f *testing.F) {
 		t.Fatalf("Resolve gave %v, which is neither the peer nor an entry of %q", got, xff)
 	})
 }
-

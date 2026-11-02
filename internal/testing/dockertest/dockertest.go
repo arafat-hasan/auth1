@@ -14,7 +14,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 )
 
-// RequireEnv, set to 1, turns a missing Docker into a test failure.
+// RequireEnv is the variable that, set to 1, turns a missing Docker into a test failure.
 const RequireEnv = "AUTH1_REQUIRE_DOCKER"
 
 // Docker's health, found once per test binary.

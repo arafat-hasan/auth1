@@ -89,6 +89,7 @@ func TestRateLimitedJWKS(t *testing.T) {
 	// The stub answers the first request 501, outside the contract, so only the second is checked.
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil))
 	resp := v.Serve(t, h, httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil))
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") != "60" {
 		t.Fatalf("second request: %d, Retry-After %q; want 429 and 60", resp.StatusCode, resp.Header.Get("Retry-After"))
 	}

@@ -67,7 +67,7 @@ func (r *rig) sums(t *testing.T) map[string]int64 {
 				for _, dp := range s.DataPoints {
 					var labels []string
 					for _, kv := range dp.Attributes.ToSlice() {
-						labels = append(labels, string(kv.Key)+"="+kv.Value.Emit())
+						labels = append(labels, string(kv.Key)+"="+kv.Value.String())
 					}
 					out[met.Name+"{"+strings.Join(labels, ",")+"}"] += dp.Value
 				}
@@ -256,4 +256,3 @@ func TestPing(t *testing.T) {
 		t.Fatal("Ping with Redis stopped succeeded")
 	}
 }
-

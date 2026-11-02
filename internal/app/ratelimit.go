@@ -95,7 +95,10 @@ func (rl *RateLimits) Check(ctx context.Context, rule Rule, key string) error {
 		return fmt.Errorf("rate limit %s: unknown rule", rule)
 	}
 	d, err := rl.limiter.Hit(ctx, rule, key, limit)
-	if err != nil || d.Allowed {
+	if err != nil {
+		return nil //nolint:nilerr // fail open (TDD-07 §8); the adapter records the error
+	}
+	if d.Allowed {
 		return nil
 	}
 	return &domain.Error{
