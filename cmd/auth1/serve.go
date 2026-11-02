@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -17,11 +18,14 @@ import (
 	"github.com/arafat-hasan/auth1/internal/adapters/crypto/argon2id"
 	"github.com/arafat-hasan/auth1/internal/adapters/keyring"
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
+	"github.com/arafat-hasan/auth1/internal/adapters/redis"
 	"github.com/arafat-hasan/auth1/internal/adapters/system"
 	"github.com/arafat-hasan/auth1/internal/config"
+	"github.com/arafat-hasan/auth1/internal/http/clientip"
 	"github.com/arafat-hasan/auth1/internal/http/gen"
 	"github.com/arafat-hasan/auth1/internal/http/handlers"
 	"github.com/arafat-hasan/auth1/internal/http/health"
+	"github.com/arafat-hasan/auth1/internal/http/middleware"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/server"
 	"github.com/arafat-hasan/auth1/internal/telemetry"
@@ -37,7 +41,7 @@ const (
 	telemetryTimeout = 5 * time.Second
 )
 
-// pingTimeout bounds the PostgreSQL readiness check.
+// pingTimeout bounds the PostgreSQL and Redis readiness checks.
 const pingTimeout = time.Second
 
 // errDraining is the draining check's error once shutdown has begun.
@@ -165,6 +169,19 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
+	limits, rds, err := newRateLimits(cfg, metrics)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := rds.Close(); cerr != nil {
+			err = errors.Join(err, fmt.Errorf("close redis client: %w", cerr))
+		}
+	}()
+	ips, err := clientip.New(cfg.HTTP.TrustedProxies)
+	if err != nil {
+		return err
+	}
 	mode := cfg.ServiceAuth.Mode
 	api, err := handlers.NewAPI(kr, handlers.MetadataOptions{
 		Issuer: cfg.HTTP.Issuer, BasePath: cfg.HTTP.BasePath,
@@ -183,6 +200,8 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	}, true)
 	checks.Register("postgres", postgres.Ping(probe, pingTimeout), true)
 	checks.Register("keyring", kr.Ready, true)
+	// Redis is reported but never fails readiness: its limits fail open (SDD D-19, TDD-07 §8).
+	checks.Register("redis", redis.Ping(rds, pingTimeout), false)
 
 	listeners, err := bind(deps.listen, cfg.HTTP.Listen, cfg.Telemetry.MetricsListen)
 	if err != nil {
@@ -198,6 +217,8 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		RequestDuration: duration,
 		Health:          checks,
 		Routes:          gen.Routes(api, pw),
+		ClientIP:        ips,
+		APIMiddleware:   []func(http.Handler) http.Handler{middleware.RateLimit(limits, pw, gen.ServiceRoute(cfg.HTTP.BasePath))},
 		Dev:             devRoutes,
 	})
 

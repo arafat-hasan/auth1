@@ -47,6 +47,6 @@ flowchart LR
 
 The pre-1.0 prototype (a Chi service with JWTs, Redis blacklists, static API keys and an email
 outbox) was deleted in WP-00 and remains in git history. design.md §17 lists what 1.0 keeps from it;
-of its code only the Redis sliding-window limiter survives, in `internal/ratelimit` until WP-50
-moves it to `internal/adapters/redis`. The full gap analysis is in the history of design.md
+of its code only the Redis sliding-window algorithm survives, rewritten in `internal/adapters/redis`
+(WP-50). The full gap analysis is in the history of design.md
 (version 0.2, §14).

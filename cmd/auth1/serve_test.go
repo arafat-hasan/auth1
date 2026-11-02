@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres/migrate"
 	"github.com/arafat-hasan/auth1/internal/http/server"
 	"github.com/arafat-hasan/auth1/internal/testing/pgtest"
+	"github.com/arafat-hasan/auth1/internal/testing/redistest"
 	"github.com/arafat-hasan/auth1/migrations"
 )
 
@@ -211,8 +213,8 @@ func TestServeRuns(t *testing.T) {
 	}
 	expect(api+"/livez", 200, "application/json", `"ok"`)
 	readyz := expect(api+"/readyz", 200, "application/json", `"draining"`)
-	if !strings.Contains(readyz, `"postgres"`) || !strings.Contains(readyz, `"keyring"`) {
-		t.Errorf("/readyz lacks the postgres or the keyring check: %s", readyz)
+	if !strings.Contains(readyz, `"postgres"`) || !strings.Contains(readyz, `"keyring"`) || !strings.Contains(readyz, `"redis"`) {
+		t.Errorf("/readyz lacks the postgres, keyring or redis check: %s", readyz)
 	}
 	expect(api+"/.well-known/jwks.json", 200, "application/json", `"kty":"RSA"`)
 	expect(api+"/.well-known/oauth-authorization-server", 200, "application/json", `"jwks_uri":"https://id.example.com/.well-known/jwks.json"`)
@@ -228,7 +230,7 @@ func TestServeRuns(t *testing.T) {
 	var ready struct {
 		Checks []struct{ Name, Status string } `json:"checks"`
 	}
-	if err := json.Unmarshal([]byte(body), &ready); err != nil || len(ready.Checks) != 3 ||
+	if err := json.Unmarshal([]byte(body), &ready); err != nil || len(ready.Checks) != 4 ||
 		ready.Checks[0].Name != "draining" || ready.Checks[0].Status != "failing" {
 		t.Errorf("/readyz while draining: %s", body)
 	}
@@ -282,6 +284,13 @@ func dsnEnv(t *testing.T, dsn string) []string {
 // returns the API's base URL. The test's cleanup stops serve and checks that it returned nil.
 func startServe(t *testing.T, environ []string) string {
 	t.Helper()
+	api, _ := startServeWithMetrics(t, environ)
+	return api
+}
+
+// startServeWithMetrics is startServe, also returning the metrics server's base URL.
+func startServeWithMetrics(t *testing.T, environ []string) (api, metrics string) {
+	t.Helper()
 	t.Chdir(filepath.Join("..", ".."))
 	restoreDefaults(t)
 
@@ -313,7 +322,7 @@ func startServe(t *testing.T, environ []string) string {
 			t.Fatal("serve did not bind its listeners")
 		}
 	}
-	return "http://" + bound[":8080"]
+	return "http://" + bound[":8080"], "http://" + bound[":9090"]
 }
 
 // check returns the status of the named check in a /readyz body, or "" when it is absent.
@@ -402,5 +411,72 @@ func TestServeRefusesEmptyDSN(t *testing.T) {
 	}
 	if bound.Load() {
 		t.Error("serve bound a listener before refusing the DSN")
+	}
+}
+
+// errorsTotal returns auth1_rate_limiter_errors_total from a /metrics body (its one series, with
+// the exporter's scope labels), or 0 when absent.
+func errorsTotal(t *testing.T, body string) float64 {
+	t.Helper()
+	for line := range strings.Lines(body) {
+		rest, ok := strings.CutPrefix(line, "auth1_rate_limiter_errors_total")
+		if !ok || (rest[0] != ' ' && rest[0] != '{') {
+			continue
+		}
+		fields := strings.Fields(rest)
+		var f float64
+		if _, err := fmt.Sscan(fields[len(fields)-1], &f); err != nil {
+			t.Fatalf("metric line %q: %v", line, err)
+		}
+		return f
+	}
+	return 0
+}
+
+// TestServeRateLimitsAndFailsOpen: L-1 answers 429 with Retry-After; with Redis stopped, requests
+// pass, readiness holds and auth1_rate_limiter_errors_total increases (TDD-07 §8).
+func TestServeRateLimitsAndFailsOpen(t *testing.T) {
+	rds := redistest.NewServer(t)
+	api, metrics := startServeWithMetrics(t, append(dsnEnv(t, pgtest.DSN(t)), promoteAtOnce,
+		"AUTH1_REDIS_ADDRESS="+rds.Addr(), "AUTH1_RATE_LIMITS_GLOBAL_IP_LIMIT=2"))
+	waitReady(t, api, http.StatusOK, "ok", 5*time.Second)
+
+	jwks := api + "/.well-known/jwks.json"
+	for i := range 2 {
+		if code, body := get(t, jwks); code != http.StatusOK {
+			t.Fatalf("request %d: %d %s, want 200", i+1, code, body)
+		}
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, jwks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" ||
+		!strings.Contains(string(b), `"RATE_LIMITED"`) {
+		t.Fatalf("third request: %d, Retry-After %q, %s; want 429 RATE_LIMITED with Retry-After",
+			resp.StatusCode, resp.Header.Get("Retry-After"), b)
+	}
+	_, body := get(t, metrics+"/metrics")
+	before := errorsTotal(t, body)
+
+	rds.Stop(t)
+	for i := range 3 {
+		if code, body := get(t, jwks); code != http.StatusOK {
+			t.Fatalf("with Redis stopped, request %d: %d %s, want 200", i+1, code, body)
+		}
+	}
+	_, body = get(t, metrics+"/metrics")
+	if after := errorsTotal(t, body); after < before+3 {
+		t.Errorf("auth1_rate_limiter_errors_total went from %v to %v, want at least 3 more", before, after)
+	}
+	code, ready := get(t, api+"/readyz")
+	if code != http.StatusOK || check(t, ready, "redis") != "failing" {
+		t.Errorf("/readyz with Redis stopped = %d %s; want 200 with redis failing", code, ready)
 	}
 }
