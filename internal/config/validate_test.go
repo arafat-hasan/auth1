@@ -348,6 +348,14 @@ func TestValidateRules(t *testing.T) {
 		{name: "zero argon2 queue timeout", change: func(c *Config) { c.Passwords.Argon2.QueueTimeout = 0 },
 			want: []string{"passwords.argon2.queue_timeout"}},
 
+		// Password lengths that would refuse every password, in every environment.
+		{name: "password min_length equal to max_length", change: func(c *Config) {
+			c.Passwords.MinLength, c.Passwords.MaxLength = 64, 64
+		}},
+		{name: "password min_length above max_length", change: func(c *Config) {
+			c.Passwords.MinLength, c.Passwords.MaxLength = 65, 64
+		}, want: []string{"passwords.min_length"}},
+
 		// Argon2id bounds a stored hash may carry (TDD-03 §1.3), in every environment.
 		{name: "argon2 memory 1GiB", change: func(c *Config) { c.Passwords.Argon2.Memory = GiB }},
 		{name: "argon2 memory above 1GiB", change: func(c *Config) { c.Passwords.Argon2.Memory = GiB + KiB },

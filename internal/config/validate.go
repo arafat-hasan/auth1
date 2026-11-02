@@ -23,6 +23,7 @@ func (c *Config) Validate() error {
 	v.ranges()
 	v.floors()
 	v.argon2()
+	v.passwordLengths()
 	v.productionOnly()
 	v.enums()
 	v.clients()
@@ -237,6 +238,14 @@ func (v *validator) argon2() {
 	}
 	if a.Parallelism > 16 {
 		v.add("passwords.argon2.parallelism", "%d is above the bound of at most 16", a.Parallelism)
+	}
+}
+
+// passwordLengths refuses passwords.min_length above passwords.max_length, which would refuse every
+// password (TDD-08 §3.1).
+func (v *validator) passwordLengths() {
+	if p := v.c.Passwords; p.MinLength > p.MaxLength {
+		v.add("passwords.min_length", "%d is above passwords.max_length, %d", p.MinLength, p.MaxLength)
 	}
 }
 
