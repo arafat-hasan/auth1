@@ -207,5 +207,22 @@ only in `development` and `serve` mounts it through `server.Options.Dev` at the 
 contract. `test/contract` checks stored delivery bodies against `DeliveryRequest` with
 `apitest.CheckSchema`.
 
+Relay (TDD-06 §3.2, §3.3): `internal/worker/relay.Deliveries` sends delivery rows through
+`app.DeliveryOutbox` (`postgres.DeliveryOutbox`). The claim is a lease: one short transaction
+(`FOR UPDATE OF o SKIP LOCKED`) drops rows whose challenge is not open (`dropped: challenge
+closed`) and notices older than 24 h, parks bodies that are not delivery requests, and sets
+`attempts + 1` and `next_attempt_at = now() + lease` on the rest. `Send` runs outside any
+transaction (G-4), and `Publish` / `Retry` (capped at the request's `deadline`) / `Park` apply only
+while `attempts` is still the claimed value, else `app.ErrClaimLost`. A dead relay's row is sent
+again when its 30 s lease ends, with the same `request_id`. `relay.Backoff` is TDD-06 §3.1's (1 s
+doubling to 5 min, ±20%); a retry at `outbox.max_attempts`, a parked outcome and the zero outcome
+park. Each relay has 8 senders and claims only for idle ones; it wakes on
+`postgres.Listener` (a pgx connection of its own on `auth1_outbox`, reconnecting, so `max_conns` + 2
+per instance) and on `outbox.poll_interval`, and records `auth1_outbox_age_seconds` /
+`auth1_outbox_parked` (destination `delivery`) every 15 s. `serve` runs both in its errgroup and
+refuses a `delivery.adapter` with no adapter yet, so until WP-44 run it with
+`AUTH1_DELIVERY_ADAPTER=capture` (the serve tests use `serveEnv`); `serveDeps.resolver` replaces
+`unavailableResolver` in tests until WP-43.
+
 `internal/ratelimit` is the prototype's Redis limiter, kept until WP-50 ports it to
 `internal/adapters/redis`.
