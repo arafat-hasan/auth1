@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -74,7 +75,10 @@ func NewRegistration(d RegistrationDeps, o RegistrationOptions) *Registration {
 
 // The audit actions of the registration steps.
 const (
-	auditRegistrationStart = "registration.start"
+	auditRegistrationStart   = "registration.start"
+	auditRegistrationVerify  = "registration.verify"
+	auditRegistrationResend  = "registration.resend"
+	auditVerificationConfirm = "verification_link.confirm"
 )
 
 // StartRegistration is a request to start a registration (POST /v1/registrations).
@@ -231,4 +235,391 @@ func invalidField(field, code string) error {
 func hasCode(err error, codes ...domain.Code) bool {
 	var de *domain.Error
 	return errors.As(err, &de) && slices.Contains(codes, de.Code)
+}
+
+// VerifyRegistrationCode is a code for one identifier of a registration or invitation flow
+// (POST /v1/registrations/{flowId}/verify).
+type VerifyRegistrationCode struct {
+	FlowID         uuid.UUID
+	Handle         []byte
+	IdentifierType string
+	Code           []byte
+	IP             netip.Addr
+	UserAgent      string
+}
+
+// RegistrationProgress is what a flow still needs verified.
+type RegistrationProgress struct {
+	PendingTypes []string
+}
+
+// ResendRegistration asks for one identifier's verification again
+// (POST /v1/registrations/{flowId}/resend).
+type ResendRegistration struct {
+	FlowID         uuid.UUID
+	Handle         []byte
+	IdentifierType string
+	IP             netip.Addr
+	UserAgent      string
+}
+
+// ConfirmLink is an emailed link's token (POST /v1/verification-links/confirm).
+type ConfirmLink struct {
+	Token     []byte
+	IP        netip.Addr
+	UserAgent string
+}
+
+// LinkConfirmed is a confirmed link: its purpose, its flow, whether the flow needs nothing more
+// verified, and the types it still needs.
+type LinkConfirmed struct {
+	Purpose      flow.Purpose
+	FlowID       uuid.UUID
+	Complete     bool
+	PendingTypes []string
+}
+
+// locked is a flow with its account, flow and challenges locked, in that order (G-5).
+type locked struct {
+	account    account.Account
+	flow       flow.Flow
+	challenges []flow.ChallengeRecord
+	ids        []account.Identifier // the account's current identifiers
+}
+
+// lock locks f's account, f and its challenges, and reads the account's identifiers. It runs
+// inside UnitOfWork.Do.
+func (r *Registration) lock(ctx context.Context, f flow.Flow) (locked, error) {
+	a, err := r.d.Accounts.GetForUpdate(ctx, f.AccountID)
+	if err != nil {
+		return locked{}, err
+	}
+	lf, err := r.d.Flows.LockFlow(ctx, f)
+	if err != nil {
+		return locked{}, err
+	}
+	chs, err := r.d.Flows.LockChallenges(ctx, lf.ID)
+	if err != nil {
+		return locked{}, err
+	}
+	ids, err := r.d.Accounts.Identifiers(ctx, a.ID)
+	if err != nil {
+		return locked{}, err
+	}
+	return locked{account: a, flow: lf, challenges: chs, ids: ids}, nil
+}
+
+// pending returns the identifier of type idType still to verify in the flow, with its newest
+// verify_identifier challenge; false when the type is not pending or has no challenge.
+func (l locked) pending(idType string) (account.Identifier, flow.ChallengeRecord, bool) {
+	if !slices.Contains(pendingTypes(l.flow.State), idType) {
+		return account.Identifier{}, flow.ChallengeRecord{}, false
+	}
+	for _, id := range l.ids {
+		if id.Type != idType || id.VerifiedAt != nil {
+			continue
+		}
+		for i := len(l.challenges) - 1; i >= 0; i-- {
+			c := l.challenges[i]
+			if c.Purpose == flow.PurposeVerifyIdentifier && c.IdentifierID != nil && *c.IdentifierID == id.ID {
+				return id, c, true
+			}
+		}
+	}
+	return account.Identifier{}, flow.ChallengeRecord{}, false
+}
+
+// identifier returns the account's current identifier id.
+func (l locked) identifier(id uuid.UUID) (account.Identifier, bool) {
+	for _, i := range l.ids {
+		if i.ID == id {
+			return i, true
+		}
+	}
+	return account.Identifier{}, false
+}
+
+// findFlow finds the open registration or invitation flow id under handle. Any other kind is the
+// same miss as no flow (I-20).
+func (r *Registration) findFlow(ctx context.Context, id uuid.UUID, handle []byte) (flow.Flow, error) {
+	h := sha256.Sum256(handle)
+	f, err := r.d.Flows.Find(ctx, id, h[:])
+	if err != nil {
+		return flow.Flow{}, err
+	}
+	if f.Kind != flow.KindRegistration && f.Kind != flow.KindInvitation {
+		return flow.Flow{}, challengeClosed()
+	}
+	return f, nil
+}
+
+// VerifyCode verifies one identifier of a registration or invitation flow with the code sent to
+// it (TDD-02 §2.2, §3). Every try counts (I-4): a wrong code is CODE_INVALID with the tries left,
+// and the last wrong one closes the challenge (CHALLENGE_CLOSED). The right code consumes the
+// challenge and verifies the identifier, unless another account verified the value first: then
+// the challenge stays consumed and the answer is IDENTIFIER_TAKEN (I-1). Counted tries and a
+// consumed challenge commit whatever the answer.
+func (r *Registration) VerifyCode(ctx context.Context, cmd VerifyRegistrationCode) (RegistrationProgress, error) {
+	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationVerify, IP: cmd.IP, UserAgent: cmd.UserAgent,
+		Details: map[string]any{"identifier_type": cmd.IdentifierType}}
+	if err := r.d.Limits.CheckIP(ctx, RuleVerifyIP, cmd.IP); err != nil {
+		return RegistrationProgress{}, err
+	}
+	f, err := r.findFlow(ctx, cmd.FlowID, cmd.Handle)
+	if err != nil {
+		return RegistrationProgress{}, r.fail(ctx, entry, err)
+	}
+	entry.withFlow(f)
+	var (
+		answer   error
+		progress RegistrationProgress
+	)
+	err = r.d.UnitOfWork.Do(ctx, func(ctx context.Context) error {
+		l, err := r.lock(ctx, f)
+		if err != nil {
+			return err
+		}
+		id, ch, ok := l.pending(cmd.IdentifierType)
+		if !ok || ch.Method == flow.MethodEmailLink {
+			answer = challengeClosed()
+			return nil
+		}
+		matched := subtle.ConstantTimeCompare(r.d.MAC.OTP(ch.ID, cmd.Code), ch.SecretMAC) == 1
+		v := flow.Verify(ch.Challenge, matched, r.d.Clock.Now())
+		if v.Outcome == flow.Closed {
+			answer = v.Err()
+			return nil
+		}
+		attempts, ok, err := r.d.Flows.Attempt(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			answer = challengeClosed()
+			return nil
+		}
+		switch v.Outcome {
+		case flow.Wrong:
+			left := ch.MaxAttempts - attempts
+			answer = &domain.Error{Code: domain.CodeCodeInvalid, Detail: "the code is wrong", AttemptsLeft: &left}
+			return nil
+		case flow.Exhausted:
+			if _, err := r.d.Flows.CloseChallenge(ctx, ch.ID, false); err != nil {
+				return err
+			}
+			answer = challengeClosed()
+			return nil
+		}
+		progress.PendingTypes, answer, err = r.verified(ctx, l, id, ch)
+		if err != nil || answer != nil {
+			return err
+		}
+		return r.auditSuccess(ctx, entry, l.account.ID)
+	})
+	if err != nil {
+		return RegistrationProgress{}, fmt.Errorf("verify registration code: %w", err)
+	}
+	if answer != nil {
+		return RegistrationProgress{}, r.fail(ctx, entry, answer)
+	}
+	return progress, nil
+}
+
+// verified consumes ch and verifies id, the challenge's identifier, then drops its type from the
+// flow's pending types and emits account.identifier_verified. It returns the pending types left,
+// or the answer when the challenge was consumed already (CHALLENGE_CLOSED) or the value is taken
+// (IDENTIFIER_TAKEN, the challenge staying consumed).
+func (r *Registration) verified(ctx context.Context, l locked, id account.Identifier, ch flow.ChallengeRecord) ([]string, error, error) {
+	ok, err := r.d.Flows.CloseChallenge(ctx, ch.ID, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		return nil, challengeClosed(), nil
+	}
+	if err := r.d.Accounts.VerifyIdentifier(ctx, id.ID); hasCode(err, domain.CodeIdentifierTaken) {
+		return nil, err, nil
+	} else if err != nil {
+		return nil, nil, err
+	}
+	state := withVerified(l.flow.State, id.Type)
+	if err := r.d.Flows.Update(ctx, l.flow.ID, state, l.flow.Attempts); err != nil {
+		return nil, nil, err
+	}
+	if err := r.d.Outbox.Event(ctx, EventIdentifierVerified, l.account.ID, IdentifierVerified{
+		AccountID: l.account.ID, IdentifierID: id.ID, IdentifierType: id.Type,
+		Actor: EventActor{Kind: string(ActorAccount), ID: l.account.ID.String()},
+	}); err != nil {
+		return nil, nil, err
+	}
+	return pendingTypes(state), nil, nil
+}
+
+// Resend sends one identifier's verification again (TDD-02 §2.4): the open challenge, at most once
+// per otp.resend_after; a new challenge with a new secret once it has expired, or once the
+// cooldown after its attempts ran out has passed. The per-address send limits (L-7) and the
+// per-IP send window (L-8) apply. A type not pending is CHALLENGE_CLOSED.
+func (r *Registration) Resend(ctx context.Context, cmd ResendRegistration) error {
+	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationResend, IP: cmd.IP, UserAgent: cmd.UserAgent,
+		Details: map[string]any{"identifier_type": cmd.IdentifierType}}
+	if err := r.d.Limits.CheckIP(ctx, RuleSendIP, cmd.IP); err != nil {
+		return err
+	}
+	f, err := r.findFlow(ctx, cmd.FlowID, cmd.Handle)
+	if err != nil {
+		return r.fail(ctx, entry, err)
+	}
+	entry.withFlow(f)
+	var answer error
+	err = r.d.UnitOfWork.Do(ctx, func(ctx context.Context) error {
+		l, err := r.lock(ctx, f)
+		if err != nil {
+			return err
+		}
+		id, ch, ok := l.pending(cmd.IdentifierType)
+		if !ok {
+			answer = challengeClosed()
+			return nil
+		}
+		t, _ := r.d.Registry.Type(id.Type)
+		switch d := flow.DecideResend(ch.Challenge, r.d.Clock.Now(), r.o.Resend); d.Outcome {
+		case flow.Reuse:
+		case flow.NewChallenge:
+			if ch.ClosedAt == nil {
+				if _, err := r.d.Flows.CloseChallenge(ctx, ch.ID, false); err != nil {
+					return err
+				}
+			}
+			if ch, err = r.d.Challenges.OpenVerification(ctx, l.flow.ID, id, ch.Method); err != nil {
+				return err
+			}
+		default:
+			answer = d.Err()
+			return nil
+		}
+		if err := r.d.Challenges.Send(ctx, l.account, ch, id, t.Channel()); err != nil {
+			if hasCode(err, domain.CodeResendTooSoon, domain.CodeRateLimited) {
+				answer = err
+				return errRefused // roll back: a refused send changes nothing
+			}
+			return err
+		}
+		return r.auditSuccess(ctx, entry, l.account.ID)
+	})
+	if err != nil && !errors.Is(err, errRefused) {
+		return fmt.Errorf("resend registration verification: %w", err)
+	}
+	if answer != nil {
+		return r.fail(ctx, entry, answer)
+	}
+	return nil
+}
+
+// errRefused rolls back a transaction whose answer is a refusal that must not commit.
+var errRefused = errors.New("refused")
+
+// ConfirmLink confirms an emailed link (TDD-02 §3). Of the link purposes, it serves
+// verify_identifier; a token of another purpose, or one that matches no open challenge, is
+// CHALLENGE_CLOSED. A link has no attempt counter: a wrong token matches nothing (TDD-02 §2.2).
+func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkConfirmed, error) {
+	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditVerificationConfirm, IP: cmd.IP, UserAgent: cmd.UserAgent}
+	if err := r.d.Limits.CheckIP(ctx, RuleVerifyIP, cmd.IP); err != nil {
+		return LinkConfirmed{}, err
+	}
+	h := sha256.Sum256(cmd.Token)
+	f, found, err := r.d.Flows.FindLink(ctx, h[:])
+	if err == nil && (found.Purpose != flow.PurposeVerifyIdentifier ||
+		(f.Kind != flow.KindRegistration && f.Kind != flow.KindInvitation)) {
+		err = challengeClosed()
+	}
+	if err != nil {
+		return LinkConfirmed{}, r.fail(ctx, entry, err)
+	}
+	entry.withFlow(f)
+	var (
+		answer error
+		out    = LinkConfirmed{Purpose: flow.PurposeVerifyIdentifier, FlowID: f.ID}
+	)
+	err = r.d.UnitOfWork.Do(ctx, func(ctx context.Context) error {
+		l, err := r.lock(ctx, f)
+		if err != nil {
+			return err
+		}
+		var ch flow.ChallengeRecord
+		for _, c := range l.challenges {
+			if c.ID == found.ID {
+				ch = c
+			}
+		}
+		id, ok := account.Identifier{}, false
+		if ch.IdentifierID != nil {
+			id, ok = l.identifier(*ch.IdentifierID)
+		}
+		if !ok || ch.ClosedAt != nil || ch.End(r.d.Clock.Now()) != flow.EndOpen {
+			answer = challengeClosed()
+			return nil
+		}
+		out.PendingTypes, answer, err = r.verified(ctx, l, id, ch)
+		if err != nil || answer != nil {
+			return err
+		}
+		out.Complete = len(out.PendingTypes) == 0
+		return r.auditSuccess(ctx, entry, l.account.ID)
+	})
+	if err != nil {
+		return LinkConfirmed{}, fmt.Errorf("confirm verification link: %w", err)
+	}
+	if answer != nil {
+		return LinkConfirmed{}, r.fail(ctx, entry, answer)
+	}
+	return out, nil
+}
+
+// auditSuccess writes e as a success about the account, in the transaction.
+func (r *Registration) auditSuccess(ctx context.Context, e AuditEntry, accountID uuid.UUID) error {
+	e.AccountID, e.Outcome = accountID, OutcomeSuccess
+	e.ActorKind, e.ActorID = ActorAccount, accountID.String()
+	return r.d.Audit.Write(ctx, e)
+}
+
+// withFlow adds the flow's id and kind to the entry's details, and its client.
+func (e *AuditEntry) withFlow(f flow.Flow) {
+	if e.Details == nil {
+		e.Details = map[string]any{}
+	}
+	e.Details["flow_id"], e.Details["kind"] = f.ID.String(), string(f.Kind)
+	e.ClientID = f.ClientID
+}
+
+// pendingTypes returns the types a registration or invitation state still needs verified, never
+// nil.
+func pendingTypes(s flow.State) []string {
+	var p []string
+	switch st := s.(type) {
+	case flow.RegistrationState:
+		p = st.PendingTypes
+	case flow.InvitationState:
+		p = st.PendingTypes
+	}
+	if p == nil {
+		return []string{}
+	}
+	return p
+}
+
+// withVerified returns the registration or invitation state s with idType verified.
+func withVerified(s flow.State, idType string) flow.State {
+	switch st := s.(type) {
+	case flow.RegistrationState:
+		return st.Verified(idType)
+	case flow.InvitationState:
+		st.PendingTypes = flow.RegistrationState{PendingTypes: st.PendingTypes}.Verified(idType).PendingTypes
+		return st
+	}
+	return s
+}
+
+// challengeClosed is the answer to every miss (I-20), with the text flow.Verify gives.
+func challengeClosed() error {
+	return &domain.Error{Code: domain.CodeChallengeClosed, Detail: "the challenge is closed"}
 }

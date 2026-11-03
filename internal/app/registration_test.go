@@ -57,13 +57,15 @@ func (h *fakeHasher) Hash(_ context.Context, pw []byte) (string, string, error) 
 	return "phc:" + string(pw), "1", nil
 }
 
-// regAccounts is the accounts repository of the registration tests: verified values, the accounts
-// created and their identifiers.
+// regAccounts is the accounts repository of the registration tests: verified values held by
+// other accounts, the accounts created and their identifiers.
 type regAccounts struct {
 	app.Accounts
+	clock    *fakes.Clock
 	verified map[string]bool // type:value held verified by another account
 	created  []account.NewAccount
 	accounts map[uuid.UUID]account.Account
+	ids      []*account.Identifier
 }
 
 func (a *regAccounts) FindVerified(_ context.Context, idType, value string) (account.Identifier, error) {
@@ -80,6 +82,9 @@ func (a *regAccounts) Create(_ context.Context, na account.NewAccount) error {
 	}
 	a.accounts[na.ID] = account.Account{ID: na.ID, Status: account.StatusPending, DisplayName: na.DisplayName,
 		Locale: na.Locale, RegisteredVia: na.RegisteredVia, Version: 1}
+	for _, ni := range na.Identifiers {
+		a.ids = append(a.ids, &account.Identifier{ID: ni.ID, AccountID: na.ID, Type: ni.Type, Value: ni.Value})
+	}
 	return nil
 }
 
@@ -91,14 +96,164 @@ func (a *regAccounts) GetForUpdate(_ context.Context, id uuid.UUID) (account.Acc
 	return acc, nil
 }
 
-// regFlows records the flows opened, on top of sendFlows.
+func (a *regAccounts) Identifiers(_ context.Context, accountID uuid.UUID) ([]account.Identifier, error) {
+	var out []account.Identifier
+	for _, id := range a.ids {
+		if id.AccountID == accountID && id.RetiredAt == nil {
+			out = append(out, *id)
+		}
+	}
+	slices.SortFunc(out, func(x, y account.Identifier) int { return strings.Compare(x.Type, y.Type) })
+	return out, nil
+}
+
+func (a *regAccounts) VerifyIdentifier(_ context.Context, id uuid.UUID) error {
+	for _, i := range a.ids {
+		if i.ID != id || i.VerifiedAt != nil || i.RetiredAt != nil {
+			continue
+		}
+		if a.verified[i.Type+":"+i.Value] {
+			return &domain.Error{Code: domain.CodeIdentifierTaken, Detail: "the identifier is taken"}
+		}
+		t := a.clock.Now()
+		i.VerifiedAt = &t
+		return nil
+	}
+	return &domain.Error{Code: domain.CodeNotFound}
+}
+
+// regFlows is an in-memory flows repository, on top of sendFlows's records of opened challenges,
+// sends and send-limit checks. Its finders see only open flows before their expiry, and answer
+// every miss with CHALLENGE_CLOSED, as postgres.Flows does.
 type regFlows struct {
 	*sendFlows
+	clock *fakes.Clock
 	flows []flow.NewFlow
+	byID  map[uuid.UUID]*flow.Flow
+	chs   []*flow.ChallengeRecord
+}
+
+func closedErr() error {
+	return &domain.Error{Code: domain.CodeChallengeClosed, Detail: "the challenge is closed"}
 }
 
 func (f *regFlows) Open(_ context.Context, nf flow.NewFlow) error {
 	f.flows = append(f.flows, nf)
+	if f.byID == nil {
+		f.byID = map[uuid.UUID]*flow.Flow{}
+	}
+	f.byID[nf.ID] = &flow.Flow{ID: nf.ID, Kind: nf.Kind, AccountID: nf.AccountID, ClientID: nf.ClientID,
+		HandleHash: nf.HandleHash, State: nf.State, ExpiresAt: nf.ExpiresAt, CreatedAt: f.clock.Now()}
+	return nil
+}
+
+func (f *regFlows) live(id uuid.UUID) (*flow.Flow, bool) {
+	fl, ok := f.byID[id]
+	return fl, ok && fl.CompletedAt == nil && fl.CancelledAt == nil && fl.ExpiresAt.After(f.clock.Now())
+}
+
+func (f *regFlows) Find(_ context.Context, id uuid.UUID, handleHash []byte) (flow.Flow, error) {
+	fl, ok := f.live(id)
+	if !ok || !bytes.Equal(fl.HandleHash, handleHash) {
+		return flow.Flow{}, closedErr()
+	}
+	return *fl, nil
+}
+
+func (f *regFlows) LockFlow(ctx context.Context, fl flow.Flow) (flow.Flow, error) {
+	return f.Find(ctx, fl.ID, fl.HandleHash)
+}
+
+func (f *regFlows) FindLink(_ context.Context, linkHash []byte) (flow.Flow, flow.ChallengeRecord, error) {
+	for _, c := range f.chs {
+		if c.Method == flow.MethodEmailLink && c.ClosedAt == nil && bytes.Equal(c.SecretMAC, linkHash) {
+			if fl, ok := f.live(c.FlowID); ok {
+				return *fl, *c, nil
+			}
+		}
+	}
+	return flow.Flow{}, flow.ChallengeRecord{}, closedErr()
+}
+
+func (f *regFlows) Update(_ context.Context, id uuid.UUID, state flow.State, attempts int) error {
+	f.byID[id].State, f.byID[id].Attempts = state, attempts
+	return nil
+}
+
+func (f *regFlows) OpenChallenge(ctx context.Context, c flow.NewChallengeRecord) error {
+	_ = f.sendFlows.OpenChallenge(ctx, c)
+	f.chs = append(f.chs, &flow.ChallengeRecord{ID: c.ID, FlowID: c.FlowID, Purpose: c.Purpose, Method: c.Method,
+		IdentifierID: c.IdentifierID, SecretMAC: c.SecretMAC, CreatedAt: f.clock.Now(),
+		Challenge: flow.Challenge{MaxAttempts: c.MaxAttempts, ExpiresAt: c.ExpiresAt}})
+	return nil
+}
+
+func (f *regFlows) challenge(id uuid.UUID) *flow.ChallengeRecord {
+	for _, c := range f.chs {
+		if c.ID == id {
+			return c
+		}
+	}
+	return nil
+}
+
+func (f *regFlows) LockChallenges(_ context.Context, flowID uuid.UUID) ([]flow.ChallengeRecord, error) {
+	var out []flow.ChallengeRecord
+	for _, c := range f.chs {
+		if c.FlowID == flowID {
+			out = append(out, *c)
+		}
+	}
+	return out, nil
+}
+
+func (f *regFlows) RecordSend(ctx context.Context, id uuid.UUID) (int, error) {
+	c := f.challenge(id)
+	if c == nil || c.ClosedAt != nil {
+		return 0, &domain.Error{Code: domain.CodeNotFound}
+	}
+	n, _ := f.sendFlows.RecordSend(ctx, id)
+	t := f.clock.Now()
+	c.Sends, c.LastSentAt = n, &t
+	return n, nil
+}
+
+func (f *regFlows) Attempt(_ context.Context, id uuid.UUID) (int, bool, error) {
+	c := f.challenge(id)
+	if c.ClosedAt != nil || c.Attempts >= c.MaxAttempts {
+		return 0, false, nil
+	}
+	c.Attempts++
+	return c.Attempts, true, nil
+}
+
+func (f *regFlows) CloseChallenge(_ context.Context, id uuid.UUID, consumed bool) (bool, error) {
+	c := f.challenge(id)
+	if c.ClosedAt != nil {
+		return false, nil
+	}
+	t := f.clock.Now()
+	c.ClosedAt = &t
+	if consumed {
+		c.ConsumedAt = &t
+	}
+	return true, nil
+}
+
+// eventOutbox records events on top of recordingOutbox's delivery requests.
+type eventOutbox struct {
+	*recordingOutbox
+	events []recordedEvent
+}
+
+type recordedEvent struct {
+	Type    string
+	Account uuid.UUID
+	Data    any
+}
+
+func (o *eventOutbox) Event(_ context.Context, eventType string, accountID uuid.UUID, data any) error {
+	o.events = append(o.events, recordedEvent{eventType, accountID, data})
 	return nil
 }
 
@@ -115,7 +270,7 @@ type regEnv struct {
 	uow      *fakeUoW
 	accounts *regAccounts
 	flows    *regFlows
-	outbox   *recordingOutbox
+	outbox   *eventOutbox
 	audit    *recordingAudit
 	hasher   *fakeHasher
 	limiter  *fakes.RateLimiter
@@ -144,10 +299,11 @@ func newRegEnv(t *testing.T) *regEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clock := fakes.NewClock(now)
 	e := &regEnv{
-		uow: &fakeUoW{}, accounts: &regAccounts{verified: map[string]bool{}},
-		flows: &regFlows{sendFlows: &sendFlows{}}, outbox: &recordingOutbox{}, audit: &recordingAudit{},
-		limiter: fakes.NewRateLimiter(), clock: fakes.NewClock(now),
+		uow: &fakeUoW{}, accounts: &regAccounts{clock: clock, verified: map[string]bool{}},
+		flows: &regFlows{sendFlows: &sendFlows{}, clock: clock}, outbox: &eventOutbox{recordingOutbox: &recordingOutbox{}},
+		audit: &recordingAudit{}, limiter: fakes.NewRateLimiter(), clock: clock,
 	}
 	e.hasher = &fakeHasher{t: t, uow: e.uow}
 	limits, err := app.NewRateLimits(e.limiter, map[app.Rule]app.RateLimit{
@@ -338,4 +494,278 @@ func TestStartRegistrationErrors(t *testing.T) {
 func sha(b []byte) []byte {
 	h := sha256.Sum256(b)
 	return h[:]
+}
+
+// started starts the default registration and returns it.
+func (e *regEnv) started(t *testing.T) app.RegistrationStarted {
+	t.Helper()
+	s, err := e.reg.Start(context.Background(), startCmd())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// opened returns the newest challenge opened on the identifier of type typ.
+func (e *regEnv) opened(t *testing.T, typ string) flow.NewChallengeRecord {
+	t.Helper()
+	for i := len(e.flows.opened) - 1; i >= 0; i-- {
+		if e.flows.opened[i].TargetType == typ {
+			return e.flows.opened[i]
+		}
+	}
+	t.Fatalf("no challenge on %s", typ)
+	return flow.NewChallengeRecord{}
+}
+
+func (e *regEnv) verify(s app.RegistrationStarted, code string) (app.RegistrationProgress, error) {
+	return e.reg.VerifyCode(context.Background(), app.VerifyRegistrationCode{
+		FlowID: s.FlowID, Handle: []byte(s.Handle), IdentifierType: "phone", Code: []byte(code), IP: regIP,
+	})
+}
+
+func (e *regEnv) resend(s app.RegistrationStarted, typ string) error {
+	return e.reg.Resend(context.Background(), app.ResendRegistration{
+		FlowID: s.FlowID, Handle: []byte(s.Handle), IdentifierType: typ, IP: regIP,
+	})
+}
+
+const rightCode, wrongCode = "777777", "000000" // every random byte the tests draw is 7
+
+func wantCode(t *testing.T, err error, code domain.Code) {
+	t.Helper()
+	_ = asCode(t, err, code)
+}
+
+// asCode fails the test unless err is a *domain.Error with code, and returns it.
+func asCode(t *testing.T, err error, code domain.Code) *domain.Error {
+	t.Helper()
+	var de *domain.Error
+	if !errors.As(err, &de) || de.Code != code {
+		t.Fatalf("got %v; want %s", err, code)
+	}
+	return de
+}
+
+func TestVerifyCode(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	got, err := e.verify(s, rightCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.PendingTypes, []string{"email"}) {
+		t.Errorf("pending = %v; want [email]", got.PendingTypes)
+	}
+	ch := e.flows.challenge(e.opened(t, "phone").ID)
+	if ch.ConsumedAt == nil || ch.Attempts != 1 {
+		t.Errorf("challenge = %+v; want consumed after one attempt", ch.Challenge)
+	}
+	phone := e.accounts.ids[1]
+	if phone.Type != "phone" || phone.VerifiedAt == nil {
+		t.Errorf("phone identifier = %+v; want verified", phone)
+	}
+	if st := e.flows.byID[s.FlowID].State.(flow.RegistrationState); !slices.Equal(st.PendingTypes, []string{"email"}) {
+		t.Errorf("stored pending = %v; want [email]", st.PendingTypes)
+	}
+	want := []recordedEvent{{app.EventIdentifierVerified, phone.AccountID, app.IdentifierVerified{
+		AccountID: phone.AccountID, IdentifierID: phone.ID, IdentifierType: "phone",
+		Actor: app.EventActor{Kind: "account", ID: phone.AccountID.String()},
+	}}}
+	if diff := cmp.Diff(want, e.outbox.events); diff != "" {
+		t.Errorf("events (-want +got):\n%s", diff)
+	}
+	// I-4: consumed at most once.
+	_, err = e.verify(s, rightCode)
+	wantCode(t, err, domain.CodeChallengeClosed)
+	if len(e.outbox.events) != 1 {
+		t.Errorf("%d events; want 1", len(e.outbox.events))
+	}
+}
+
+func TestVerifyCodeAttempts(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	for _, left := range []int{2, 1} {
+		_, err := e.verify(s, wrongCode)
+		if de := asCode(t, err, domain.CodeCodeInvalid); de.AttemptsLeft == nil || *de.AttemptsLeft != left {
+			t.Fatalf("attempts_left = %v; want %d", de.AttemptsLeft, left)
+		}
+	}
+	_, err := e.verify(s, wrongCode)
+	wantCode(t, err, domain.CodeChallengeClosed)
+	if ch := e.flows.challenge(e.opened(t, "phone").ID); ch.ClosedAt == nil || ch.ConsumedAt != nil || ch.Attempts != 3 {
+		t.Errorf("challenge = %+v; want closed unconsumed after 3 attempts", ch.Challenge)
+	}
+	// I-4: no fourth try, even with the right code.
+	_, err = e.verify(s, rightCode)
+	wantCode(t, err, domain.CodeChallengeClosed)
+	if e.accounts.ids[1].VerifiedAt != nil {
+		t.Error("the phone was verified after the attempts ran out")
+	}
+}
+
+func TestVerifyCodeTakenConsumes(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	e.accounts.verified["phone:+447400123456"] = true // another account verified it first (T-1)
+	_, err := e.verify(s, rightCode)
+	wantCode(t, err, domain.CodeIdentifierTaken)
+	if ch := e.flows.challenge(e.opened(t, "phone").ID); ch.ConsumedAt == nil {
+		t.Error("the challenge was not consumed (TDD-02 §3)")
+	}
+	if len(e.outbox.events) != 0 {
+		t.Errorf("events = %v; want none", e.outbox.events)
+	}
+	_, err = e.verify(s, rightCode)
+	wantCode(t, err, domain.CodeChallengeClosed)
+}
+
+func TestVerifyCodeSameMiss(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		edit func(*app.VerifyRegistrationCode, *regEnv)
+	}{
+		{"wrong handle", func(c *app.VerifyRegistrationCode, _ *regEnv) { c.Handle = bytes.Repeat([]byte("A"), 43) }},
+		{"unknown flow", func(c *app.VerifyRegistrationCode, _ *regEnv) { c.FlowID = fakes.ID(999) }},
+		{"expired flow", func(_ *app.VerifyRegistrationCode, e *regEnv) { e.clock.Advance(25 * time.Hour) }},
+		{"type not pending", func(c *app.VerifyRegistrationCode, _ *regEnv) { c.IdentifierType = "username" }},
+		{"link-verified type", func(c *app.VerifyRegistrationCode, _ *regEnv) { c.IdentifierType = "email" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newRegEnv(t)
+			s := e.started(t)
+			cmd := app.VerifyRegistrationCode{FlowID: s.FlowID, Handle: []byte(s.Handle), IdentifierType: "phone",
+				Code: []byte(rightCode), IP: regIP}
+			tt.edit(&cmd, e)
+			_, err := e.reg.VerifyCode(context.Background(), cmd)
+			if de := asCode(t, err, domain.CodeChallengeClosed); de.Detail != "the challenge is closed" {
+				t.Errorf("detail %q; want the one every miss gives (I-20)", de.Detail)
+			}
+		})
+	}
+}
+
+func TestVerifyCodeRateLimited(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	for range 30 {
+		_, _ = e.limiter.Hit(context.Background(), app.RuleVerifyIP, "192.0.2.10", app.RateLimit{Limit: 30, Window: time.Hour})
+	}
+	_, err := e.verify(s, rightCode)
+	wantCode(t, err, domain.CodeRateLimited)
+	if e.flows.challenge(e.opened(t, "phone").ID).Attempts != 0 {
+		t.Error("a refused attempt counted on the challenge")
+	}
+}
+
+func TestResend(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	first := e.opened(t, "phone").ID
+
+	err := e.resend(s, "phone")
+	if de := asCode(t, err, domain.CodeResendTooSoon); de.RetryAfter != time.Minute {
+		t.Errorf("retry_after = %v; want 60s", de.RetryAfter)
+	}
+
+	e.clock.Advance(61 * time.Second)
+	if err := e.resend(s, "phone"); err != nil {
+		t.Fatalf("resend after 61s: %v", err)
+	}
+	if c := e.flows.challenge(first); c.Sends != 2 || len(e.flows.opened) != 2 {
+		t.Errorf("sends = %d, %d challenges; want the open one reused", c.Sends, len(e.flows.opened))
+	}
+
+	e.clock.Advance(5 * time.Minute) // the code expired
+	if err := e.resend(s, "phone"); err != nil {
+		t.Fatalf("resend after expiry: %v", err)
+	}
+	if c := e.flows.challenge(first); c.ClosedAt == nil {
+		t.Error("the expired challenge stays open")
+	}
+	second := e.opened(t, "phone").ID
+	if second == first || e.flows.challenge(second).Sends != 1 {
+		t.Errorf("want a new challenge, sent once")
+	}
+	if n := e.limiter.Hits(app.RuleSendIP, "192.0.2.10"); n != 5 {
+		t.Errorf("L-8 hits = %d; want 2 at start and one per resend", n)
+	}
+
+	// Exhaust it: resends wait for the cooldown.
+	for range 3 {
+		_, _ = e.verify(s, wrongCode)
+	}
+	err = e.resend(s, "phone")
+	if de := asCode(t, err, domain.CodeResendTooSoon); de.RetryAfter != 15*time.Minute {
+		t.Errorf("retry_after = %v; want the 15 min cooldown", de.RetryAfter)
+	}
+	e.clock.Advance(15 * time.Minute)
+	if err := e.resend(s, "phone"); err != nil {
+		t.Fatalf("resend after the cooldown: %v", err)
+	}
+
+	// A verified type has nothing to resend.
+	if _, err := e.verify(s, rightCode); err != nil {
+		t.Fatal(err)
+	}
+	wantCode(t, e.resend(s, "phone"), domain.CodeChallengeClosed)
+}
+
+func TestResendLimited(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	e.clock.Advance(time.Minute)
+	e.flows.counts = app.SendCounts{Short: 0, Long: 5} // other accounts used the value's hour budget (I-21)
+	wantCode(t, e.resend(s, "phone"), domain.CodeRateLimited)
+	if c := e.flows.challenge(e.opened(t, "phone").ID); c.Sends != 1 {
+		t.Errorf("sends = %d; a refused resend counted", c.Sends)
+	}
+}
+
+func TestConfirmLink(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	token := e.opened(t, "email").Secret
+	confirm := func() (app.LinkConfirmed, error) {
+		return e.reg.ConfirmLink(context.Background(), app.ConfirmLink{Token: []byte(token), IP: regIP})
+	}
+	got, err := confirm()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := app.LinkConfirmed{Purpose: flow.PurposeVerifyIdentifier, FlowID: s.FlowID, PendingTypes: []string{"phone"}}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("confirmed (-want +got):\n%s", diff)
+	}
+	if e.accounts.ids[0].Type != "email" || e.accounts.ids[0].VerifiedAt == nil || len(e.outbox.events) != 1 {
+		t.Error("the email was not verified with its event")
+	}
+	_, err = confirm()
+	wantCode(t, err, domain.CodeChallengeClosed)
+
+	if _, err := e.verify(s, rightCode); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.flows.byID[s.FlowID].State.(flow.RegistrationState); len(st.PendingTypes) != 0 {
+		t.Errorf("pending = %v; want none", st.PendingTypes)
+	}
+}
+
+func TestConfirmLinkUnknownToken(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	e.started(t)
+	_, err := e.reg.ConfirmLink(context.Background(), app.ConfirmLink{Token: bytes.Repeat([]byte("B"), 43), IP: regIP})
+	wantCode(t, err, domain.CodeChallengeClosed)
 }
