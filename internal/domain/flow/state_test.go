@@ -3,6 +3,7 @@ package flow
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -207,5 +208,22 @@ func TestStateHoldsNoSecret(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestRegistrationStateVerified(t *testing.T) {
+	t.Parallel()
+	s := RegistrationState{PendingTypes: []string{"email", "phone"}}
+	if got := s.Verified("email"); !slices.Equal(got.PendingTypes, []string{"phone"}) {
+		t.Errorf("Verified(email) = %v; want [phone]", got.PendingTypes)
+	}
+	if got := s.Verified("phone").Verified("email"); got.PendingTypes == nil || len(got.PendingTypes) != 0 {
+		t.Errorf("both verified = %#v; want an empty, non-nil list", got.PendingTypes)
+	}
+	if got := s.Verified("username"); !slices.Equal(got.PendingTypes, s.PendingTypes) {
+		t.Errorf("Verified(username) = %v; want unchanged", got.PendingTypes)
+	}
+	if !slices.Equal(s.PendingTypes, []string{"email", "phone"}) {
+		t.Errorf("Verified changed its receiver: %v", s.PendingTypes)
 	}
 }
