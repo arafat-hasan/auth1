@@ -772,3 +772,20 @@ func TestConfirmLinkUnknownToken(t *testing.T) {
 	_, err := e.reg.ConfirmLink(context.Background(), app.ConfirmLink{Token: bytes.Repeat([]byte("B"), 43), IP: regIP})
 	wantCode(t, err, domain.CodeChallengeClosed)
 }
+
+// TestVerifyCodeExpired: a code past its expiry is CHALLENGE_CLOSED, without a try counted; the
+// repository's Attempt does not look at expires_at, so the decision is the only guard.
+func TestVerifyCodeExpired(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	e.clock.Advance(challengeRules.OTPTTL + time.Second)
+	_, err := e.verify(s, rightCode)
+	wantCode(t, err, domain.CodeChallengeClosed)
+	if ch := e.flows.challenge(e.opened(t, "phone").ID); ch.Attempts != 0 || ch.ConsumedAt != nil {
+		t.Errorf("challenge = %+v; want untouched", ch.Challenge)
+	}
+	if e.accounts.ids[1].VerifiedAt != nil {
+		t.Error("an expired code verified the phone")
+	}
+}

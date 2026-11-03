@@ -450,3 +450,32 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+// TestVerifyAttemptsCommit (I-4, I-5): each wrong code's try is stored although the answer is an
+// error, so the third closes the challenge and the right code after it is refused; the closed
+// challenge holds no secret.
+func TestVerifyAttemptsCommit(t *testing.T) {
+	s := startRegServer(t)
+	flowID, handle := s.register(t, `{"email":"tries@example.org","phone":"`+regPhone+`"}`)
+	code := variable(t, s.messages(t, regPhone, 1)[0], "code")
+	for i, want := range []int{http.StatusBadRequest, http.StatusBadRequest, http.StatusGone} {
+		if a := s.verify(t, flowID, handle, wrong(code)); a.status != want {
+			t.Fatalf("wrong code %d: %d %s; want %d", i+1, a.status, a.raw, want)
+		}
+	}
+	s.verify(t, flowID, handle, code).want(t, http.StatusGone, "CHALLENGE_CLOSED")
+
+	var (
+		attempts         int
+		closed, consumed bool
+		secret           bool
+	)
+	if err := s.db.QueryRowContext(t.Context(), `SELECT attempts, closed_at IS NOT NULL, consumed_at IS NOT NULL,
+		secret IS NOT NULL FROM challenges WHERE method = 'sms_otp'`).Scan(&attempts, &closed, &consumed, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 || !closed || consumed || secret {
+		t.Errorf("challenge: attempts %d, closed %v, consumed %v, secret kept %v; want 3, closed unconsumed, no secret",
+			attempts, closed, consumed, secret)
+	}
+}
