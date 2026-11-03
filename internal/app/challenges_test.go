@@ -24,13 +24,13 @@ import (
 // counts.
 type sendFlows struct {
 	app.Flows
-	opened  []flow.NewChallengeRecord
-	sends   map[uuid.UUID]int
+	opened    []flow.NewChallengeRecord
+	sends     map[uuid.UUID]int
 	counts    app.SendCounts
 	exhausted *time.Time // returned by ExhaustedSince
 	within    []time.Duration
 	windows   []app.SendWindows
-	targets []string // type:value of each SendCounts call
+	targets   []string // type:value of each SendCounts call
 }
 
 func (f *sendFlows) OpenChallenge(_ context.Context, c flow.NewChallengeRecord) error {

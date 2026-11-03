@@ -153,7 +153,7 @@ Verifying a code:
 1. Normalise the identifier. Find the open `resume` challenges with its blind index whose flows are open, at most 3, newest first: the candidates. None answers as step 4 does.
 2. `[tx]` Lock the candidates' accounts in id order, then each flow, then its challenges (G-5). Compute the input's MAC for each candidate (each MAC is bound to its challenge id, §2.2) and compare in constant time.
 3. The try counts on every candidate (§2.2 step 2), so several open flows give no more guesses than one. A candidate whose attempts are used up closes (`exhausted`).
-4. No match: answer `CODE_INVALID` without `attempts_left`, whether there are candidates, open or exhausted, or none, as §5.2 does for a sign-in code. `resume` always answers 202, so its verify must not tell whether a flow holds the value. Count the failure per IP (L-12) and against each candidate's account (L-11).
+4. No match: answer `CODE_INVALID` without `attempts_left`, whether there are candidates, open or exhausted, or none, as §5.2 does for a sign-in code. `resume` always answers 202, so its verify must not tell whether a flow holds the value. L-12 has counted the attempt per IP; count the failure against each candidate's account (L-11).
 5. A match picks its flow (the newest, should two codes match). Its challenge is consumed; the other candidates stay open.
 
 On success, in the same transaction:

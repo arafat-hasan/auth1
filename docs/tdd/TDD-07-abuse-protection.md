@@ -39,8 +39,8 @@ send limits and budgets, and overload behaviour.
 | L-14 | Resume requests | IP | Redis | 10 / 1 h | 202 (silently not sent) | Fail open, alert |
 | L-15 | Token endpoint | Client id | Redis | 60 / 1 min | `invalid_client` after `429` semantics | Fail open, alert |
 
-L-12 counts every attempt, not only failures: a sliding window cannot be read without counting
-a hit, and counting only failures would let a correct guess through after the limit.
+L-12 counts every attempt, not only failures: the limiter's one operation (`Hit`) counts as it
+checks, and counting only failures would let a correct guess through after the limit.
 
 Order of checks: per-IP limits first (cheap), then the per-account and per-value limits, then any
 hashing. **Nothing hashes a password before L-1 and L-2 pass.**

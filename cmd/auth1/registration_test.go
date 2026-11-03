@@ -514,7 +514,7 @@ func TestResendRefusedRollsBack(t *testing.T) {
 	flowID, handle := s.register(t, `{"email":"budget@example.org","phone":"`+regPhone+`"}`)
 	time.Sleep(1100 * time.Millisecond)
 	s.resend(t, flowID, handle, "phone").want(t, http.StatusAccepted, "") // the second send: the budget is used
-	time.Sleep(3 * time.Second)                                            // the code has expired
+	time.Sleep(3 * time.Second)                                           // the code has expired
 	s.resend(t, flowID, handle, "phone").want(t, http.StatusTooManyRequests, "RATE_LIMITED")
 
 	var challenges, open int
