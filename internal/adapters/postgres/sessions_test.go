@@ -14,9 +14,12 @@ import (
 
 	"github.com/arafat-hasan/auth1/internal/adapters/crypto"
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
+	"github.com/arafat-hasan/auth1/internal/app"
 	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/domain/session"
 )
+
+var _ app.Sessions = (*postgres.Sessions)(nil)
 
 // grace is the refresh_reuse_grace the tests use.
 const grace = 10 * time.Second

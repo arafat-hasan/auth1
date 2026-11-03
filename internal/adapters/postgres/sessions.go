@@ -323,3 +323,18 @@ func (r *Sessions) ListLive(ctx context.Context, accountID uuid.UUID) ([]session
 	}
 	return list, nil
 }
+
+// EraseSuccessors implements app.Sessions. It reads the partial index refresh_tokens_successor;
+// a token it leaves is one tokenInGrace may still find in grace (I-13).
+func (r *Sessions) EraseSuccessors(ctx context.Context, grace time.Duration) (int64, error) {
+	res, err := Conn(ctx, r.db).ExecContext(ctx, `UPDATE refresh_tokens SET successor_enc = NULL
+		WHERE successor_enc IS NOT NULL AND rotated_at < now() - ? * interval '1 microsecond'`, micros(grace))
+	if err != nil {
+		return 0, fmt.Errorf("erase refresh successors: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("erase refresh successors: %w", err)
+	}
+	return n, nil
+}
