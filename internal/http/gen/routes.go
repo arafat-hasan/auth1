@@ -37,26 +37,45 @@ func Routes(si StrictServerInterface, pw *problem.Writer) func(chi.Router) {
 	}
 }
 
-// ServiceRoute returns a predicate telling, before dispatch, whether a request is for a service
-// operation (security workload or serviceToken) mounted under basePath. L-1 exempts them: their
-// callers share a sidecar's address (TDD-07 §8). It finds the route through the Chi router that
-// is handling the request, so it works in middleware installed with Use.
-func ServiceRoute(basePath string) func(*http.Request) bool {
-	service := map[string]bool{}
-	for _, op := range Operations {
-		if slices.Contains(op.Security, "workload") || slices.Contains(op.Security, "serviceToken") {
-			service[op.Method+" "+basePath+op.Path] = true
-		}
+// IsService reports whether op is a service operation: one whose security is workload or
+// serviceToken.
+func (op Operation) IsService() bool {
+	return slices.Contains(op.Security, "workload") || slices.Contains(op.Security, "serviceToken")
+}
+
+// Match returns a function finding, before dispatch, the operation a request is for among those
+// mounted under basePath: its id and route metadata, or ok false for none. It finds the route
+// pattern through the Chi router that is handling the request, never by the raw path, so it works
+// in middleware installed with Use.
+func Match(basePath string) func(*http.Request) (id string, op Operation, ok bool) {
+	byRoute := make(map[string]string, len(Operations))
+	for id, op := range Operations {
+		byRoute[op.Method+" "+basePath+op.Path] = id
 	}
-	return func(r *http.Request) bool {
+	return func(r *http.Request) (string, Operation, bool) {
 		rctx := chi.RouteContext(r.Context())
 		if rctx == nil || rctx.Routes == nil {
-			return false
+			return "", Operation{}, false
 		}
 		path := r.URL.RawPath
 		if path == "" {
 			path = r.URL.Path
 		}
-		return service[r.Method+" "+rctx.Routes.Find(chi.NewRouteContext(), r.Method, path)]
+		id, ok := byRoute[r.Method+" "+rctx.Routes.Find(chi.NewRouteContext(), r.Method, path)]
+		if !ok {
+			return "", Operation{}, false
+		}
+		return id, Operations[id], true
+	}
+}
+
+// ServiceRoute returns a predicate telling, before dispatch, whether a request is for a service
+// operation mounted under basePath (Match). L-1 exempts them: their callers share a sidecar's
+// address (TDD-07 §8).
+func ServiceRoute(basePath string) func(*http.Request) bool {
+	match := Match(basePath)
+	return func(r *http.Request) bool {
+		_, op, ok := match(r)
+		return ok && op.IsService()
 	}
 }
