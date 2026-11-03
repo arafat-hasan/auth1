@@ -45,7 +45,8 @@ type Options struct {
 	// the TCP peer.
 	ClientIP *clientip.Resolver
 	// APIMiddleware runs on the Routes and on every 404, after the router's own middleware: only
-	// the probes and the Dev routes never pass it. It holds the L-1 rate limit.
+	// the probes and the Dev routes never pass it. It holds the L-1 rate limit, then the
+	// service-caller middleware (caller.Resolver).
 	APIMiddleware []func(http.Handler) http.Handler
 	// Dev registers the development-only routes, such as GET /dev/messages, at the root: they are
 	// not part of the API contract. nil outside development.

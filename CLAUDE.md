@@ -297,3 +297,25 @@ actor). `handlers.NewAPI` takes the registration (nil keeps its operations at 50
 `cmd/auth1/registration.go` builds it. API tests in `cmd/auth1/registration_test.go` run `serve`
 (`startServeConfig`, phones under +44 allowed) with `dbResolver`, a test stand-in for the WP-43
 resolver that reads identifier values and open secrets from the database.
+
+Service callers (TDD-05 §1, §3): `internal/http/middleware/caller.Resolver` is in
+`server.Options.APIMiddleware` after `middleware.RateLimit`. It finds the operation before dispatch
+with `gen.Match(basePath)` (by route pattern; `gen.ServiceRoute` is built on it; the schemes are
+`gen.SchemeWorkload` and `gen.SchemeServiceToken`) and passes every operation that is not a
+service one through. For a service operation it resolves the caller by the credentials both
+`service_auth.mode` and the operation's security accept: a configured workload identity wins; in
+mode `both` an unconfigured one yields to a valid service token; none gives `401 TOKEN_INVALID`
+(an unset mode, development only, accepts none). It then checks `x-auth1-scope` (`403
+CALLER_NOT_ALLOWED`: `auth1_service_calls_denied_total{caller,scope}`, with `caller="unknown"` for
+a workload identity not in `service_auth.callers`; an `auth_audit` row `service_call_denied`
+written outside any transaction; a log line with only the request id, route pattern and decision;
+a failed audit write is logged and the call still refused), then `Auth1-Actor` (one value, 1–128
+of `\x20-\x7E`, else `422 VALIDATION_FAILED`). Handlers read `caller.From(ctx)` (a copy), never
+headers. Identity headers count only when the TCP peer (`RemoteAddr`, not `clientip`) is in
+`trusted_sidecar_cidrs` (an IPv4-mapped range counts as the IPv4 range); XFCC gives the first
+`URI` of its only element (`xfccURI`, fuzzed); `peer_cert` reads `r.TLS.VerifiedChains`, though
+nothing terminates TLS yet. Service tokens go through `caller.TokenVerifier`, nil until WP-70.
+`caller.New` refuses missing dependencies and a header-sourced mesh mode with no header name.
+`loadServiceAuth` in `cmd/auth1/serviceauth.go` maps the config for `config check` and `serve`,
+refusing a sidecar entry that is not a CIDR and an empty or repeated caller identity; `serve` warns
+for a sidecar range beyond loopback, for service tokens with no verifier and for `peer_cert`.
