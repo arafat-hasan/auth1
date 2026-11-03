@@ -4,12 +4,12 @@ import "strings"
 
 // xfccURI returns the URI of the client certificate that an X-Forwarded-Client-Cert header carries
 // (TDD-05 §1): the value of the first URI key of its only element. values are the header's lines.
-// It returns false, so the request has no workload identity, for more than one element (counted
-// across lines), for no URI or an empty one, and for anything it cannot parse.
+// It returns false, so the request has no workload identity, for more than one header line or
+// more than one element, for no URI or an empty one, and for anything it cannot parse.
 //
 // An element is key=value pairs separated by ';'; elements are separated by ','. A value may be in
 // double quotes, inside which ',', ';' and '=' are literal and a backslash escapes the next
-// character.
+// character; outside quotes a value may hold neither a quote nor a backslash.
 func xfccURI(values []string) (string, bool) {
 	if len(values) != 1 {
 		return "", false

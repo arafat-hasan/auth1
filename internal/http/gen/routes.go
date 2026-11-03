@@ -50,9 +50,9 @@ func (op Operation) IsService() bool {
 }
 
 // Match returns a function finding, before dispatch, the operation a request is for among those
-// mounted under basePath: its id and route metadata, or ok false for none. It finds the route
-// pattern through the Chi router that is handling the request, never by the raw path, so it works
-// in middleware installed with Use.
+// mounted under basePath: its id and route metadata, or ok false for none. It asks the Chi router
+// handling the request which route pattern the path matches, and keys on that pattern, never on
+// the request path itself, so it works in middleware installed with Use.
 func Match(basePath string) func(*http.Request) (id string, op Operation, ok bool) {
 	byRoute := make(map[string]string, len(Operations))
 	for id, op := range Operations {
