@@ -479,3 +479,29 @@ func TestVerifyAttemptsCommit(t *testing.T) {
 			attempts, closed, consumed, secret)
 	}
 }
+
+// TestCooldownAcrossAccounts (L-9): once a code to a phone has run out of attempts, no new code
+// goes to that phone for the cooldown, whichever account asks.
+func TestCooldownAcrossAccounts(t *testing.T) {
+	s := startRegServer(t, "AUTH1_OTP_RESEND_AFTER=1s")
+	flowA, handleA := s.register(t, `{"email":"first@example.org","phone":"`+regPhone+`"}`)
+	code := variable(t, s.messages(t, regPhone, 1)[0], "code")
+	for range 3 {
+		s.verify(t, flowA, handleA, wrong(code))
+	}
+	time.Sleep(1100 * time.Millisecond) // past the short window
+	flowB, handleB := s.register(t, `{"email":"second@example.org","phone":"`+regPhone+`"}`)
+	a := s.resend(t, flowB, handleB, "phone")
+	a.want(t, http.StatusTooManyRequests, "RESEND_TOO_SOON")
+	if retry, _ := a.body["retry_after"].(float64); retry < 800 || retry > 900 {
+		t.Errorf("retry_after = %v; want the rest of the 15-minute cooldown", a.body["retry_after"])
+	}
+	var unsent string
+	if err := s.db.QueryRowContext(t.Context(), `SELECT details->>'unsent_types' FROM auth_audit
+		WHERE action = 'registration.start' AND outcome = 'success' ORDER BY at DESC LIMIT 1`).Scan(&unsent); err != nil {
+		t.Fatal(err)
+	}
+	if unsent != `["phone"]` {
+		t.Errorf("the second registration's audit lists unsent %s; want [\"phone\"]", unsent)
+	}
+}

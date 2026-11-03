@@ -26,8 +26,10 @@ type sendFlows struct {
 	app.Flows
 	opened  []flow.NewChallengeRecord
 	sends   map[uuid.UUID]int
-	counts  app.SendCounts
-	windows []app.SendWindows
+	counts    app.SendCounts
+	exhausted *time.Time // returned by ExhaustedSince
+	within    []time.Duration
+	windows   []app.SendWindows
 	targets []string // type:value of each SendCounts call
 }
 
@@ -40,6 +42,11 @@ func (f *sendFlows) SendCounts(_ context.Context, targetType, value string, w ap
 	f.windows = append(f.windows, w)
 	f.targets = append(f.targets, targetType+":"+value)
 	return f.counts, nil
+}
+
+func (f *sendFlows) ExhaustedSince(_ context.Context, _, _ string, within time.Duration) (*time.Time, error) {
+	f.within = append(f.within, within)
+	return f.exhausted, nil
 }
 
 func (f *sendFlows) RecordSend(_ context.Context, id uuid.UUID) (int, error) {
@@ -262,5 +269,35 @@ func TestNewChallengesRefusesBadRules(t *testing.T) {
 			fakes.NewIDs(), fakes.NewClock(now), bytes.NewReader(nil), r); err == nil {
 			t.Errorf("%s: NewChallenges accepted %+v", name, r)
 		}
+	}
+}
+
+// TestChallengesSendCooldown (L-9): after a challenge to an address ran out of attempts, no new
+// send goes to that address, from any flow, until the cooldown has passed since it closed.
+func TestChallengesSendCooldown(t *testing.T) {
+	t.Parallel()
+	e := newChallengesEnv(t)
+	ctx := context.Background()
+	ch, err := e.c.OpenVerification(ctx, flowID, phoneID, flow.MethodSMSOTP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := now.Add(-5 * time.Minute)
+	e.flows.exhausted = &closed
+	err = e.c.Send(ctx, acct, ch, phoneID, message.SMS)
+	var de *domain.Error
+	if !errors.As(err, &de) || de.Code != domain.CodeResendTooSoon || de.RetryAfter != 10*time.Minute {
+		t.Fatalf("Send = %v; want RESEND_TOO_SOON with the 10 minutes left of the cooldown", err)
+	}
+	if len(e.flows.sends) != 0 || len(e.outbox.requests) != 0 {
+		t.Error("a send in the cooldown was recorded or written")
+	}
+	if !slices.Equal(e.flows.within, []time.Duration{15 * time.Minute}) {
+		t.Errorf("ExhaustedSince within %v; want the cooldown", e.flows.within)
+	}
+
+	e.flows.exhausted = nil
+	if err := e.c.Send(ctx, acct, ch, phoneID, message.SMS); err != nil {
+		t.Errorf("Send after the cooldown: %v", err)
 	}
 }

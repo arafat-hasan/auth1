@@ -60,8 +60,8 @@ func (r ChallengeRules) check() error {
 }
 
 // Challenges opens and sends the challenges of a flow (TDD-02 §2.2–§2.4), shared by the flow
-// families. Every method runs inside the caller's UnitOfWork.Do, after the account, flow and
-// challenge locks (G-5).
+// families. Every method runs inside the caller's UnitOfWork.Do, with the flow locked or opened in
+// it (OpenVerification) and the challenge locked or opened in it (Send), in the order of G-5.
 type Challenges struct {
 	flows Flows
 	out   OutboxWriter
@@ -130,14 +130,29 @@ func (c *Challenges) OpenVerification(ctx context.Context, flowID uuid.UUID, id 
 }
 
 // Send sends the open verify_identifier challenge ch to the identifier id of account a, by
-// channel, the identifier type's (TDD-02 §2.4): it checks the per-address send limits (L-7, I-21),
-// counts the send and writes the delivery request. A refusal is RESEND_TOO_SOON, with the short
-// window as its retry time, when the short window is full, and otherwise RATE_LIMITED, with the
-// long one; it counts and writes nothing. The challenge must be locked.
+// channel, the identifier type's (TDD-02 §2.4): it checks the per-address limits, counts the send
+// and writes the delivery request. Under the address lock SendCounts takes, it refuses with
+// RESEND_TOO_SOON while a challenge to the address, of any account or flow, closed exhausted less
+// than the cooldown ago (L-9), with the rest of the cooldown as the retry time; then with
+// RESEND_TOO_SOON, the short window as the retry time, when the short window is full, and
+// RATE_LIMITED, the long one, when the long window is (L-7, I-21). A refusal counts and writes
+// nothing. The challenge must be locked or opened in the transaction.
 func (c *Challenges) Send(ctx context.Context, a account.Account, ch flow.ChallengeRecord, id account.Identifier, channel message.Channel) error {
 	counts, err := c.flows.SendCounts(ctx, id.Type, id.Value, c.rules.Windows)
 	if err != nil {
 		return fmt.Errorf("send challenge: %w", err)
+	}
+	if c.rules.Cooldown > 0 {
+		closed, err := c.flows.ExhaustedSince(ctx, id.Type, id.Value, c.rules.Cooldown)
+		if err != nil {
+			return fmt.Errorf("send challenge: %w", err)
+		}
+		if closed != nil {
+			if wait := closed.Add(c.rules.Cooldown).Sub(c.clock.Now()); wait > 0 {
+				return &domain.Error{Code: domain.CodeResendTooSoon, Detail: "wait before asking for another code",
+					RetryAfter: (wait + time.Second - 1).Truncate(time.Second)}
+			}
+		}
 	}
 	switch {
 	case counts.Short >= c.rules.MaxShort:
