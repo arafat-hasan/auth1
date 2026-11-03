@@ -165,6 +165,19 @@ database's `now()`). It implements `app.TokenSigner` (`Sign(payload, typ)`) and 
 `testdata/example/secrets/signing` holds public test keys; a fresh database makes its key wait
 `min_publish_before_use` (tests set `AUTH1_KEYS_MIN_PUBLISH_BEFORE_USE=0s`).
 
+Access tokens (TDD-04 §1, §6 steps 1–2): `internal/app/tokens` takes the ports only.
+`tokens.Issuer.IssueAccess(Session, Account, Client)` signs exactly the §1 claims with `typ:
+at+jwt`: an active account gets the client's audience and its roles ∩ `allowed_roles`, sorted; a
+suspended or banned one the self audience (`tokens.self_audience`, else `http.issuer`) and `roles:
+[]`; anything else is `ErrNotIssuable`. `tokens.Validator.Validate(token)` refuses with one of
+`ErrMalformed`, `ErrType`, `ErrUnknownKey`, `ErrAlgorithm`, `ErrSignature`, `ErrClaims`,
+`ErrIssuer`, `ErrAudience`, `ErrExpired`, `ErrNotYetValid`, all matching `errors.Is(err,
+tokens.ErrInvalid)` and none holding token text. It accepts only a compact JWS whose header is
+`alg`, `kid`, `typ`; the `alg` must be the published key's own; `iss` is exact; `aud` is a
+client's audience (`Config.ClientAudiences`) or the self audience; `exp`, `nbf`, `iat` get
+`tokens.Leeway` (30 s). Tests sign with `fakes.NewKeys()` (RS256 and ES256, `SetActive`,
+`Unpublish`, `NoSigner`, `Private` for forging).
+
 Flows (TDD-02 §2, TDD-07 §5): `app.Flows` (`postgres.Flows`) stores `flow.Flow` /
 `flow.ChallengeRecord` (plaintext records in `internal/domain/flow/records.go`); callers pass the
 handle hash (`crypto.SHA256`), the link hash and the OTP MAC, and it seals `pending_secret`,
