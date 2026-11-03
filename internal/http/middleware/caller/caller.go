@@ -37,8 +37,10 @@ func (c Caller) Has(scope string) bool {
 type ctxKey struct{}
 
 // From returns the Caller that the middleware kept in ctx, and false outside a service operation.
+// Its Scopes are a copy, so a change to them stays with the reader.
 func From(ctx context.Context) (Caller, bool) {
 	c, ok := ctx.Value(ctxKey{}).(Caller)
+	c.Scopes = slices.Clone(c.Scopes)
 	return c, ok
 }
 

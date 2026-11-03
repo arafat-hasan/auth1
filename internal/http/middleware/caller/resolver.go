@@ -2,10 +2,12 @@ package caller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"slices"
 
 	"go.opentelemetry.io/otel/metric"
 
@@ -92,20 +94,54 @@ type Resolver struct {
 	sidecars []netip.Prefix
 }
 
-// New returns the resolver for o, or an error for a trusted sidecar that is not a CIDR.
+// New returns the resolver for o. It refuses missing dependencies (Problems, Audit, Denied,
+// Logger), a mode that reads the mesh header with no header name, and a trusted sidecar that is
+// not a CIDR or that is an IPv4-mapped range wider than the IPv4 space. It keeps its own copy of
+// Callers.
 func New(o Options) (*Resolver, error) {
+	for name, missing := range map[string]bool{
+		"Problems": o.Problems == nil, "Audit": o.Audit == nil, "Denied": o.Denied == nil, "Logger": o.Logger == nil,
+	} {
+		if missing {
+			return nil, fmt.Errorf("caller: Options.%s is required", name)
+		}
+	}
+	if (o.Mode == ModeMesh || o.Mode == ModeBoth) && o.Source == SourceHeader && o.Header == "" {
+		return nil, errors.New("caller: the mesh identity header has no name")
+	}
 	if o.Match == nil {
 		o.Match = gen.Match(o.BasePath)
 	}
+	callers := make(map[string][]string, len(o.Callers))
+	for id, scopes := range o.Callers {
+		callers[id] = slices.Clone(scopes)
+	}
+	o.Callers = callers
 	r := &Resolver{o: o}
 	for _, s := range o.TrustedSidecars {
-		p, err := netip.ParsePrefix(s)
+		p, err := sidecarPrefix(s)
 		if err != nil {
-			return nil, fmt.Errorf("caller: trusted sidecar %q is not a CIDR: %w", s, err)
+			return nil, err
 		}
-		r.sidecars = append(r.sidecars, p.Masked())
+		r.sidecars = append(r.sidecars, p)
 	}
 	return r, nil
+}
+
+// sidecarPrefix parses a trusted sidecar CIDR. An IPv4-mapped range becomes the IPv4 range it
+// names, since peers are compared unmapped.
+func sidecarPrefix(s string) (netip.Prefix, error) {
+	p, err := netip.ParsePrefix(s)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("caller: trusted sidecar %q is not a CIDR: %w", s, err)
+	}
+	if p.Addr().Is4In6() {
+		if p.Bits() < 96 {
+			return netip.Prefix{}, fmt.Errorf("caller: trusted sidecar %q is wider than the IPv4-mapped range", s)
+		}
+		p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+	}
+	return p.Masked(), nil
 }
 
 // workloadIdentity returns the request's workload identity (TDD-05 §1). A request that fails the
