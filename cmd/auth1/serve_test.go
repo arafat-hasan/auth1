@@ -318,6 +318,13 @@ func startServe(t *testing.T, environ []string, opts ...func(*serveDeps)) string
 // startServeWithMetrics is startServe, also returning the metrics server's base URL.
 func startServeWithMetrics(t *testing.T, environ []string, opts ...func(*serveDeps)) (api, metrics string) {
 	t.Helper()
+	return startServeConfig(t, "config.example.yaml", environ, opts...)
+}
+
+// startServeConfig is startServeWithMetrics on the configuration file config, relative to the
+// repository root or absolute.
+func startServeConfig(t *testing.T, config string, environ []string, opts ...func(*serveDeps)) (api, metrics string) {
+	t.Helper()
 	t.Chdir(filepath.Join("..", ".."))
 	restoreDefaults(t)
 
@@ -327,7 +334,7 @@ func startServeWithMetrics(t *testing.T, environ []string, opts ...func(*serveDe
 	for _, o := range opts {
 		o(&deps)
 	}
-	run := newTestServeCmd(deps, &bytes.Buffer{}, environ, "--config", "config.example.yaml")
+	run := newTestServeCmd(deps, &bytes.Buffer{}, environ, "--config", config)
 	done := make(chan error, 1)
 	go func() { done <- run(ctx) }()
 	t.Cleanup(func() {

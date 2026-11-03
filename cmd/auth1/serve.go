@@ -97,15 +97,17 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
-	// The registry, the message types and the password policy have no consumer until the use
-	// cases arrive; serve refuses a policy, a type table or a deny-list that start-up rejects.
-	if _, problems := loadIdentifiers(cfg); len(problems) > 0 {
+	// serve refuses a policy, a type table or a deny-list that start-up rejects.
+	registry, problems := loadIdentifiers(cfg)
+	if len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
-	if _, problems := loadMessageTypes(cfg); len(problems) > 0 {
+	types, problems := loadMessageTypes(cfg)
+	if len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
-	if _, problems := loadPasswordPolicy(cfg); len(problems) > 0 {
+	policy, problems := loadPasswordPolicy(cfg)
+	if len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
 	// The delivery relay hands the adapter its rows; the resolver arrives with WP-43.
@@ -176,7 +178,6 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
-	_ = hasher // consumed by the sign-in use cases (M5)
 	kr, err := keyring.New(ctx, cfg.Keys.KeyringFile.Path(), postgres.NewSigningKeys(db), keyring.Options{
 		MinPublishBeforeUse: cfg.Keys.MinPublishBeforeUse, AccessTTL: cfg.Tokens.AccessTTL,
 		Logger: logger, Keys: jwksKeys,
@@ -201,11 +202,18 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
+	registration, err := newRegistration(registrationParts{
+		cfg: cfg, db: db, keys: keys, registry: registry, types: types, policy: policy,
+		hasher: hasher, limits: limits, tracing: tel.TracerProvider(), logger: logger,
+	})
+	if err != nil {
+		return err
+	}
 	mode := cfg.ServiceAuth.Mode
 	api, err := handlers.NewAPI(kr, handlers.MetadataOptions{
 		Issuer: cfg.HTTP.Issuer, BasePath: cfg.HTTP.BasePath,
 		ClientCredentials: mode == config.ServiceAuthClientCredentials || mode == config.ServiceAuthBoth,
-	})
+	}, registration)
 	if err != nil {
 		return err
 	}

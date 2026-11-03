@@ -22,7 +22,7 @@ const (
 	RuleRegistrationIP Rule = "registration_ip" // L-4: registrations
 	RuleResetIP        Rule = "reset_ip"        // L-5: reset requests
 	RuleSendIP         Rule = "send_ip"         // L-8: codes and links sent
-	RuleVerifyIP       Rule = "verify_ip"       // L-12: failed verifications
+	RuleVerifyIP       Rule = "verify_ip"       // L-12: verification attempts (codes and links)
 	RuleResumeIP       Rule = "resume_ip"       // L-14: resume requests
 	RuleTokenClient    Rule = "token_client"    // L-15: client-credentials tokens, by client id
 )

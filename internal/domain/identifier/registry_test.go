@@ -2,10 +2,12 @@ package identifier
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
 )
 
@@ -154,3 +156,59 @@ type noSignIn struct{ Email }
 func (noSignIn) Name() string                     { return "nickname" }
 func (noSignIn) CanSignIn() bool                  { return false }
 func (noSignIn) CheckPolicy(Policy) []PolicyError { return nil }
+
+func TestNormaliseSet(t *testing.T) {
+	t.Parallel()
+	r, err := NewRegistry(Builtin(), map[string]Policy{
+		"email": {Required: true, Verify: flow.MethodEmailLink, SignIn: true},
+		"phone": {Verify: flow.MethodSMSOTP, CallingCodes: []string{"44"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const email, phone = "Someone@Example.COM", "+44 7400 123456"
+	tests := []struct {
+		name   string
+		raw    map[string]string
+		want   map[string]string
+		code   domain.Code
+		fields []domain.FieldError
+	}{
+		{"both", map[string]string{"email": email, "phone": phone},
+			map[string]string{"email": "someone@example.com", "phone": "+447400123456"}, "", nil},
+		{"required only", map[string]string{"email": email}, map[string]string{"email": "someone@example.com"}, "", nil},
+		{"required missing", map[string]string{"phone": phone}, nil, domain.CodeValidationFailed,
+			[]domain.FieldError{{Field: "identifiers.email", Code: domain.FieldRequired}}},
+		{"empty", map[string]string{}, nil, domain.CodeValidationFailed,
+			[]domain.FieldError{{Field: "identifiers.email", Code: domain.FieldRequired}}},
+		{"unknown type", map[string]string{"email": email, "username": "someone"}, nil, domain.CodeIdentifierNotAllowed, nil},
+		{"bad value", map[string]string{"email": email, "phone": "+1 202 555 0100"}, nil, domain.CodeIdentifierNotAllowed, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := r.NormaliseSet(tt.raw)
+			if tt.code == "" {
+				if err != nil {
+					t.Fatalf("NormaliseSet: %v", err)
+				}
+				if diff := cmp.Diff(tt.want, got); diff != "" {
+					t.Errorf("NormaliseSet (-want +got):\n%s", diff)
+				}
+				return
+			}
+			var de *domain.Error
+			if !errors.As(err, &de) || de.Code != tt.code {
+				t.Fatalf("NormaliseSet: %v; want %s", err, tt.code)
+			}
+			if diff := cmp.Diff(tt.fields, de.Fields); diff != "" {
+				t.Errorf("fields (-want +got):\n%s", diff)
+			}
+			for _, v := range tt.raw {
+				if strings.Contains(err.Error(), v) {
+					t.Errorf("error %q holds the value %q", err, v)
+				}
+			}
+		})
+	}
+}
