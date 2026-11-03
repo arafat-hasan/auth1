@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"maps"
+	"strings"
 	"testing"
 
 	"github.com/lestrrat-go/jwx/v3/jwa"
@@ -61,7 +62,8 @@ func sign(t *testing.T, alg jwa.SignatureAlgorithm, key any, hdr map[string]any,
 	return string(tok)
 }
 
-// unsigned returns header.payload. with an empty signature: an alg none token.
+// unsigned returns header.payload. with an empty signature; with alg none in hdr, an unsecured
+// JWS.
 func unsigned(t *testing.T, hdr map[string]any, claims map[string]any) string {
 	t.Helper()
 	enc := func(v any) string {
@@ -83,4 +85,37 @@ func rsaPublicDER(t *testing.T, e *env) []byte {
 		t.Fatal(err)
 	}
 	return der
+}
+
+// validToken returns a valid full token signed by the RSA key, from validClaims.
+func validToken(t *testing.T, e *env) string {
+	t.Helper()
+	rsaKid, _ := e.keys.Kids()
+	return sign(t, jwa.RS256(), e.keys.Private(rsaKid), map[string]any{"kid": rsaKid, "typ": "at+jwt"}, validClaims(t, e))
+}
+
+// ofLength returns an otherwise valid token of exactly n bytes, lengthened by a pad claim.
+// Unpadded base64url skips one length in four, so it tries both keys, whose signatures differ in
+// length.
+func ofLength(t *testing.T, e *env, n int) string {
+	t.Helper()
+	rsaKid, ecKid := e.keys.Kids()
+	claims := validClaims(t, e)
+	for _, k := range []struct {
+		kid string
+		alg jwa.SignatureAlgorithm
+	}{{rsaKid, jwa.RS256()}, {ecKid, jwa.ES256()}} {
+		hdr := map[string]any{"kid": k.kid, "typ": "at+jwt"}
+		at := func(pad int) string {
+			return sign(t, k.alg, e.keys.Private(k.kid), hdr, with(claims, map[string]any{"pad": strings.Repeat("x", pad)}))
+		}
+		start := max(0, (n-len(at(0)))*3/4-4)
+		for pad := start; pad < start+12; pad++ {
+			if tok := at(pad); len(tok) == n {
+				return tok
+			}
+		}
+	}
+	t.Fatalf("no token of %d bytes", n)
+	return ""
 }

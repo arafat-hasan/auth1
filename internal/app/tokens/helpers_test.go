@@ -65,12 +65,15 @@ type env struct {
 func newEnv(cfg tokens.Config) *env {
 	keys := fakes.NewKeys()
 	clock := fakes.NewClock(now)
-	return &env{
-		keys:  keys,
-		clock: clock,
-		iss:   tokens.NewIssuer(cfg, keys, clock, fakes.NewIDs()),
-		val:   tokens.NewValidator(cfg, keys, clock),
+	iss, err := tokens.NewIssuer(cfg, keys, clock, fakes.NewIDs())
+	if err != nil {
+		panic(err)
 	}
+	val, err := tokens.NewValidator(cfg, keys, clock)
+	if err != nil {
+		panic(err)
+	}
+	return &env{keys: keys, clock: clock, iss: iss, val: val}
 }
 
 // decode returns the protected header and the payload of the compact JWS tok, numbers as

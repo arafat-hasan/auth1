@@ -1,11 +1,16 @@
 package tokens_test
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/uuid"
 
 	"github.com/arafat-hasan/auth1/internal/app"
 	"github.com/arafat-hasan/auth1/internal/app/tokens"
@@ -176,6 +181,30 @@ func TestIssueAccessRefuses(t *testing.T) {
 			mutate: func(e *env, _ *tokens.Session) { e.keys.NoSigner() },
 			want:   app.ErrNoSigningKey,
 		},
+		{
+			name:   "signer fails",
+			status: account.StatusActive,
+			mutate: func(e *env, _ *tokens.Session) { e.keys.FailSign(errSigner) },
+			want:   errSigner,
+		},
+		{
+			name:   "no session id",
+			status: account.StatusActive,
+			mutate: func(_ *env, s *tokens.Session) { s.ID = uuid.Nil },
+			want:   tokens.ErrNotIssuable,
+		},
+		{
+			name:   "no sign-in time",
+			status: account.StatusActive,
+			mutate: func(_ *env, s *tokens.Session) { s.AuthTime = time.Time{} },
+			want:   tokens.ErrNotIssuable,
+		},
+		{
+			name:   "empty amr",
+			status: account.StatusActive,
+			mutate: func(_ *env, s *tokens.Session) { s.AMR = []string{"pwd", ""} },
+			want:   tokens.ErrNotIssuable,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -189,9 +218,89 @@ func TestIssueAccessRefuses(t *testing.T) {
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("err = %v, want %v", err, tt.want)
 			}
-			if got.Token != "" {
-				t.Error("a token alongside an error")
+			if d := cmp.Diff(tokens.Access{}, got); d != "" {
+				t.Errorf("Access alongside an error (-want +got):\n%s", d)
 			}
 		})
+	}
+}
+
+var errSigner = errors.New("signer broke")
+
+func TestIssueAccessRefusesInputs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		acct   func(*tokens.Account)
+		client func(*tokens.Client)
+	}{
+		{name: "no account id", acct: func(a *tokens.Account) { a.ID = uuid.Nil }},
+		{name: "no client id", client: func(c *tokens.Client) { c.ID = "" }},
+		{name: "no client audience", client: func(c *tokens.Client) { c.Audience = "" }},
+		{name: "client audience is the self audience", client: func(c *tokens.Client) { c.Audience = selfAudience }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newEnv(config())
+			a, c, s := acct(account.StatusActive), client(), session()
+			if tt.acct != nil {
+				tt.acct(&a)
+			}
+			if tt.client != nil {
+				tt.client(&c)
+				s.ClientID = c.ID
+			}
+			if _, err := e.iss.IssueAccess(s, a, c); !errors.Is(err, tokens.ErrNotIssuable) {
+				t.Errorf("err = %v, want ErrNotIssuable", err)
+			}
+		})
+	}
+}
+
+func TestNewIssuerRefusesConfig(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		change func(*tokens.Config)
+	}{
+		{name: "no issuer", change: func(c *tokens.Config) { c.Issuer = ""; c.SelfAudience = "" }},
+		{name: "zero ttl", change: func(c *tokens.Config) { c.AccessTTL = 0 }},
+		{name: "negative ttl", change: func(c *tokens.Config) { c.AccessTTL = -time.Minute }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config()
+			tt.change(&cfg)
+			if i, err := tokens.NewIssuer(cfg, fakes.NewKeys(), fakes.NewClock(now), fakes.NewIDs()); err == nil || i != nil {
+				t.Errorf("NewIssuer = %v, %v; want an error", i, err)
+			}
+		})
+	}
+}
+
+// TestAccessRedactsToken: an Access printed or logged never shows its token.
+func TestAccessRedactsToken(t *testing.T) {
+	t.Parallel()
+	e := newEnv(config())
+	got, err := e.iss.IssueAccess(session(), acct(account.StatusActive), client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	slog.New(slog.NewJSONHandler(&log, nil)).Info("issued", "access", got)
+	outs := map[string]string{
+		"%v": fmt.Sprintf("%v", got), "%+v": fmt.Sprintf("%+v", got), "%#v": fmt.Sprintf("%#v", got),
+		"%s": fmt.Sprintf("%s", got), "%d": fmt.Sprintf("%d", got), "pointer": fmt.Sprintf("%v", &got), "slog": log.String(),
+	}
+	sig := got.Token[strings.LastIndexByte(got.Token, '.')+1:]
+	for name, out := range outs {
+		if strings.Contains(out, sig) || strings.Contains(out, got.Token[:20]) {
+			t.Errorf("%s shows the token: %s", name, out)
+		}
+		if !strings.Contains(out, got.ID.String()) {
+			t.Errorf("%s does not show the jti: %s", name, out)
+		}
 	}
 }

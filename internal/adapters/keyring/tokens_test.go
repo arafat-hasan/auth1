@@ -12,9 +12,9 @@ import (
 	"github.com/arafat-hasan/auth1/internal/testing/fakes"
 )
 
-// TestTokensValidateAcrossRotation is R-1 on the validation side, with the real keyring: an access
-// token signed before a rotation still validates while its key is published as retired, and is
-// refused once the key leaves the file.
+// TestTokensValidateAcrossRotation is R-1 (#69) on the validation side, with the real keyring and
+// the rotation of TDD-04 §5.3: an access token signed before a rotation still validates while its
+// key is published as retired, and is refused once the key leaves the file.
 func TestTokensValidateAcrossRotation(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
@@ -33,8 +33,14 @@ func TestTokensValidateAcrossRotation(t *testing.T) {
 		ClientAudiences: []string{"https://api.example.com"},
 	}
 	clock := fakes.NewClock(time.Now())
-	iss := tokens.NewIssuer(cfg, k, clock, fakes.NewIDs())
-	val := tokens.NewValidator(cfg, k, clock)
+	iss, err := tokens.NewIssuer(cfg, k, clock, fakes.NewIDs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	val, err := tokens.NewValidator(cfg, k, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
 	issue := func() string {
 		t.Helper()
 		a, err := iss.IssueAccess(
