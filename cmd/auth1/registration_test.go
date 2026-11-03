@@ -505,3 +505,24 @@ func TestCooldownAcrossAccounts(t *testing.T) {
 		t.Errorf("the second registration's audit lists unsent %s; want [\"phone\"]", unsent)
 	}
 }
+
+// TestResendRefusedRollsBack: a resend that would replace an expired code, but whose send the
+// address's hour budget refuses, changes nothing: the old challenge is not closed and no new one
+// is opened.
+func TestResendRefusedRollsBack(t *testing.T) {
+	s := startRegServer(t, "AUTH1_OTP_RESEND_AFTER=1s", "AUTH1_OTP_MAX_SENDS_PER_HOUR=2", "AUTH1_OTP_TTL=3s")
+	flowID, handle := s.register(t, `{"email":"budget@example.org","phone":"`+regPhone+`"}`)
+	time.Sleep(1100 * time.Millisecond)
+	s.resend(t, flowID, handle, "phone").want(t, http.StatusAccepted, "") // the second send: the budget is used
+	time.Sleep(3 * time.Second)                                            // the code has expired
+	s.resend(t, flowID, handle, "phone").want(t, http.StatusTooManyRequests, "RATE_LIMITED")
+
+	var challenges, open int
+	if err := s.db.QueryRowContext(t.Context(), `SELECT count(*), count(*) FILTER (WHERE closed_at IS NULL)
+		FROM challenges WHERE method = 'sms_otp'`).Scan(&challenges, &open); err != nil {
+		t.Fatal(err)
+	}
+	if challenges != 1 || open != 1 {
+		t.Errorf("%d phone challenges, %d open; want the one, still open", challenges, open)
+	}
+}

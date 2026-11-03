@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
 
 	"github.com/arafat-hasan/auth1/internal/app"
@@ -137,11 +138,12 @@ func (a *regAccounts) VerifyIdentifier(_ context.Context, id uuid.UUID) error {
 // every miss with CHALLENGE_CLOSED, as postgres.Flows does.
 type regFlows struct {
 	*sendFlows
-	findErr error // returned by Find when set
-	clock   *fakes.Clock
-	flows   []flow.NewFlow
-	byID    map[uuid.UUID]*flow.Flow
-	chs     []*flow.ChallengeRecord
+	findErr       error                       // returned by Find when set
+	afterFindLink func(*flow.ChallengeRecord) // run when FindLink has found a challenge
+	clock         *fakes.Clock
+	flows         []flow.NewFlow
+	byID          map[uuid.UUID]*flow.Flow
+	chs           []*flow.ChallengeRecord
 }
 
 func closedErr() error {
@@ -182,6 +184,11 @@ func (f *regFlows) FindLink(_ context.Context, linkHash []byte) (flow.Flow, flow
 	for _, c := range f.chs {
 		if c.Method == flow.MethodEmailLink && c.ClosedAt == nil && bytes.Equal(c.SecretMAC, linkHash) {
 			if fl, ok := f.live(c.FlowID); ok {
+				defer func() {
+					if f.afterFindLink != nil {
+						f.afterFindLink(c) // what another request does before this one locks
+					}
+				}()
 				return *fl, *c, nil
 			}
 		}
@@ -308,12 +315,18 @@ const (
 
 func newRegEnv(t *testing.T) *regEnv {
 	t.Helper()
+	return newRegEnvEmail(t, emailPol)
+}
+
+// newRegEnvEmail is newRegEnv with the email policy email.
+func newRegEnvEmail(t *testing.T, email identifier.Policy) *regEnv {
+	t.Helper()
 	types, errs := message.NewTypes(nil)
 	if errs != nil {
 		t.Fatal(errs)
 	}
 	registry, err := identifier.NewRegistry(identifier.Builtin(), map[string]identifier.Policy{
-		"email": emailPol, "phone": phonePol,
+		"email": email, "phone": phonePol,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -771,6 +784,8 @@ func TestResend(t *testing.T) {
 	wantCode(t, e.resend(s, "phone"), domain.CodeChallengeClosed)
 }
 
+// TestResendLimited: a resend refused by the address's hour budget answers RATE_LIMITED and counts
+// no send. The rollback of a replaced challenge is TestResendRefusedRollsBack, on PostgreSQL.
 func TestResendLimited(t *testing.T) {
 	t.Parallel()
 	e := newRegEnv(t)
@@ -952,4 +967,193 @@ func TestNewRegistrationCopiesOptions(t *testing.T) {
 func hasDomainCode(err error, code domain.Code) bool {
 	var de *domain.Error
 	return errors.As(err, &de) && de.Code == code
+}
+
+// TestRegistrationAuditsRefusals: a refusal is audited with its code, and with the flow's id and
+// kind once the flow was found; a refusal by a per-IP limit is not audited.
+func TestRegistrationAuditsRefusals(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	audited := func() []app.AuditEntry { return e.audit.entries[1:] } // after Start's success
+
+	_, _ = e.verify(s, wrongCode)
+	_, _ = e.reg.VerifyCode(context.Background(), app.VerifyRegistrationCode{FlowID: fakes.ID(999), Handle: s.Handle,
+		IdentifierType: "phone", Code: flow.Secret(rightCode), IP: regIP})
+	for range 30 {
+		_, _ = e.limiter.Hit(context.Background(), app.RuleVerifyIP, "192.0.2.10", app.RateLimit{Limit: 30, Window: time.Hour})
+	}
+	_, _ = e.verify(s, rightCode) // L-12 refuses: not audited
+
+	got := audited()
+	if len(got) != 2 {
+		t.Fatalf("%d entries after the start; want 2: %+v", len(got), got)
+	}
+	want := []app.AuditEntry{
+		{ActorKind: app.ActorAnonymous, Action: "registration.verify", Outcome: app.OutcomeFailure, ClientID: "web", IP: regIP,
+			Details: map[string]any{"identifier_type": "phone", "flow_id": s.FlowID.String(), "kind": "registration", "code": "CODE_INVALID"}},
+		{ActorKind: app.ActorAnonymous, Action: "registration.verify", Outcome: app.OutcomeFailure, IP: regIP,
+			Details: map[string]any{"identifier_type": "phone", "code": "CHALLENGE_CLOSED"}},
+	}
+	if diff := cmp.Diff(want, got, cmpopts.EquateComparable(netip.Addr{})); diff != "" {
+		t.Errorf("audit (-want +got):\n%s", diff)
+	}
+}
+
+func TestConfirmLinkRateLimited(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	e.started(t)
+	for range 30 {
+		_, _ = e.limiter.Hit(context.Background(), app.RuleVerifyIP, "192.0.2.10", app.RateLimit{Limit: 30, Window: time.Hour})
+	}
+	_, err := e.reg.ConfirmLink(context.Background(), app.ConfirmLink{Token: e.opened(t, "email").Secret, IP: regIP})
+	wantCode(t, err, domain.CodeRateLimited)
+	if e.accounts.ids[0].VerifiedAt != nil {
+		t.Error("a refused confirmation verified the email")
+	}
+}
+
+// TestConfirmLinkSameMiss (I-20): a link of another purpose, a link into a flow of another kind,
+// and a link that closed between the find and the lock all answer the same CHALLENGE_CLOSED.
+func TestConfirmLinkSameMiss(t *testing.T) {
+	t.Parallel()
+	for name, edit := range map[string]func(*regEnv, app.RegistrationStarted){
+		"other purpose": func(e *regEnv, _ app.RegistrationStarted) {
+			e.flows.challenge(e.opened(t, "email").ID).Purpose = flow.PurposeEmailChangeNew
+		},
+		"other flow kind": func(e *regEnv, s app.RegistrationStarted) { e.flows.byID[s.FlowID].Kind = flow.KindEmailChange },
+		"closed before the lock": func(e *regEnv, _ app.RegistrationStarted) {
+			e.flows.afterFindLink = func(c *flow.ChallengeRecord) {
+				closed := e.clock.Now()
+				c.ClosedAt = &closed
+			}
+		},
+		"expired before the lock": func(e *regEnv, _ app.RegistrationStarted) {
+			e.flows.afterFindLink = func(*flow.ChallengeRecord) { e.clock.Advance(challengeRules.LinkTTL) }
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			e := newRegEnvLongFlow(t)
+			s := e.started(t)
+			edit(e, s)
+			_, err := e.reg.ConfirmLink(context.Background(), app.ConfirmLink{Token: e.opened(t, "email").Secret, IP: regIP})
+			if de := asCode(t, err, domain.CodeChallengeClosed); de.Detail != "the challenge is closed" {
+				t.Errorf("detail %q", de.Detail)
+			}
+			if e.accounts.ids[0].VerifiedAt != nil {
+				t.Error("the email was verified")
+			}
+		})
+	}
+}
+
+// newRegEnvLongFlow is newRegEnv with flows that outlive their links, so that a link can expire
+// in an open flow.
+func newRegEnvLongFlow(t *testing.T) *regEnv {
+	t.Helper()
+	e := newRegEnv(t)
+	o := e.opts
+	o.FlowTTL = 48 * time.Hour
+	reg, err := app.NewRegistration(e.deps, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.reg = reg
+	return e
+}
+
+func TestConfirmLinkComplete(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	if _, err := e.verify(s, rightCode); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.reg.ConfirmLink(context.Background(), app.ConfirmLink{Token: e.opened(t, "email").Secret, IP: regIP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Complete || len(got.PendingTypes) != 0 || got.PendingTypes == nil {
+		t.Errorf("confirmed = %+v; want complete with an empty, non-nil list", got)
+	}
+}
+
+// TestVerifyInvitationFlow: the registration steps serve invitation flows too (TDD-02 §8), keeping
+// the invitation's own state.
+func TestVerifyInvitationFlow(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	f := e.flows.byID[s.FlowID]
+	f.Kind = flow.KindInvitation
+	f.State = flow.InvitationState{Roles: []string{"user"}, Accepted: true, PendingTypes: []string{"email", "phone"}}
+	got, err := e.verify(s, rightCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.PendingTypes, []string{"email"}) {
+		t.Errorf("pending = %v", got.PendingTypes)
+	}
+	want := flow.InvitationState{Roles: []string{"user"}, Accepted: true, PendingTypes: []string{"email"}}
+	if diff := cmp.Diff(flow.State(want), f.State); diff != "" {
+		t.Errorf("state (-want +got):\n%s", diff)
+	}
+}
+
+// TestVerifyEmailCode: an email verified by code goes through VerifyCode like a phone.
+func TestVerifyEmailCode(t *testing.T) {
+	t.Parallel()
+	e := newRegEnvEmail(t, identifier.Policy{Required: true, Verify: flow.MethodEmailCode, SignIn: true})
+	s := e.started(t)
+	if m := e.opened(t, "email").Method; m != flow.MethodEmailCode {
+		t.Fatalf("email challenge by %s; want email_code", m)
+	}
+	if typ := e.outbox.requests[0].Type; typ != "auth.email_verification_code" {
+		t.Errorf("message type %q", typ)
+	}
+	got, err := e.reg.VerifyCode(context.Background(), app.VerifyRegistrationCode{FlowID: s.FlowID, Handle: s.Handle,
+		IdentifierType: "email", Code: flow.Secret(rightCode), IP: regIP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.PendingTypes, []string{"phone"}) || e.accounts.ids[0].VerifiedAt == nil {
+		t.Errorf("pending = %v; want the email verified", got.PendingTypes)
+	}
+}
+
+// TestStartRegistrationSkipsHourBudget: a send refused by the address's hour budget is skipped
+// like one refused by the short window.
+func TestStartRegistrationSkipsHourBudget(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	e.flows.counts = app.SendCounts{Long: 5}
+	e.started(t)
+	if len(e.flows.opened) != 2 || len(e.outbox.requests) != 0 {
+		t.Errorf("opened %d, wrote %d; want two open, unsent challenges", len(e.flows.opened), len(e.outbox.requests))
+	}
+	if got := e.audit.entries[0].Details["unsent_types"]; !cmp.Equal(got, []string{"email", "phone"}) {
+		t.Errorf("unsent_types = %v", got)
+	}
+}
+
+// TestResendEmailLinkAfterExpiry: an expired link is replaced by a new link challenge, with the
+// link lifetime.
+func TestResendEmailLinkAfterExpiry(t *testing.T) {
+	t.Parallel()
+	e := newRegEnvLongFlow(t)
+	s := e.started(t)
+	first := e.opened(t, "email")
+	e.clock.Advance(challengeRules.LinkTTL + time.Second)
+	if err := e.resend(s, "email"); err != nil {
+		t.Fatal(err)
+	}
+	second := e.opened(t, "email")
+	if second.ID == first.ID || second.Method != flow.MethodEmailLink || !second.ExpiresAt.Equal(e.clock.Now().Add(challengeRules.LinkTTL)) {
+		t.Errorf("new challenge = %+v; want a new link, living the link lifetime", second)
+	}
+	if e.flows.challenge(first.ID).ClosedAt == nil {
+		t.Error("the expired link stays open")
+	}
 }
