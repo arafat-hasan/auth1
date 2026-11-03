@@ -635,6 +635,9 @@ func TestVerifyCodeSameMiss(t *testing.T) {
 		{"expired flow", func(_ *app.VerifyRegistrationCode, e *regEnv) { e.clock.Advance(25 * time.Hour) }},
 		{"type not pending", func(c *app.VerifyRegistrationCode, _ *regEnv) { c.IdentifierType = "username" }},
 		{"link-verified type", func(c *app.VerifyRegistrationCode, _ *regEnv) { c.IdentifierType = "email" }},
+		{"flow of another kind", func(c *app.VerifyRegistrationCode, e *regEnv) {
+			e.flows.byID[c.FlowID].Kind = flow.KindSignIn // its own handle opens it, but not here
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
