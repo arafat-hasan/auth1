@@ -255,3 +255,18 @@ middleware installed by the router for every request via `server.Options.ClientI
 `internal/testing/redistest` (`Addr` with a per-test `Prefix`, needing `redistest.Main` in
 `TestMain`; `NewServer` with `Stop`/`Start`, which does not). The Docker gate and the restart proxy
 of pgtest and redistest live in `internal/testing/dockertest`.
+
+Registration (TDD-02 §2.4, §3): `app.Challenges` opens a `verify_identifier` challenge
+(`OpenVerification`: an OTP stored as `MAC.OTP`, or a link token stored as its SHA-256) and sends
+it (`Send`: `SendCounts` for L-7, `RecordSend`, then `Messages`; a refusal is `RESEND_TOO_SOON` or
+`RATE_LIMITED` and writes nothing). `app.Registration` has one method per step (`Start`,
+`VerifyCode`, `Resend`, `ConfirmLink`), each one `UnitOfWork.Do` after its per-IP limits (L-4,
+L-8, L-12) and, for `Start`, after hashing. A step whose writes must stand although it answers an
+error (a wrong or last code, `IDENTIFIER_TAKEN` after consuming) commits and returns the answer
+after `Do`; a refused resend rolls back. At `Start` a send refused by L-7 is skipped: the
+challenge stays open, unsent, for a resend. Failures are audited outside the transaction with the
+flow id and kind only; per-IP refusals are not audited. Event data types live in
+`internal/app/events.go`. `handlers.NewAPI` takes the registration (nil keeps its operations at
+501); `cmd/auth1/registration.go` builds it. API tests in `cmd/auth1/registration_test.go` run
+`serve` (`startServeConfig`, phones under +44 allowed) with `dbResolver`, a test stand-in for the
+WP-43 resolver that reads identifier values and open secrets from the database.
