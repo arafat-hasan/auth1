@@ -133,6 +133,18 @@ func (TOTPReplacementState) Kind() Kind { return KindTOTPReplacement }
 
 func (s RegistrationState) validate() error { return distinct("pending_types", s.PendingTypes) }
 
+// Verified returns s without idType among the pending types, which keep their order. s is not
+// changed; a type not pending changes nothing. With every type verified, the list is empty, not nil.
+func (s RegistrationState) Verified(idType string) RegistrationState {
+	pending := make([]string, 0, len(s.PendingTypes))
+	for _, t := range s.PendingTypes {
+		if t != idType {
+			pending = append(pending, t)
+		}
+	}
+	return RegistrationState{PendingTypes: pending}
+}
+
 func (s InvitationState) validate() error {
 	if err := distinct("roles", s.Roles); err != nil {
 		return err

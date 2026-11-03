@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
 )
 
@@ -75,6 +76,32 @@ func (r *Registry) Normalise(typ, raw string) (string, error) {
 		return "", notAllowed("the identifier type is not allowed")
 	}
 	return t.Normalise(raw, r.policies[typ])
+}
+
+// NormaliseSet returns the normalised value of each of raw's identifiers, keyed by type, as a
+// registration gives them (TDD-02 §3 step 2). Every configured type the policy requires must be
+// present: those missing are one VALIDATION_FAILED, each named "identifiers.<type>". A type the
+// policy does not configure, or a value that does not normalise, is IDENTIFIER_NOT_ALLOWED. No
+// error holds a value.
+func (r *Registry) NormaliseSet(raw map[string]string) (map[string]string, error) {
+	var missing []domain.FieldError
+	for _, name := range r.Types() {
+		if _, ok := raw[name]; !ok && r.policies[name].Required {
+			missing = append(missing, domain.FieldError{Field: "identifiers." + name, Code: domain.FieldRequired})
+		}
+	}
+	if len(missing) > 0 {
+		return nil, &domain.Error{Code: domain.CodeValidationFailed, Detail: "the request has invalid fields", Fields: missing}
+	}
+	out := make(map[string]string, len(raw))
+	for _, name := range slices.Sorted(maps.Keys(raw)) {
+		v, err := r.Normalise(name, raw[name])
+		if err != nil {
+			return nil, err
+		}
+		out[name] = v
+	}
+	return out, nil
 }
 
 // Variants returns the variants of a normalised value of the type named typ, or nil for a type the

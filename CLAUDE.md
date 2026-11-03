@@ -256,6 +256,27 @@ middleware installed by the router for every request via `server.Options.ClientI
 `TestMain`; `NewServer` with `Stop`/`Start`, which does not). The Docker gate and the restart proxy
 of pgtest and redistest live in `internal/testing/dockertest`.
 
+Registration (TDD-02 §2.4, §3): `app.Challenges` (`NewChallenges` refuses unusable
+`ChallengeRules`) opens a `verify_identifier` challenge (`OpenVerification`: an OTP stored as
+`MAC.OTP`, or a link token stored as its SHA-256) and sends it (`Send`: `SendCounts` takes the
+address lock, then the L-9 cooldown through `ExhaustedSince` and L-7, `RecordSend`, then
+`Messages`; a refusal is `RESEND_TOO_SOON` or `RATE_LIMITED` and writes nothing). Its
+`ResendRules` are the per-challenge resend rules. `app.Registration` (`NewRegistration` refuses a
+missing dependency) has one method per step (`Start`, `VerifyCode`, `Resend`, `ConfirmLink`), each
+one `UnitOfWork.Do` after its per-IP limits (L-4, L-8, L-12) and, for `Start`, after hashing. A
+step whose writes must stand although it answers an error (a wrong or last code,
+`IDENTIFIER_TAKEN` after consuming) commits and returns the answer after `Do`; a refused resend
+rolls back. At `Start` a send refused by L-7 or L-9 is skipped: the challenge stays open, unsent,
+for a resend, and the success audit lists `unsent_types`. Refusals are audited outside the
+transaction with their code (and the flow id and kind once the flow is found), never a value; an
+audit entry that cannot be written is logged; per-IP refusals and store failures are not audited.
+A flow, account or identifier gone under the lock is the same `CHALLENGE_CLOSED`. Command secrets
+are `flow.Secret`. Event data types live in `internal/app/events.go` (`AccountActor` builds the
+actor). `handlers.NewAPI` takes the registration (nil keeps its operations at 501);
+`cmd/auth1/registration.go` builds it. API tests in `cmd/auth1/registration_test.go` run `serve`
+(`startServeConfig`, phones under +44 allowed) with `dbResolver`, a test stand-in for the WP-43
+resolver that reads identifier values and open secrets from the database.
+
 Service callers (TDD-05 §1, §3): `internal/http/middleware/caller.Resolver` is in
 `server.Options.APIMiddleware` after `middleware.RateLimit`. It finds the operation before dispatch
 with `gen.Match(basePath)` (by route pattern; `gen.ServiceRoute` is built on it; the schemes are

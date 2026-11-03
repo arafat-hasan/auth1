@@ -152,7 +152,7 @@ rate_limits:
   reset_ip:           { limit: 10, window: 1h }    # reset requests per IP
   reset_account:      { limit: 3, window: 1h }     # reset requests per account
   send_ip:            { limit: 20, window: 1h }    # codes and links sent per IP
-  verify_ip:          { limit: 30, window: 1h }    # verification attempts per IP
+  verify_ip:          { limit: 30, window: 1h }    # verification attempts (codes and links) per IP
   resume_ip:          { limit: 10, window: 1h }    # flow resumes per IP
   token_client:       { limit: 60, window: 1m }    # client-credentials tokens per client
   factor_failures:    { limit: 10, window: 1h }    # second-factor failures per account
