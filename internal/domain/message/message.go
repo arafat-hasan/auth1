@@ -14,6 +14,7 @@ type Purpose string
 const (
 	PhoneVerificationCode      Purpose = "phone_verification_code"
 	EmailVerificationLink      Purpose = "email_verification_link"
+	EmailVerificationCode      Purpose = "email_verification_code"
 	RegistrationResume         Purpose = "registration_resume"
 	SignInCode                 Purpose = "sign_in_code"
 	PasswordResetLink          Purpose = "password_reset_link"
@@ -66,6 +67,7 @@ var purposes = []struct {
 }{
 	{PhoneVerificationCode, Spec{"auth.phone_verification_code", SMS, Code, []string{"code"}}},
 	{EmailVerificationLink, Spec{"auth.email_verification_link", Email, Link, []string{"link"}}},
+	{EmailVerificationCode, Spec{"auth.email_verification_code", Email, Code, []string{"code"}}},
 	{RegistrationResume, Spec{"auth.registration_resume", "", CodeOrLink, []string{"code", "link"}}},
 	{SignInCode, Spec{"auth.sign_in_code", "", Code, []string{"code"}}},
 	{PasswordResetLink, Spec{"auth.password_reset_link", Email, Link, []string{"link"}}},

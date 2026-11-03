@@ -14,6 +14,7 @@ func TestDefaultTypes(t *testing.T) {
 	want := map[Purpose]Spec{
 		PhoneVerificationCode:      {"auth.phone_verification_code", SMS, Code, []string{"code"}},
 		EmailVerificationLink:      {"auth.email_verification_link", Email, Link, []string{"link"}},
+		EmailVerificationCode:      {"auth.email_verification_code", Email, Code, []string{"code"}},
 		RegistrationResume:         {"auth.registration_resume", "", CodeOrLink, []string{"code", "link"}},
 		SignInCode:                 {"auth.sign_in_code", "", Code, []string{"code"}},
 		PasswordResetLink:          {"auth.password_reset_link", Email, Link, []string{"link"}},
