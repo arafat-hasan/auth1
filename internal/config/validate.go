@@ -80,8 +80,16 @@ func (v *validator) required() {
 			v.add(p+".id", "duplicate client id %q", cl.ID)
 		}
 		ids[cl.ID] = true
-		if cl.Audience == "" {
+		self := c.Tokens.SelfAudience
+		if self == "" {
+			self = c.HTTP.Issuer
+		}
+		switch cl.Audience {
+		case "":
 			v.add(p+".audience", "required")
+		case self:
+			// A restricted token would then pass the client's audience check (SDD D-5).
+			v.add(p+".audience", "%q is the self audience of restricted tokens", cl.Audience)
 		}
 	}
 
