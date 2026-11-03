@@ -340,7 +340,7 @@ func startCmd() app.StartRegistration {
 	return app.StartRegistration{
 		ClientID: "web", DisplayName: "Someone", Locale: "en-GB",
 		Identifiers: map[string]string{"email": regEmail, "phone": regPhone},
-		Password:    []byte(regPassword), IP: regIP, UserAgent: "test",
+		Password:    []byte(regPassword), IP: regIP,
 	}
 }
 

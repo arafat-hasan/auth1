@@ -12,15 +12,17 @@ var _ gen.StrictServerInterface = (*API)(nil)
 type API struct {
 	gen.Stub
 
-	keys     app.PublicKeys
-	metadata gen.ServerMetadata
+	keys         app.PublicKeys
+	metadata     gen.ServerMetadata
+	registration Registration
 }
 
-// NewAPI returns the API serving keys as the JWKS and the metadata m describes.
-func NewAPI(keys app.PublicKeys, m MetadataOptions) (*API, error) {
+// NewAPI returns the API serving keys as the JWKS, the metadata m describes, and the registration
+// steps of reg; a nil reg leaves them answering 501.
+func NewAPI(keys app.PublicKeys, m MetadataOptions, reg Registration) (*API, error) {
 	md, err := serverMetadata(m)
 	if err != nil {
 		return nil, err
 	}
-	return &API{keys: keys, metadata: md}, nil
+	return &API{keys: keys, metadata: md, registration: reg}, nil
 }

@@ -205,7 +205,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	api, err := handlers.NewAPI(kr, handlers.MetadataOptions{
 		Issuer: cfg.HTTP.Issuer, BasePath: cfg.HTTP.BasePath,
 		ClientCredentials: mode == config.ServiceAuthClientCredentials || mode == config.ServiceAuthBoth,
-	})
+	}, nil)
 	if err != nil {
 		return err
 	}

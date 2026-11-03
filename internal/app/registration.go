@@ -89,7 +89,6 @@ type StartRegistration struct {
 	Identifiers map[string]string // raw value by type
 	Password    []byte
 	IP          netip.Addr
-	UserAgent   string
 }
 
 // RegistrationStarted is a started registration: the flow, its handle (returned once, stored as
@@ -109,7 +108,7 @@ type RegistrationStarted struct {
 // for a resend (TDD-02 §3 step 5).
 func (r *Registration) Start(ctx context.Context, cmd StartRegistration) (RegistrationStarted, error) {
 	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationStart, ClientID: cmd.ClientID,
-		IP: cmd.IP, UserAgent: cmd.UserAgent}
+		IP: cmd.IP}
 	if c, ok := r.o.Clients[cmd.ClientID]; !ok || !c.SelfRegistration {
 		return RegistrationStarted{}, r.fail(ctx, entry, invalidField("client_id", domain.FieldUnknown))
 	}
@@ -245,7 +244,6 @@ type VerifyRegistrationCode struct {
 	IdentifierType string
 	Code           []byte
 	IP             netip.Addr
-	UserAgent      string
 }
 
 // RegistrationProgress is what a flow still needs verified.
@@ -260,14 +258,12 @@ type ResendRegistration struct {
 	Handle         []byte
 	IdentifierType string
 	IP             netip.Addr
-	UserAgent      string
 }
 
 // ConfirmLink is an emailed link's token (POST /v1/verification-links/confirm).
 type ConfirmLink struct {
-	Token     []byte
-	IP        netip.Addr
-	UserAgent string
+	Token []byte
+	IP    netip.Addr
 }
 
 // LinkConfirmed is a confirmed link: its purpose, its flow, whether the flow needs nothing more
@@ -360,7 +356,7 @@ func (r *Registration) findFlow(ctx context.Context, id uuid.UUID, handle []byte
 // the challenge stays consumed and the answer is IDENTIFIER_TAKEN (I-1). Counted tries and a
 // consumed challenge commit whatever the answer.
 func (r *Registration) VerifyCode(ctx context.Context, cmd VerifyRegistrationCode) (RegistrationProgress, error) {
-	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationVerify, IP: cmd.IP, UserAgent: cmd.UserAgent,
+	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationVerify, IP: cmd.IP,
 		Details: map[string]any{"identifier_type": cmd.IdentifierType}}
 	if err := r.d.Limits.CheckIP(ctx, RuleVerifyIP, cmd.IP); err != nil {
 		return RegistrationProgress{}, err
@@ -460,7 +456,7 @@ func (r *Registration) verified(ctx context.Context, l locked, id account.Identi
 // cooldown after its attempts ran out has passed. The per-address send limits (L-7) and the
 // per-IP send window (L-8) apply. A type not pending is CHALLENGE_CLOSED.
 func (r *Registration) Resend(ctx context.Context, cmd ResendRegistration) error {
-	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationResend, IP: cmd.IP, UserAgent: cmd.UserAgent,
+	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationResend, IP: cmd.IP,
 		Details: map[string]any{"identifier_type": cmd.IdentifierType}}
 	if err := r.d.Limits.CheckIP(ctx, RuleSendIP, cmd.IP); err != nil {
 		return err
@@ -522,7 +518,7 @@ var errRefused = errors.New("refused")
 // verify_identifier; a token of another purpose, or one that matches no open challenge, is
 // CHALLENGE_CLOSED. A link has no attempt counter: a wrong token matches nothing (TDD-02 §2.2).
 func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkConfirmed, error) {
-	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditVerificationConfirm, IP: cmd.IP, UserAgent: cmd.UserAgent}
+	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditVerificationConfirm, IP: cmd.IP}
 	if err := r.d.Limits.CheckIP(ctx, RuleVerifyIP, cmd.IP); err != nil {
 		return LinkConfirmed{}, err
 	}
