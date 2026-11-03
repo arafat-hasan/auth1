@@ -403,3 +403,34 @@ func TestDenialLogsNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+// TestModeBothFallsBackToToken: in mode both, a workload identity that service_auth.callers does
+// not name does not shadow a valid service token (TDD-05 §3: either is accepted); a configured
+// workload identity still wins, and with no valid token the unknown identity is denied as before.
+func TestModeBothFallsBackToToken(t *testing.T) {
+	t.Parallel()
+	rg := newRig(t, func(o *Options) { o.Mode = ModeBoth; o.Tokens = tokens{} })
+	unknown := xfcc("spiffe://cluster.local/ns/reports/sa/reports")
+
+	if got := rg.call(t, http.MethodPost, "/v1/introspect", sidecar, unknown, "Authorization: Bearer good").Code; got != http.StatusNoContent {
+		t.Fatalf("unconfigured identity and a valid token: status %d, want 204", got)
+	}
+	if rg.caller.Kind != KindClient || rg.caller.ID != "reports" {
+		t.Errorf("unconfigured identity and a valid token: Caller %+v, want the client", rg.caller)
+	}
+	if n := len(rg.audit.written()); n != 0 {
+		t.Errorf("%d audit entries for an accepted call", n)
+	}
+
+	if got := rg.call(t, http.MethodPost, "/v1/introspect", sidecar, xfcc(spiffe), "Authorization: Bearer good").Code; got != http.StatusNoContent {
+		t.Fatalf("configured identity and a valid token: status %d, want 204", got)
+	}
+	if rg.caller.Kind != KindWorkload || rg.caller.ID != spiffe {
+		t.Errorf("configured identity and a valid token: Caller %+v, want the workload", rg.caller)
+	}
+
+	resp := rg.call(t, http.MethodPost, "/v1/introspect", sidecar, unknown, "Authorization: Bearer bad")
+	if got := code(t, resp, http.StatusForbidden); got != "CALLER_NOT_ALLOWED" {
+		t.Errorf("unconfigured identity and a bad token: code %q, want CALLER_NOT_ALLOWED", got)
+	}
+}

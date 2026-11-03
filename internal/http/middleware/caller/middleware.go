@@ -72,23 +72,42 @@ func (r *Resolver) Middleware(next http.Handler) http.Handler {
 }
 
 // resolve returns the request's caller, by the credentials that both the mode and the operation's
-// security accept.
+// security accept. A configured workload identity wins. An unconfigured one does not shadow a
+// valid service token (mode both); without one it is the caller, with no scopes, and is denied.
 func (r *Resolver) resolve(req *http.Request, op gen.Operation) (Caller, bool) {
 	mode := r.o.Mode
-	if (mode == ModeMesh || mode == ModeBoth) && slices.Contains(op.Security, "workload") {
+	var workload Caller
+	if (mode == ModeMesh || mode == ModeBoth) && slices.Contains(op.Security, gen.SchemeWorkload) {
 		if id, ok := r.workloadIdentity(req); ok {
-			return Caller{Kind: KindWorkload, ID: id, Scopes: slices.Clone(r.o.Callers[id])}, true
-		}
-	}
-	if (mode == ModeClientCredentials || mode == ModeBoth) && slices.Contains(op.Security, "serviceToken") && r.o.Tokens != nil {
-		scheme, token, _ := strings.Cut(req.Header.Get("Authorization"), " ")
-		if strings.EqualFold(scheme, "Bearer") && token != "" {
-			if c, err := r.o.Tokens.VerifyServiceToken(req.Context(), token); err == nil && c.Kind == KindClient && c.ID != "" {
-				return c, true
+			scopes, known := r.o.Callers[id]
+			workload = Caller{Kind: KindWorkload, ID: id, Scopes: slices.Clone(scopes)}
+			if known {
+				return workload, true
 			}
 		}
 	}
-	return Caller{}, false
+	if c, ok := r.token(req, op); ok {
+		return c, true
+	}
+	return workload, workload.ID != ""
+}
+
+// token returns the client of a valid service token, when the mode and the operation's security
+// accept one.
+func (r *Resolver) token(req *http.Request, op gen.Operation) (Caller, bool) {
+	mode := r.o.Mode
+	if (mode != ModeClientCredentials && mode != ModeBoth) || !slices.Contains(op.Security, gen.SchemeServiceToken) || r.o.Tokens == nil {
+		return Caller{}, false
+	}
+	scheme, token, _ := strings.Cut(req.Header.Get("Authorization"), " ")
+	if !strings.EqualFold(scheme, "Bearer") || token == "" {
+		return Caller{}, false
+	}
+	c, err := r.o.Tokens.VerifyServiceToken(req.Context(), token)
+	if err != nil || c.Kind != KindClient || c.ID == "" {
+		return Caller{}, false
+	}
+	return Caller{Kind: KindClient, ID: c.ID, Scopes: slices.Clone(c.Scopes)}, true
 }
 
 // deny counts, audits and logs the refusal of c on operation id. act is the Auth1-Actor if valid.

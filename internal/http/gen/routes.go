@@ -37,10 +37,16 @@ func Routes(si StrictServerInterface, pw *problem.Writer) func(chi.Router) {
 	}
 }
 
+// The security schemes of service operations, as api/openapi.yaml names them.
+const (
+	SchemeWorkload     = "workload"
+	SchemeServiceToken = "serviceToken"
+)
+
 // IsService reports whether op is a service operation: one whose security is workload or
 // serviceToken.
 func (op Operation) IsService() bool {
-	return slices.Contains(op.Security, "workload") || slices.Contains(op.Security, "serviceToken")
+	return slices.Contains(op.Security, SchemeWorkload) || slices.Contains(op.Security, SchemeServiceToken)
 }
 
 // Match returns a function finding, before dispatch, the operation a request is for among those
