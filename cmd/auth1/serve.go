@@ -237,6 +237,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		return err
 	}
 	callers.Problems, callers.Audit, callers.Logger = pw, postgres.NewAudit(db), logger
+	warnServiceAuth(logger, callers)
 	services, err := caller.New(callers)
 	if err != nil {
 		return err
