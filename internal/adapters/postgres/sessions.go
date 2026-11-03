@@ -251,3 +251,75 @@ func (r *Sessions) Successor(ctx context.Context, sessionID uuid.UUID, tokenHash
 		prevHash, prevEnc, hash = hash, enc, next
 	}
 }
+
+// Revoke implements app.Sessions.
+func (r *Sessions) Revoke(ctx context.Context, id uuid.UUID, reason session.RevokeReason) (bool, error) {
+	t, err := lockedSession(ctx, "revoke session", id)
+	if err != nil {
+		return false, err
+	}
+	res, err := t.tx.ExecContext(ctx,
+		"UPDATE sessions SET revoked_at = now(), revoke_reason = ? WHERE id = ? AND revoked_at IS NULL", reason, id)
+	if err != nil {
+		return false, fmt.Errorf("revoke session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("revoke session: %w", err)
+	}
+	return n == 1, nil
+}
+
+// RevokeAll implements app.Sessions.
+func (r *Sessions) RevokeAll(ctx context.Context, accountID uuid.UUID, reason session.RevokeReason) (int, error) {
+	return r.revokeAccount(ctx, "revoke sessions", accountID, uuid.Nil, reason)
+}
+
+// RevokeAllExcept implements app.Sessions.
+func (r *Sessions) RevokeAllExcept(ctx context.Context, accountID, keep uuid.UUID, reason session.RevokeReason) (int, error) {
+	return r.revokeAccount(ctx, "revoke other sessions", accountID, keep, reason)
+}
+
+// revokeAccount revokes the account's live sessions but keep (none when it is the nil uuid) for
+// reason, and returns how many.
+func (r *Sessions) revokeAccount(ctx context.Context, op string, accountID, keep uuid.UUID, reason session.RevokeReason) (int, error) {
+	t := txFrom(ctx)
+	if t == nil {
+		return 0, fmt.Errorf("%s: %w", op, ErrNoTransaction)
+	}
+	if t.account(accountID) == nil {
+		return 0, fmt.Errorf("%s: %w", op, ErrLockOrder)
+	}
+	res, err := t.tx.ExecContext(ctx, "UPDATE sessions s SET revoked_at = now(), revoke_reason = ? "+
+		"WHERE s.account_id = ? AND s.id <> ? AND "+sessionLive, reason, accountID, keep)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+	return int(n), nil
+}
+
+// ListLive implements app.Sessions.
+func (r *Sessions) ListLive(ctx context.Context, accountID uuid.UUID) ([]session.Session, error) {
+	rows, err := Conn(ctx, r.db).QueryContext(ctx, "SELECT "+sessionColumns+" FROM sessions s "+
+		"WHERE s.account_id = ? AND "+sessionLive+" ORDER BY s.created_at DESC, s.id DESC", accountID)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var list []session.Session
+	for rows.Next() {
+		s, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list sessions: %w", err)
+		}
+		list = append(list, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	return list, nil
+}
