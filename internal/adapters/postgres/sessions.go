@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -151,4 +152,53 @@ func (r *Sessions) LockSession(ctx context.Context, accountID, id uuid.UUID) (se
 	}
 	t.lockSession(s.ID)
 	return s, nil
+}
+
+// lockedSession returns the transaction, or the error of op when ctx carries none or the session
+// id is not locked in it.
+func lockedSession(ctx context.Context, op string, id uuid.UUID) (*txn, error) {
+	t := txFrom(ctx)
+	if t == nil {
+		return nil, fmt.Errorf("%s: %w", op, ErrNoTransaction)
+	}
+	if !slices.Contains(t.sessions, id) {
+		return nil, fmt.Errorf("%s: %w", op, ErrLockOrder)
+	}
+	return t, nil
+}
+
+// Rotate implements app.Sessions. One statement marks the token rotated only while it is current
+// (I-3), stores the successor from that update's result, so nothing is stored when it rotates
+// nothing, and touches the session.
+func (r *Sessions) Rotate(ctx context.Context, sessionID uuid.UUID, tokenHash, successorHash, successor []byte, idleTTL time.Duration) (bool, error) {
+	t, err := lockedSession(ctx, "rotate refresh token", sessionID)
+	if err != nil {
+		return false, err
+	}
+	enc, err := r.fc.Seal(app.NewKeyPlace(tableRefreshTokens, "successor_enc", tokenHash), successor)
+	if err != nil {
+		return false, fmt.Errorf("rotate refresh token: seal successor: %w", err)
+	}
+	res, err := t.tx.ExecContext(ctx, `
+		WITH rotated AS (
+			UPDATE refresh_tokens SET rotated_at = now(), successor_hash = ?, successor_enc = ?
+			WHERE token_hash = ? AND session_id = ? AND rotated_at IS NULL
+			RETURNING session_id
+		), stored AS (
+			INSERT INTO refresh_tokens (token_hash, session_id, issued_at)
+			SELECT ?, session_id, now() FROM rotated
+			RETURNING session_id
+		)
+		UPDATE sessions SET last_used_at = now(),
+			idle_expires_at = least(now() + ? * interval '1 microsecond', absolute_expires_at)
+		WHERE id IN (SELECT session_id FROM stored)`,
+		successorHash, enc, tokenHash, sessionID, successorHash, micros(idleTTL))
+	if err != nil {
+		return false, fmt.Errorf("rotate refresh token: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rotate refresh token: %w", err)
+	}
+	return n == 1, nil
 }
