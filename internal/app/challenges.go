@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -16,8 +17,10 @@ import (
 )
 
 // ChallengeRules are the configured limits of the challenges a flow opens and sends (TDD-02 §2,
-// TDD-07 §5): the OTP's length and tries, how long a code and a link live, and the per-address
-// send limits (L-7): at most MaxShort sends in Windows.Short and MaxLong in Windows.Long.
+// TDD-07 §5): the OTP's length and tries, how long a code and a link live, the per-address send
+// limits (L-7): at most MaxShort sends in Windows.Short and MaxLong in Windows.Long, and the pause
+// after a challenge's attempts run out (L-9). Windows.Short is also the earliest resend of one
+// challenge (otp.resend_after).
 type ChallengeRules struct {
 	OTPLength   int
 	MaxAttempts int
@@ -26,6 +29,34 @@ type ChallengeRules struct {
 	Windows     SendWindows
 	MaxShort    int
 	MaxLong     int
+	Cooldown    time.Duration
+}
+
+// check returns what is wrong with r, or nil.
+func (r ChallengeRules) check() error {
+	var errs []error
+	if r.OTPLength < flow.MinOTPLength {
+		errs = append(errs, fmt.Errorf("OTP length %d is below %d", r.OTPLength, flow.MinOTPLength))
+	}
+	if r.MaxAttempts < 1 {
+		errs = append(errs, fmt.Errorf("max attempts %d is below 1", r.MaxAttempts))
+	}
+	if r.OTPTTL <= 0 || r.LinkTTL <= 0 {
+		errs = append(errs, errors.New("code and link lifetimes must be above 0"))
+	}
+	if r.Windows.Short <= 0 || r.Windows.Short > r.Windows.Long {
+		errs = append(errs, errors.New("the short send window must be above 0 and not longer than the long one"))
+	}
+	if r.MaxShort < 1 || r.MaxLong < r.MaxShort {
+		errs = append(errs, fmt.Errorf("sends per window %d / %d: want 1 or more, the long at least the short", r.MaxShort, r.MaxLong))
+	}
+	if r.Cooldown < 0 {
+		errs = append(errs, errors.New("the cooldown must not be negative"))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("challenge rules: %w", err)
+	}
+	return nil
 }
 
 // Challenges opens and sends the challenges of a flow (TDD-02 §2.2–§2.4), shared by the flow
@@ -42,11 +73,21 @@ type Challenges struct {
 	rules ChallengeRules
 }
 
-// NewChallenges returns the component. rand is crypto/rand.Reader outside tests.
+// NewChallenges returns the component, or an error when rules are not usable. rand is
+// crypto/rand.Reader outside tests.
 func NewChallenges(flows Flows, out OutboxWriter, msgs *Messages, mac MAC, ids IDGenerator, clock Clock,
 	rand io.Reader, rules ChallengeRules,
-) *Challenges {
-	return &Challenges{flows: flows, out: out, msgs: msgs, mac: mac, ids: ids, clock: clock, rand: rand, rules: rules}
+) (*Challenges, error) {
+	if err := rules.check(); err != nil {
+		return nil, err
+	}
+	return &Challenges{flows: flows, out: out, msgs: msgs, mac: mac, ids: ids, clock: clock, rand: rand, rules: rules}, nil
+}
+
+// ResendRules returns the per-challenge resend rules (TDD-02 §2.4): the short send window as the
+// earliest resend, and the cooldown.
+func (c *Challenges) ResendRules() flow.ResendRules {
+	return flow.ResendRules{ResendAfter: c.rules.Windows.Short, Cooldown: c.rules.Cooldown}
 }
 
 // OpenVerification opens a verify_identifier challenge on the identifier id in the flow, sent by

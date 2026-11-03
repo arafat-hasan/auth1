@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +28,10 @@ import (
 
 // fakeUoW runs fn and remembers whether a transaction is open; it cannot roll back, so tests check
 // errors, not the absence of writes after one.
-type fakeUoW struct{ inTx bool }
+type fakeUoW struct {
+	inTx        bool
+	rollbackErr error // joined to fn's error, as a failed rollback is
+}
 
 func (u *fakeUoW) Do(ctx context.Context, fn func(context.Context) error) error {
 	if u.inTx {
@@ -34,7 +39,12 @@ func (u *fakeUoW) Do(ctx context.Context, fn func(context.Context) error) error 
 	}
 	u.inTx = true
 	defer func() { u.inTx = false }()
-	return fn(ctx)
+	if err := fn(ctx); err != nil && u.rollbackErr != nil {
+		return errors.Join(err, u.rollbackErr)
+	} else if err != nil {
+		return err
+	}
+	return nil
 }
 
 // fakeHasher hashes to "phc:<password>" and fails the test if it hashes inside a transaction (G-4).
@@ -127,10 +137,11 @@ func (a *regAccounts) VerifyIdentifier(_ context.Context, id uuid.UUID) error {
 // every miss with CHALLENGE_CLOSED, as postgres.Flows does.
 type regFlows struct {
 	*sendFlows
-	clock *fakes.Clock
-	flows []flow.NewFlow
-	byID  map[uuid.UUID]*flow.Flow
-	chs   []*flow.ChallengeRecord
+	findErr error // returned by Find when set
+	clock   *fakes.Clock
+	flows   []flow.NewFlow
+	byID    map[uuid.UUID]*flow.Flow
+	chs     []*flow.ChallengeRecord
 }
 
 func closedErr() error {
@@ -153,6 +164,9 @@ func (f *regFlows) live(id uuid.UUID) (*flow.Flow, bool) {
 }
 
 func (f *regFlows) Find(_ context.Context, id uuid.UUID, handleHash []byte) (flow.Flow, error) {
+	if f.findErr != nil {
+		return flow.Flow{}, f.findErr
+	}
 	fl, ok := f.live(id)
 	if !ok || !bytes.Equal(fl.HandleHash, handleHash) {
 		return flow.Flow{}, closedErr()
@@ -258,9 +272,15 @@ func (o *eventOutbox) Event(_ context.Context, eventType string, accountID uuid.
 }
 
 // recordingAudit keeps the entries written.
-type recordingAudit struct{ entries []app.AuditEntry }
+type recordingAudit struct {
+	entries []app.AuditEntry
+	err     error // returned, writing nothing, when set
+}
 
 func (a *recordingAudit) Write(_ context.Context, e app.AuditEntry) error {
+	if a.err != nil {
+		return a.err
+	}
 	a.entries = append(a.entries, e)
 	return nil
 }
@@ -275,6 +295,9 @@ type regEnv struct {
 	hasher   *fakeHasher
 	limiter  *fakes.RateLimiter
 	clock    *fakes.Clock
+	logs     *syncBuffer
+	deps     app.RegistrationDeps
+	opts     app.RegistrationOptions
 }
 
 const (
@@ -317,21 +340,46 @@ func newRegEnv(t *testing.T) *regEnv {
 	}
 	ids := fakes.NewIDs()
 	rnd := bytes.NewReader(bytes.Repeat([]byte{7}, 1<<16))
-	ch := app.NewChallenges(e.flows, e.outbox, app.NewMessages(types), testMAC{}, ids, e.clock, rnd, challengeRules)
-	e.reg = app.NewRegistration(app.RegistrationDeps{
+	ch, err := app.NewChallenges(e.flows, e.outbox, app.NewMessages(types), testMAC{}, ids, e.clock, rnd, challengeRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.logs = &syncBuffer{}
+	e.deps = app.RegistrationDeps{
 		UnitOfWork: e.uow, Accounts: e.accounts, Flows: e.flows, Challenges: ch, Outbox: e.outbox,
 		Audit: e.audit, Hasher: e.hasher, Registry: registry, Limits: limits, IDs: ids, Clock: e.clock,
-		Rand: rnd, MAC: testMAC{},
-	}, app.RegistrationOptions{
+		Rand: rnd, MAC: testMAC{}, Logger: slog.New(slog.NewTextHandler(e.logs, nil)),
+	}
+	e.opts = app.RegistrationOptions{
 		Clients: map[string]app.RegistrationClient{
 			"web": {ID: "web", SelfRegistration: true}, "console": {ID: "console"},
 		},
 		Locales:  []string{"en", "en-GB"},
 		FlowTTL:  24 * time.Hour,
 		Password: password.Policy{MinLength: 12, MaxLength: 128, DenyList: deny},
-		Resend:   flow.ResendRules{ResendAfter: time.Minute, Cooldown: 15 * time.Minute},
-	})
+	}
+	if e.reg, err = app.NewRegistration(e.deps, e.opts); err != nil {
+		t.Fatal(err)
+	}
 	return e
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent writes, for captured logs.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 var regIP = netip.MustParseAddr("192.0.2.10")
@@ -340,7 +388,7 @@ func startCmd() app.StartRegistration {
 	return app.StartRegistration{
 		ClientID: "web", DisplayName: "Someone", Locale: "en-GB",
 		Identifiers: map[string]string{"email": regEmail, "phone": regPhone},
-		Password:    []byte(regPassword), IP: regIP,
+		Password:    flow.Secret(regPassword), IP: regIP,
 	}
 }
 
@@ -450,9 +498,9 @@ func TestStartRegistrationErrors(t *testing.T) {
 			domain.CodeIdentifierNotAllowed, nil, false},
 		{"value taken", func(_ *app.StartRegistration, e *regEnv) { e.accounts.verified["phone:+447400123456"] = true },
 			domain.CodeIdentifierTaken, nil, false},
-		{"password holds the email", func(c *app.StartRegistration, _ *regEnv) { c.Password = []byte("someone@example.com!") },
+		{"password holds the email", func(c *app.StartRegistration, _ *regEnv) { c.Password = flow.Secret("someone@example.com!") },
 			domain.CodePasswordRejected, nil, false},
-		{"common password", func(c *app.StartRegistration, _ *regEnv) { c.Password = []byte("password1234") },
+		{"common password", func(c *app.StartRegistration, _ *regEnv) { c.Password = flow.Secret("password1234") },
 			domain.CodePasswordRejected, nil, false},
 		{"send window full", func(_ *app.StartRegistration, e *regEnv) {
 			for range 20 {
@@ -520,13 +568,13 @@ func (e *regEnv) opened(t *testing.T, typ string) flow.NewChallengeRecord {
 
 func (e *regEnv) verify(s app.RegistrationStarted, code string) (app.RegistrationProgress, error) {
 	return e.reg.VerifyCode(context.Background(), app.VerifyRegistrationCode{
-		FlowID: s.FlowID, Handle: []byte(s.Handle), IdentifierType: "phone", Code: []byte(code), IP: regIP,
+		FlowID: s.FlowID, Handle: s.Handle, IdentifierType: "phone", Code: flow.Secret(code), IP: regIP,
 	})
 }
 
 func (e *regEnv) resend(s app.RegistrationStarted, typ string) error {
 	return e.reg.Resend(context.Background(), app.ResendRegistration{
-		FlowID: s.FlowID, Handle: []byte(s.Handle), IdentifierType: typ, IP: regIP,
+		FlowID: s.FlowID, Handle: s.Handle, IdentifierType: typ, IP: regIP,
 	})
 }
 
@@ -571,7 +619,7 @@ func TestVerifyCode(t *testing.T) {
 	}
 	want := []recordedEvent{{app.EventIdentifierVerified, phone.AccountID, app.IdentifierVerified{
 		AccountID: phone.AccountID, IdentifierID: phone.ID, IdentifierType: "phone",
-		Actor: app.EventActor{Kind: "account", ID: phone.AccountID.String()},
+		Actor: app.EventActor{Kind: app.ActorAccount, ID: phone.AccountID.String()},
 	}}}
 	if diff := cmp.Diff(want, e.outbox.events); diff != "" {
 		t.Errorf("events (-want +got):\n%s", diff)
@@ -644,8 +692,8 @@ func TestVerifyCodeSameMiss(t *testing.T) {
 			t.Parallel()
 			e := newRegEnv(t)
 			s := e.started(t)
-			cmd := app.VerifyRegistrationCode{FlowID: s.FlowID, Handle: []byte(s.Handle), IdentifierType: "phone",
-				Code: []byte(rightCode), IP: regIP}
+			cmd := app.VerifyRegistrationCode{FlowID: s.FlowID, Handle: s.Handle, IdentifierType: "phone",
+				Code: flow.Secret(rightCode), IP: regIP}
 			tt.edit(&cmd, e)
 			_, err := e.reg.VerifyCode(context.Background(), cmd)
 			if de := asCode(t, err, domain.CodeChallengeClosed); de.Detail != "the challenge is closed" {
@@ -741,7 +789,7 @@ func TestConfirmLink(t *testing.T) {
 	s := e.started(t)
 	token := e.opened(t, "email").Secret
 	confirm := func() (app.LinkConfirmed, error) {
-		return e.reg.ConfirmLink(context.Background(), app.ConfirmLink{Token: []byte(token), IP: regIP})
+		return e.reg.ConfirmLink(context.Background(), app.ConfirmLink{Token: token, IP: regIP})
 	}
 	got, err := confirm()
 	if err != nil {
@@ -788,4 +836,120 @@ func TestVerifyCodeExpired(t *testing.T) {
 	if e.accounts.ids[1].VerifiedAt != nil {
 		t.Error("an expired code verified the phone")
 	}
+}
+
+// TestFailureAuditLostIsLogged: a refusal whose audit write fails still answers its domain error,
+// alone, and the lost entry is logged.
+func TestFailureAuditLostIsLogged(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	e.audit.err = errors.New("audit table gone")
+	cmd := startCmd()
+	cmd.ClientID = "nope"
+	_, err := e.reg.Start(context.Background(), cmd)
+	var de *domain.Error
+	if !errors.As(err, &de) || de.Code != domain.CodeValidationFailed || err.Error() != de.Error() {
+		t.Fatalf("Start = %v; want the VALIDATION_FAILED answer alone", err)
+	}
+	if logs := e.logs.String(); !strings.Contains(logs, "audit write failed") || !strings.Contains(logs, "audit table gone") {
+		t.Errorf("logs %q; want the lost audit entry logged", logs)
+	}
+}
+
+// TestInfrastructureErrorNotAudited: a store failure before the transaction is not a refusal: it
+// is returned wrapped, with no audit entry.
+func TestInfrastructureErrorNotAudited(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	before := len(e.audit.entries)
+	e.flows.findErr = errors.New("connection reset")
+	_, err := e.verify(s, rightCode)
+	var de *domain.Error
+	if err == nil || errors.As(err, &de) || !strings.Contains(err.Error(), "connection reset") ||
+		!strings.Contains(err.Error(), "verify registration code") {
+		t.Fatalf("VerifyCode = %v; want the store error, wrapped", err)
+	}
+	if len(e.audit.entries) != before {
+		t.Errorf("audited %d entries for an outage", len(e.audit.entries)-before)
+	}
+}
+
+// TestResendRollbackFailureSurfaces: when rolling back a refused resend fails, that failure is the
+// answer, not the refusal.
+func TestResendRollbackFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	e.clock.Advance(time.Minute)
+	e.flows.counts = app.SendCounts{Long: 5}
+	e.uow.rollbackErr = errors.New("roll back: connection lost")
+	err := e.resend(s, "phone")
+	if err == nil || hasDomainCode(err, domain.CodeRateLimited) || !strings.Contains(err.Error(), "connection lost") {
+		t.Fatalf("Resend = %v; want the rollback failure", err)
+	}
+}
+
+// TestResendTypeNoLongerConfigured: a pending identifier whose type the policy dropped since is
+// the same miss, not a panic.
+func TestResendTypeNoLongerConfigured(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	e.accounts.ids[1].Type = "fax"
+	st := e.flows.byID[s.FlowID].State.(flow.RegistrationState)
+	e.flows.byID[s.FlowID].State = flow.RegistrationState{PendingTypes: append(st.PendingTypes, "fax")}
+	wantCode(t, e.resend(s, "fax"), domain.CodeChallengeClosed)
+}
+
+// TestVerifyAccountGone: an account that disappears between the find and the lock is the same
+// miss (I-20), not NOT_FOUND.
+func TestVerifyAccountGone(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	s := e.started(t)
+	delete(e.accounts.accounts, e.accounts.created[0].ID)
+	_, err := e.verify(s, rightCode)
+	wantCode(t, err, domain.CodeChallengeClosed)
+}
+
+// TestNewRegistrationRefusesMissingDeps: every port is required, and a missing one is named at
+// start-up rather than found by the first request.
+func TestNewRegistrationRefusesMissingDeps(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	d := e.deps
+	d.Limits, d.Logger = nil, nil
+	_, err := app.NewRegistration(d, e.opts)
+	if err == nil || !strings.Contains(err.Error(), "Limits") || !strings.Contains(err.Error(), "Logger") {
+		t.Errorf("NewRegistration = %v; want an error naming Limits and Logger", err)
+	}
+	o := e.opts
+	o.FlowTTL = 0
+	if _, err := app.NewRegistration(e.deps, o); err == nil {
+		t.Error("NewRegistration accepted a zero flow lifetime")
+	}
+}
+
+// TestNewRegistrationCopiesOptions: the options' map and slice are the caller's no more.
+func TestNewRegistrationCopiesOptions(t *testing.T) {
+	t.Parallel()
+	e := newRegEnv(t)
+	o := e.opts
+	o.Clients = map[string]app.RegistrationClient{"web": {ID: "web", SelfRegistration: true}}
+	o.Locales = []string{"en-GB"}
+	reg, err := app.NewRegistration(e.deps, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Clients["web"] = app.RegistrationClient{ID: "web"}
+	o.Locales[0] = "fr"
+	if _, err := reg.Start(context.Background(), startCmd()); err != nil {
+		t.Errorf("Start after the caller changed its options: %v", err)
+	}
+}
+
+func hasDomainCode(err error, code domain.Code) bool {
+	var de *domain.Error
+	return errors.As(err, &de) && de.Code == code
 }

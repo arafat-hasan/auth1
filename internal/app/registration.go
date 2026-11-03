@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,21 +29,21 @@ type RegistrationClient struct {
 	SelfRegistration bool
 }
 
-// RegistrationOptions are the registration settings from configuration.
+// RegistrationOptions are the registration settings from configuration. The resend rules are the
+// challenges' (Challenges.ResendRules).
 type RegistrationOptions struct {
 	// Clients are the configured clients, by id.
 	Clients map[string]RegistrationClient
 	// Locales are locales.allowed.
 	Locales []string
-	// FlowTTL is flows.pending_registration_ttl.
+	// FlowTTL is flows.pending_registration_ttl; above 0.
 	FlowTTL time.Duration
 	// Password is the password policy.
 	Password password.Policy
-	// Resend are the per-challenge resend rules (otp.resend_after, otp.cooldown).
-	Resend flow.ResendRules
 }
 
-// RegistrationDeps are the ports and components the registration steps use.
+// RegistrationDeps are the ports and components the registration steps use. Every field is
+// required.
 type RegistrationDeps struct {
 	UnitOfWork UnitOfWork
 	Accounts   Accounts
@@ -56,6 +58,28 @@ type RegistrationDeps struct {
 	Clock      Clock
 	Rand       io.Reader // crypto/rand.Reader outside tests
 	MAC        MAC
+	Logger     *slog.Logger // for what cannot be answered or audited, such as a lost audit entry
+}
+
+// missing returns the names of the fields of d that are nil.
+func (d RegistrationDeps) missing() []string {
+	fields := []struct {
+		name string
+		nil  bool
+	}{
+		{"UnitOfWork", d.UnitOfWork == nil}, {"Accounts", d.Accounts == nil}, {"Flows", d.Flows == nil},
+		{"Challenges", d.Challenges == nil}, {"Outbox", d.Outbox == nil}, {"Audit", d.Audit == nil},
+		{"Hasher", d.Hasher == nil}, {"Registry", d.Registry == nil}, {"Limits", d.Limits == nil},
+		{"IDs", d.IDs == nil}, {"Clock", d.Clock == nil}, {"Rand", d.Rand == nil}, {"MAC", d.MAC == nil},
+		{"Logger", d.Logger == nil},
+	}
+	var out []string
+	for _, f := range fields {
+		if f.nil {
+			out = append(out, f.name)
+		}
+	}
+	return out
 }
 
 // Registration is the registration flow (TDD-02 §3): start, verify an identifier by code or by
@@ -68,9 +92,17 @@ type Registration struct {
 	o RegistrationOptions
 }
 
-// NewRegistration returns the registration steps.
-func NewRegistration(d RegistrationDeps, o RegistrationOptions) *Registration {
-	return &Registration{d: d, o: o}
+// NewRegistration returns the registration steps, or an error naming the missing dependencies or
+// the bad option. It keeps its own copies of the options' clients and locales.
+func NewRegistration(d RegistrationDeps, o RegistrationOptions) (*Registration, error) {
+	if m := d.missing(); len(m) > 0 {
+		return nil, fmt.Errorf("registration: missing %s", strings.Join(m, ", "))
+	}
+	if o.FlowTTL <= 0 {
+		return nil, errors.New("registration: the flow lifetime must be above 0")
+	}
+	o.Clients, o.Locales = maps.Clone(o.Clients), slices.Clone(o.Locales)
+	return &Registration{d: d, o: o}, nil
 }
 
 // The audit actions of the registration steps.
@@ -81,15 +113,32 @@ const (
 	auditVerificationConfirm = "verification_link.confirm"
 )
 
-// StartRegistration is a request to start a registration (POST /v1/registrations).
+// StartRegistration is a request to start a registration (POST /v1/registrations). It formats and
+// logs as its client, locale and identifier types only: never the values, the display name or the
+// password.
 type StartRegistration struct {
 	ClientID    string
 	DisplayName string
 	Locale      string
 	Identifiers map[string]string // raw value by type
-	Password    []byte
+	Password    flow.Secret
 	IP          netip.Addr
 }
+
+// String describes the request without its personal or secret fields.
+func (c StartRegistration) String() string {
+	return fmt.Sprintf("StartRegistration{client: %s, locale: %s, types: %v}", c.ClientID, c.Locale,
+		slices.Sorted(maps.Keys(c.Identifiers)))
+}
+
+// GoString is String.
+func (c StartRegistration) GoString() string { return c.String() }
+
+// Format writes String for every verb.
+func (c StartRegistration) Format(s fmt.State, _ rune) { _, _ = io.WriteString(s, c.String()) }
+
+// LogValue implements slog.LogValuer with String.
+func (c StartRegistration) LogValue() slog.Value { return slog.StringValue(c.String()) }
 
 // RegistrationStarted is a started registration: the flow, its handle (returned once, stored as
 // its SHA-256), the types still to verify and when the flow expires.
@@ -100,41 +149,44 @@ type RegistrationStarted struct {
 	ExpiresAt    time.Time
 }
 
-// Start starts a registration (TDD-02 §3 steps 1–6). The checks run cheapest first, and the
-// password is hashed only after every one of them passed (TDD-07 §2), outside the transaction.
-// In the transaction: the pending account with its unverified identifiers and its password, the
-// registration flow, and one verify_identifier challenge per identifier, by the type's method,
-// each sent. A send the per-address limits refuse is skipped: the challenge stays open, unsent,
-// for a resend (TDD-02 §3 step 5).
+// Start starts a registration (TDD-02 §3 steps 1–6). The checks run cheapest first: the client,
+// L-4, the locale, the identifiers, values verified elsewhere, the password policy, then L-8 once
+// per identifier; the password is hashed only after every one of them passed (TDD-07 §2), outside
+// the transaction. Refusals by L-4 and L-8 are not audited; the others are. In the transaction:
+// the pending account with its unverified identifiers and its password, the registration flow,
+// and one verify_identifier challenge per identifier, by the type's method, each sent. A send the
+// per-address limits refuse is skipped: the challenge stays open, unsent, for a resend (TDD-02 §3
+// step 5), and the success audit names the unsent types.
 func (r *Registration) Start(ctx context.Context, cmd StartRegistration) (RegistrationStarted, error) {
+	const op = "start registration"
 	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationStart, ClientID: cmd.ClientID,
 		IP: cmd.IP}
 	if c, ok := r.o.Clients[cmd.ClientID]; !ok || !c.SelfRegistration {
-		return RegistrationStarted{}, r.fail(ctx, entry, invalidField("client_id", domain.FieldUnknown))
+		return RegistrationStarted{}, r.fail(ctx, entry, op, invalidField("client_id", domain.FieldUnknown))
 	}
 	if err := r.d.Limits.CheckIP(ctx, RuleRegistrationIP, cmd.IP); err != nil {
 		return RegistrationStarted{}, err // not audited: the per-IP limits bound the volume, not audit rows
 	}
 	if !slices.Contains(r.o.Locales, cmd.Locale) {
-		return RegistrationStarted{}, r.fail(ctx, entry, invalidField("locale", domain.FieldUnknown))
+		return RegistrationStarted{}, r.fail(ctx, entry, op, invalidField("locale", domain.FieldUnknown))
 	}
 	values, err := r.d.Registry.NormaliseSet(cmd.Identifiers)
 	if err != nil {
-		return RegistrationStarted{}, r.fail(ctx, entry, err)
+		return RegistrationStarted{}, r.fail(ctx, entry, op, err)
 	}
 	types := slices.Sorted(maps.Keys(values))
 	var variants []string
 	for _, t := range types {
 		if _, err := r.d.Accounts.FindVerified(ctx, t, values[t]); err == nil {
-			return RegistrationStarted{}, r.fail(ctx, entry,
+			return RegistrationStarted{}, r.fail(ctx, entry, op,
 				&domain.Error{Code: domain.CodeIdentifierTaken, Detail: "an identifier is taken"})
 		} else if !hasCode(err, domain.CodeNotFound) {
-			return RegistrationStarted{}, fmt.Errorf("start registration: %w", err)
+			return RegistrationStarted{}, fmt.Errorf("%s: %w", op, err)
 		}
 		variants = append(variants, r.d.Registry.Variants(t, values[t])...)
 	}
 	if reasons := password.Check(cmd.Password, variants, r.o.Password); len(reasons) > 0 {
-		return RegistrationStarted{}, r.fail(ctx, entry, password.Rejected(reasons))
+		return RegistrationStarted{}, r.fail(ctx, entry, op, password.Rejected(reasons))
 	}
 	for range types {
 		if err := r.d.Limits.CheckIP(ctx, RuleSendIP, cmd.IP); err != nil {
@@ -143,11 +195,11 @@ func (r *Registration) Start(ctx context.Context, cmd StartRegistration) (Regist
 	}
 	hash, kid, err := r.d.Hasher.Hash(ctx, cmd.Password)
 	if err != nil {
-		return RegistrationStarted{}, r.fail(ctx, entry, err)
+		return RegistrationStarted{}, r.fail(ctx, entry, op, err)
 	}
 	handle, err := flow.NewHandle(r.d.Rand)
 	if err != nil {
-		return RegistrationStarted{}, fmt.Errorf("start registration: %w", err)
+		return RegistrationStarted{}, fmt.Errorf("%s: %w", op, err)
 	}
 
 	now := r.d.Clock.Now()
@@ -175,53 +227,82 @@ func (r *Registration) Start(ctx context.Context, cmd StartRegistration) (Regist
 		}); err != nil {
 			return err
 		}
+		var unsent []string
 		for _, ni := range na.Identifiers {
 			id := account.Identifier{ID: ni.ID, AccountID: a.ID, Type: ni.Type, Value: ni.Value}
-			if err := r.openAndSend(ctx, a, flowID, id); err != nil {
+			sent, err := r.openAndSend(ctx, a, flowID, id)
+			if err != nil {
 				return err
+			}
+			if !sent {
+				unsent = append(unsent, ni.Type)
 			}
 		}
 		entry.AccountID, entry.Outcome = a.ID, OutcomeSuccess
 		entry.Details = map[string]any{"flow_id": flowID.String(), "kind": string(flow.KindRegistration)}
+		if len(unsent) > 0 {
+			entry.Details["unsent_types"] = unsent
+		}
 		return r.d.Audit.Write(ctx, entry)
 	})
 	if err != nil {
-		return RegistrationStarted{}, fmt.Errorf("start registration: %w", err)
+		return RegistrationStarted{}, fmt.Errorf("%s: %w", op, err)
 	}
 	return RegistrationStarted{FlowID: flowID, Handle: handle, PendingTypes: types, ExpiresAt: expires}, nil
 }
 
 // openAndSend opens a verify_identifier challenge on id in the flow, by the type's method, and
-// sends it. A send the per-address limits refuse is skipped: the challenge stays open and unsent.
-func (r *Registration) openAndSend(ctx context.Context, a account.Account, flowID uuid.UUID, id account.Identifier) error {
-	t, _ := r.d.Registry.Type(id.Type)
-	p, _ := r.d.Registry.Policy(id.Type)
+// sends it. A send the per-address limits refuse is skipped: the challenge stays open and unsent,
+// and sent is false.
+func (r *Registration) openAndSend(ctx context.Context, a account.Account, flowID uuid.UUID, id account.Identifier) (sent bool, err error) {
+	t, tok := r.d.Registry.Type(id.Type)
+	p, pok := r.d.Registry.Policy(id.Type)
+	if !tok || !pok {
+		return false, fmt.Errorf("identifier type %q is not configured", id.Type)
+	}
 	ch, err := r.d.Challenges.OpenVerification(ctx, flowID, id, p.Verify)
 	if err != nil {
-		return err
+		return false, err
 	}
 	err = r.d.Challenges.Send(ctx, a, ch, id, t.Channel())
 	if hasCode(err, domain.CodeResendTooSoon, domain.CodeRateLimited) {
-		return nil
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// fail answers a step that did not go through. A domain error is a refusal: it is audited,
+// outside any transaction, with its code (and the flow's id and kind once the flow was found),
+// and returned alone; an audit entry that cannot be written is logged. Any other error is a
+// failure of the stores: it is returned wrapped with op, unaudited.
+func (r *Registration) fail(ctx context.Context, e AuditEntry, op string, err error) error {
+	var de *domain.Error
+	if !errors.As(err, &de) {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	e.Outcome = OutcomeFailure
+	e.Details = maps.Clone(e.Details)
+	if e.Details == nil {
+		e.Details = map[string]any{}
+	}
+	e.Details["code"] = string(de.Code)
+	if aerr := r.d.Audit.Write(ctx, e); aerr != nil {
+		r.d.Logger.LogAttrs(ctx, slog.LevelError, "audit write failed",
+			slog.String("action", e.Action), slog.String("code", string(de.Code)), slog.String("error", aerr.Error()))
 	}
 	return err
 }
 
-// fail audits a failed step, outside any transaction, and returns err. A failure to audit joins
-// err, which keeps its domain error for the answer.
-func (r *Registration) fail(ctx context.Context, e AuditEntry, err error) error {
-	e.Outcome = OutcomeFailure
-	if e.Details == nil {
-		e.Details = map[string]any{}
+// settle ends a step after its transaction: err is the transaction's failure, answer the refusal
+// it committed or rolled back with.
+func (r *Registration) settle(ctx context.Context, e AuditEntry, op string, err, answer error) error {
+	if err != nil {
+		return fmt.Errorf("%s: %w", op, err)
 	}
-	var de *domain.Error
-	if errors.As(err, &de) {
-		e.Details["code"] = string(de.Code)
+	if answer != nil {
+		return r.fail(ctx, e, op, answer)
 	}
-	if aerr := r.d.Audit.Write(ctx, e); aerr != nil {
-		return errors.Join(err, fmt.Errorf("audit: %w", aerr))
-	}
-	return err
+	return nil
 }
 
 // invalidField is VALIDATION_FAILED on one field.
@@ -240,9 +321,9 @@ func hasCode(err error, codes ...domain.Code) bool {
 // (POST /v1/registrations/{flowId}/verify).
 type VerifyRegistrationCode struct {
 	FlowID         uuid.UUID
-	Handle         []byte
+	Handle         flow.Secret
 	IdentifierType string
-	Code           []byte
+	Code           flow.Secret
 	IP             netip.Addr
 }
 
@@ -255,14 +336,14 @@ type RegistrationProgress struct {
 // (POST /v1/registrations/{flowId}/resend).
 type ResendRegistration struct {
 	FlowID         uuid.UUID
-	Handle         []byte
+	Handle         flow.Secret
 	IdentifierType string
 	IP             netip.Addr
 }
 
 // ConfirmLink is an emailed link's token (POST /v1/verification-links/confirm).
 type ConfirmLink struct {
-	Token []byte
+	Token flow.Secret
 	IP    netip.Addr
 }
 
@@ -279,34 +360,40 @@ type LinkConfirmed struct {
 type locked struct {
 	account    account.Account
 	flow       flow.Flow
-	challenges []flow.ChallengeRecord
-	ids        []account.Identifier // the account's current identifiers
+	challenges []flow.ChallengeRecord // oldest first, as Flows.LockChallenges returns them
+	ids        []account.Identifier   // the account's current identifiers
 }
 
 // lock locks f's account, f and its challenges, and reads the account's identifiers. It runs
-// inside UnitOfWork.Do.
-func (r *Registration) lock(ctx context.Context, f flow.Flow) (locked, error) {
+// inside UnitOfWork.Do. A flow or account gone since it was found is the answer CHALLENGE_CLOSED,
+// the same miss as any other (I-20); err is a failure of the stores.
+func (r *Registration) lock(ctx context.Context, f flow.Flow) (l locked, answer, err error) {
 	a, err := r.d.Accounts.GetForUpdate(ctx, f.AccountID)
-	if err != nil {
-		return locked{}, err
+	if hasCode(err, domain.CodeNotFound) {
+		return locked{}, challengeClosed(), nil
+	} else if err != nil {
+		return locked{}, nil, err
 	}
 	lf, err := r.d.Flows.LockFlow(ctx, f)
-	if err != nil {
-		return locked{}, err
+	if hasCode(err, domain.CodeChallengeClosed) {
+		return locked{}, challengeClosed(), nil
+	} else if err != nil {
+		return locked{}, nil, err
 	}
 	chs, err := r.d.Flows.LockChallenges(ctx, lf.ID)
 	if err != nil {
-		return locked{}, err
+		return locked{}, nil, err
 	}
 	ids, err := r.d.Accounts.Identifiers(ctx, a.ID)
 	if err != nil {
-		return locked{}, err
+		return locked{}, nil, err
 	}
-	return locked{account: a, flow: lf, challenges: chs, ids: ids}, nil
+	return locked{account: a, flow: lf, challenges: chs, ids: ids}, nil, nil
 }
 
 // pending returns the identifier of type idType still to verify in the flow, with its newest
-// verify_identifier challenge; false when the type is not pending or has no challenge.
+// verify_identifier challenge (the last, the challenges being oldest first); false when the type
+// is not pending or has no challenge.
 func (l locked) pending(idType string) (account.Identifier, flow.ChallengeRecord, bool) {
 	if !slices.Contains(pendingTypes(l.flow.State), idType) {
 		return account.Identifier{}, flow.ChallengeRecord{}, false
@@ -323,6 +410,16 @@ func (l locked) pending(idType string) (account.Identifier, flow.ChallengeRecord
 		}
 	}
 	return account.Identifier{}, flow.ChallengeRecord{}, false
+}
+
+// challenge returns the locked challenge id.
+func (l locked) challenge(id uuid.UUID) (flow.ChallengeRecord, bool) {
+	for _, c := range l.challenges {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return flow.ChallengeRecord{}, false
 }
 
 // identifier returns the account's current identifier id.
@@ -350,12 +447,14 @@ func (r *Registration) findFlow(ctx context.Context, id uuid.UUID, handle []byte
 }
 
 // VerifyCode verifies one identifier of a registration or invitation flow with the code sent to
-// it (TDD-02 §2.2, §3). Every try counts (I-4): a wrong code is CODE_INVALID with the tries left,
-// and the last wrong one closes the challenge (CHALLENGE_CLOSED). The right code consumes the
-// challenge and verifies the identifier, unless another account verified the value first: then
-// the challenge stays consumed and the answer is IDENTIFIER_TAKEN (I-1). Counted tries and a
-// consumed challenge commit whatever the answer.
+// it (TDD-02 §2.2, §3). L-12 counts the attempt first. Every try counts (I-4): a wrong code is
+// CODE_INVALID with the tries left, and the last wrong one closes the challenge
+// (CHALLENGE_CLOSED). The right code consumes the challenge and verifies the identifier, unless
+// another account verified the value first: then the challenge stays consumed and the answer is
+// IDENTIFIER_TAKEN (I-1). Counted tries and a consumed challenge commit whatever the answer. A
+// type verified by email_link, or an expired code, is CHALLENGE_CLOSED.
 func (r *Registration) VerifyCode(ctx context.Context, cmd VerifyRegistrationCode) (RegistrationProgress, error) {
+	const op = "verify registration code"
 	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationVerify, IP: cmd.IP,
 		Details: map[string]any{"identifier_type": cmd.IdentifierType}}
 	if err := r.d.Limits.CheckIP(ctx, RuleVerifyIP, cmd.IP); err != nil {
@@ -363,7 +462,7 @@ func (r *Registration) VerifyCode(ctx context.Context, cmd VerifyRegistrationCod
 	}
 	f, err := r.findFlow(ctx, cmd.FlowID, cmd.Handle)
 	if err != nil {
-		return RegistrationProgress{}, r.fail(ctx, entry, err)
+		return RegistrationProgress{}, r.fail(ctx, entry, op, err)
 	}
 	entry.withFlow(f)
 	var (
@@ -371,8 +470,9 @@ func (r *Registration) VerifyCode(ctx context.Context, cmd VerifyRegistrationCod
 		progress RegistrationProgress
 	)
 	err = r.d.UnitOfWork.Do(ctx, func(ctx context.Context) error {
-		l, err := r.lock(ctx, f)
-		if err != nil {
+		l, miss, err := r.lock(ctx, f)
+		if err != nil || miss != nil {
+			answer = miss
 			return err
 		}
 		id, ch, ok := l.pending(cmd.IdentifierType)
@@ -382,7 +482,7 @@ func (r *Registration) VerifyCode(ctx context.Context, cmd VerifyRegistrationCod
 		}
 		matched := subtle.ConstantTimeCompare(r.d.MAC.OTP(ch.ID, cmd.Code), ch.SecretMAC) == 1
 		v := flow.Verify(ch.Challenge, matched, r.d.Clock.Now())
-		if v.Outcome == flow.Closed {
+		if v.Outcome == flow.Closed { // closed, used up or expired: Attempt does not look at expires_at
 			answer = v.Err()
 			return nil
 		}
@@ -398,7 +498,7 @@ func (r *Registration) VerifyCode(ctx context.Context, cmd VerifyRegistrationCod
 		case flow.Wrong:
 			left := ch.MaxAttempts - attempts
 			answer = &domain.Error{Code: domain.CodeCodeInvalid, Detail: "the code is wrong", AttemptsLeft: &left}
-			return nil
+			return nil // commit: the try counts
 		case flow.Exhausted:
 			if _, err := r.d.Flows.CloseChallenge(ctx, ch.ID, false); err != nil {
 				return err
@@ -412,20 +512,19 @@ func (r *Registration) VerifyCode(ctx context.Context, cmd VerifyRegistrationCod
 		}
 		return r.auditSuccess(ctx, entry, l.account.ID)
 	})
-	if err != nil {
-		return RegistrationProgress{}, fmt.Errorf("verify registration code: %w", err)
-	}
-	if answer != nil {
-		return RegistrationProgress{}, r.fail(ctx, entry, answer)
+	if err := r.settle(ctx, entry, op, err, answer); err != nil {
+		return RegistrationProgress{}, err
 	}
 	return progress, nil
 }
 
 // verified consumes ch and verifies id, the challenge's identifier, then drops its type from the
-// flow's pending types and emits account.identifier_verified. It returns the pending types left,
-// or the answer when the challenge was consumed already (CHALLENGE_CLOSED) or the value is taken
-// (IDENTIFIER_TAKEN, the challenge staying consumed).
-func (r *Registration) verified(ctx context.Context, l locked, id account.Identifier, ch flow.ChallengeRecord) ([]string, error, error) {
+// flow's pending types and emits account.identifier_verified. It returns the pending types left.
+// Otherwise answer is CHALLENGE_CLOSED when the challenge has closed already or the identifier is
+// no longer current, or IDENTIFIER_TAKEN when another account holds the value verified; both
+// commit, the challenge staying consumed for the latter. err is a failure of the stores, which
+// rolls the step back.
+func (r *Registration) verified(ctx context.Context, l locked, id account.Identifier, ch flow.ChallengeRecord) (pending []string, answer, err error) {
 	ok, err := r.d.Flows.CloseChallenge(ctx, ch.ID, true)
 	if err != nil {
 		return nil, nil, err
@@ -433,9 +532,12 @@ func (r *Registration) verified(ctx context.Context, l locked, id account.Identi
 	if !ok {
 		return nil, challengeClosed(), nil
 	}
-	if err := r.d.Accounts.VerifyIdentifier(ctx, id.ID); hasCode(err, domain.CodeIdentifierTaken) {
+	switch err := r.d.Accounts.VerifyIdentifier(ctx, id.ID); {
+	case hasCode(err, domain.CodeIdentifierTaken):
 		return nil, err, nil
-	} else if err != nil {
+	case hasCode(err, domain.CodeNotFound):
+		return nil, challengeClosed(), nil
+	case err != nil:
 		return nil, nil, err
 	}
 	state := withVerified(l.flow.State, id.Type)
@@ -443,8 +545,7 @@ func (r *Registration) verified(ctx context.Context, l locked, id account.Identi
 		return nil, nil, err
 	}
 	if err := r.d.Outbox.Event(ctx, EventIdentifierVerified, l.account.ID, IdentifierVerified{
-		AccountID: l.account.ID, IdentifierID: id.ID, IdentifierType: id.Type,
-		Actor: EventActor{Kind: string(ActorAccount), ID: l.account.ID.String()},
+		AccountID: l.account.ID, IdentifierID: id.ID, IdentifierType: id.Type, Actor: AccountActor(l.account.ID),
 	}); err != nil {
 		return nil, nil, err
 	}
@@ -453,9 +554,12 @@ func (r *Registration) verified(ctx context.Context, l locked, id account.Identi
 
 // Resend sends one identifier's verification again (TDD-02 §2.4): the open challenge, at most once
 // per otp.resend_after; a new challenge with a new secret once it has expired, or once the
-// cooldown after its attempts ran out has passed. The per-address send limits (L-7) and the
-// per-IP send window (L-8) apply. A type not pending is CHALLENGE_CLOSED.
+// cooldown after its attempts ran out has passed. L-8 counts the request first, and the
+// per-address limits (L-7, L-9) apply to the send. Too soon, or during the cooldown, is
+// RESEND_TOO_SOON; a type not pending, or a challenge consumed or closed with its flow, is
+// CHALLENGE_CLOSED. A send the limits refuse rolls the step back, a replaced challenge included.
 func (r *Registration) Resend(ctx context.Context, cmd ResendRegistration) error {
+	const op = "resend registration verification"
 	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditRegistrationResend, IP: cmd.IP,
 		Details: map[string]any{"identifier_type": cmd.IdentifierType}}
 	if err := r.d.Limits.CheckIP(ctx, RuleSendIP, cmd.IP); err != nil {
@@ -463,22 +567,23 @@ func (r *Registration) Resend(ctx context.Context, cmd ResendRegistration) error
 	}
 	f, err := r.findFlow(ctx, cmd.FlowID, cmd.Handle)
 	if err != nil {
-		return r.fail(ctx, entry, err)
+		return r.fail(ctx, entry, op, err)
 	}
 	entry.withFlow(f)
 	var answer error
 	err = r.d.UnitOfWork.Do(ctx, func(ctx context.Context) error {
-		l, err := r.lock(ctx, f)
-		if err != nil {
+		l, miss, err := r.lock(ctx, f)
+		if err != nil || miss != nil {
+			answer = miss
 			return err
 		}
 		id, ch, ok := l.pending(cmd.IdentifierType)
-		if !ok {
+		t, configured := r.d.Registry.Type(cmd.IdentifierType)
+		if !ok || !configured { // a type the policy dropped since cannot be sent to
 			answer = challengeClosed()
 			return nil
 		}
-		t, _ := r.d.Registry.Type(id.Type)
-		switch d := flow.DecideResend(ch.Challenge, r.d.Clock.Now(), r.o.Resend); d.Outcome {
+		switch d := flow.DecideResend(ch.Challenge, r.d.Clock.Now(), r.d.Challenges.ResendRules()); d.Outcome {
 		case flow.Reuse:
 		case flow.NewChallenge:
 			if ch.ClosedAt == nil {
@@ -502,22 +607,21 @@ func (r *Registration) Resend(ctx context.Context, cmd ResendRegistration) error
 		}
 		return r.auditSuccess(ctx, entry, l.account.ID)
 	})
-	if err != nil && !errors.Is(err, errRefused) {
-		return fmt.Errorf("resend registration verification: %w", err)
+	if err == errRefused { //nolint:errorlint // exactly the sentinel: a rollback failure joined to it is a failure
+		err = nil
 	}
-	if answer != nil {
-		return r.fail(ctx, entry, answer)
-	}
-	return nil
+	return r.settle(ctx, entry, op, err, answer)
 }
 
 // errRefused rolls back a transaction whose answer is a refusal that must not commit.
 var errRefused = errors.New("refused")
 
-// ConfirmLink confirms an emailed link (TDD-02 §3). Of the link purposes, it serves
-// verify_identifier; a token of another purpose, or one that matches no open challenge, is
-// CHALLENGE_CLOSED. A link has no attempt counter: a wrong token matches nothing (TDD-02 §2.2).
+// ConfirmLink confirms an emailed link (TDD-02 §3). L-12 counts the attempt first. Of the link
+// purposes, it serves verify_identifier; a token of another purpose or flow kind, or one that
+// matches no open challenge, is CHALLENGE_CLOSED. A link has no attempt counter: a wrong token
+// matches nothing (TDD-02 §2.2). Complete says whether the flow has nothing left to verify.
 func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkConfirmed, error) {
+	const op = "confirm verification link"
 	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditVerificationConfirm, IP: cmd.IP}
 	if err := r.d.Limits.CheckIP(ctx, RuleVerifyIP, cmd.IP); err != nil {
 		return LinkConfirmed{}, err
@@ -529,7 +633,7 @@ func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkCo
 		err = challengeClosed()
 	}
 	if err != nil {
-		return LinkConfirmed{}, r.fail(ctx, entry, err)
+		return LinkConfirmed{}, r.fail(ctx, entry, op, err)
 	}
 	entry.withFlow(f)
 	var (
@@ -537,18 +641,15 @@ func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkCo
 		out    = LinkConfirmed{Purpose: flow.PurposeVerifyIdentifier, FlowID: f.ID}
 	)
 	err = r.d.UnitOfWork.Do(ctx, func(ctx context.Context) error {
-		l, err := r.lock(ctx, f)
-		if err != nil {
+		l, miss, err := r.lock(ctx, f)
+		if err != nil || miss != nil {
+			answer = miss
 			return err
 		}
-		var ch flow.ChallengeRecord
-		for _, c := range l.challenges {
-			if c.ID == found.ID {
-				ch = c
-			}
-		}
-		id, ok := account.Identifier{}, false
-		if ch.IdentifierID != nil {
+		// FindLink saw the challenge open; it may have closed or expired before the lock.
+		ch, ok := l.challenge(found.ID)
+		var id account.Identifier
+		if ok && ch.IdentifierID != nil {
 			id, ok = l.identifier(*ch.IdentifierID)
 		}
 		if !ok || ch.ClosedAt != nil || ch.End(r.d.Clock.Now()) != flow.EndOpen {
@@ -562,16 +663,14 @@ func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkCo
 		out.Complete = len(out.PendingTypes) == 0
 		return r.auditSuccess(ctx, entry, l.account.ID)
 	})
-	if err != nil {
-		return LinkConfirmed{}, fmt.Errorf("confirm verification link: %w", err)
-	}
-	if answer != nil {
-		return LinkConfirmed{}, r.fail(ctx, entry, answer)
+	if err := r.settle(ctx, entry, op, err, answer); err != nil {
+		return LinkConfirmed{}, err
 	}
 	return out, nil
 }
 
-// auditSuccess writes e as a success about the account, in the transaction.
+// auditSuccess writes e as a success about the account, in the transaction: the holder of the
+// handle or link acts for the account.
 func (r *Registration) auditSuccess(ctx context.Context, e AuditEntry, accountID uuid.UUID) error {
 	e.AccountID, e.Outcome = accountID, OutcomeSuccess
 	e.ActorKind, e.ActorID = ActorAccount, accountID.String()

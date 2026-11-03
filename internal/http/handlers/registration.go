@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/arafat-hasan/auth1/internal/app"
+	"github.com/arafat-hasan/auth1/internal/domain/flow"
 	"github.com/arafat-hasan/auth1/internal/http/clientip"
 	"github.com/arafat-hasan/auth1/internal/http/gen"
 )
@@ -24,7 +25,7 @@ func (a *API) StartRegistration(ctx context.Context, req gen.StartRegistrationRe
 	b := req.Body
 	s, err := a.registration.Start(ctx, app.StartRegistration{
 		ClientID: b.ClientId, DisplayName: b.DisplayName, Locale: b.Locale, Identifiers: b.Identifiers,
-		Password: []byte(b.Password), IP: clientip.From(ctx),
+		Password: flow.Secret(b.Password), IP: clientip.From(ctx),
 	})
 	if err != nil {
 		return nil, err
@@ -41,7 +42,7 @@ func (a *API) VerifyRegistrationCode(ctx context.Context, req gen.VerifyRegistra
 	}
 	b := req.Body
 	p, err := a.registration.VerifyCode(ctx, app.VerifyRegistrationCode{
-		FlowID: req.FlowId, Handle: []byte(b.Handle), IdentifierType: b.IdentifierType, Code: []byte(b.Code),
+		FlowID: req.FlowId, Handle: flow.Secret(b.Handle), IdentifierType: b.IdentifierType, Code: flow.Secret(b.Code),
 		IP: clientip.From(ctx),
 	})
 	if err != nil {
@@ -57,7 +58,7 @@ func (a *API) ResendRegistrationVerification(ctx context.Context, req gen.Resend
 	}
 	b := req.Body
 	if err := a.registration.Resend(ctx, app.ResendRegistration{
-		FlowID: req.FlowId, Handle: []byte(b.Handle), IdentifierType: b.IdentifierType, IP: clientip.From(ctx),
+		FlowID: req.FlowId, Handle: flow.Secret(b.Handle), IdentifierType: b.IdentifierType, IP: clientip.From(ctx),
 	}); err != nil {
 		return nil, err
 	}
@@ -69,7 +70,7 @@ func (a *API) ConfirmVerificationLink(ctx context.Context, req gen.ConfirmVerifi
 	if a.registration == nil {
 		return nil, gen.ErrNotImplemented
 	}
-	c, err := a.registration.ConfirmLink(ctx, app.ConfirmLink{Token: []byte(req.Body.Token), IP: clientip.From(ctx)})
+	c, err := a.registration.ConfirmLink(ctx, app.ConfirmLink{Token: flow.Secret(req.Body.Token), IP: clientip.From(ctx)})
 	if err != nil {
 		return nil, err
 	}

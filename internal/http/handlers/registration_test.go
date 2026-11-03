@@ -137,7 +137,7 @@ func TestStartRegistrationHandler(t *testing.T) {
 		t.Errorf("body (-want +got):\n%s", diff)
 	}
 	wantCmd := app.StartRegistration{ClientID: "web", DisplayName: "Someone", Locale: "en",
-		Identifiers: map[string]string{"email": "someone@example.com"}, Password: []byte("correct horse battery staple"),
+		Identifiers: map[string]string{"email": "someone@example.com"}, Password: flow.Secret("correct horse battery staple"),
 		IP: clientAddr}
 	if diff := cmp.Diff(wantCmd, reg.start, addrs); diff != "" {
 		t.Errorf("command (-want +got):\n%s", diff)
@@ -152,8 +152,8 @@ func TestVerifyRegistrationCodeHandler(t *testing.T) {
 	if resp.status != http.StatusOK || string(resp.body) != `{"pending_types":[]}`+"\n" {
 		t.Fatalf("status %d: %s", resp.status, resp.body)
 	}
-	want := app.VerifyRegistrationCode{FlowID: testFlow, Handle: []byte(testHandle), IdentifierType: "phone",
-		Code: []byte("123456"), IP: clientAddr}
+	want := app.VerifyRegistrationCode{FlowID: testFlow, Handle: flow.Secret(testHandle), IdentifierType: "phone",
+		Code: flow.Secret("123456"), IP: clientAddr}
 	if diff := cmp.Diff(want, reg.verify, addrs); diff != "" {
 		t.Errorf("command (-want +got):\n%s", diff)
 	}
@@ -167,7 +167,7 @@ func TestResendRegistrationHandler(t *testing.T) {
 	if resp.status != http.StatusAccepted {
 		t.Fatalf("status %d: %s", resp.status, resp.body)
 	}
-	want := app.ResendRegistration{FlowID: testFlow, Handle: []byte(testHandle), IdentifierType: "phone", IP: clientAddr}
+	want := app.ResendRegistration{FlowID: testFlow, Handle: flow.Secret(testHandle), IdentifierType: "phone", IP: clientAddr}
 	if diff := cmp.Diff(want, reg.resend, addrs); diff != "" {
 		t.Errorf("command (-want +got):\n%s", diff)
 	}

@@ -7,11 +7,17 @@ const (
 	EventIdentifierVerified = "account.identifier_verified"
 )
 
-// EventActor is who caused a change, as the contract's Actor.
+// EventActor is who caused a change, as the contract's Actor. Its kind is account, service,
+// operator or system, never anonymous: build it with AccountActor (and its siblings as they come).
 type EventActor struct {
-	Kind       string `json:"kind"`
-	ID         string `json:"id,omitempty"`
-	OnBehalfOf string `json:"on_behalf_of,omitempty"`
+	Kind       ActorKind `json:"kind"`
+	ID         string    `json:"id,omitempty"`
+	OnBehalfOf string    `json:"on_behalf_of,omitempty"`
+}
+
+// AccountActor is the account id acting for itself.
+func AccountActor(id uuid.UUID) EventActor {
+	return EventActor{Kind: ActorAccount, ID: id.String()}
 }
 
 // IdentifierVerified is the data of account.identifier_verified: an identifier was verified at

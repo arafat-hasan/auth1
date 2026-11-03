@@ -204,7 +204,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	}
 	registration, err := newRegistration(registrationParts{
 		cfg: cfg, db: db, keys: keys, registry: registry, types: types, policy: policy,
-		hasher: hasher, limits: limits, tracing: tel.TracerProvider(),
+		hasher: hasher, limits: limits, tracing: tel.TracerProvider(), logger: logger,
 	})
 	if err != nil {
 		return err

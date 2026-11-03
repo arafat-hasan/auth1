@@ -63,7 +63,7 @@ func (testMAC) RecoveryCode(id uuid.UUID, code []byte) []byte {
 
 var challengeRules = app.ChallengeRules{
 	OTPLength: 6, MaxAttempts: 3, OTPTTL: 5 * time.Minute, LinkTTL: 24 * time.Hour,
-	Windows: app.SendWindows{Short: time.Minute, Long: time.Hour}, MaxShort: 1, MaxLong: 5,
+	Windows: app.SendWindows{Short: time.Minute, Long: time.Hour}, MaxShort: 1, MaxLong: 5, Cooldown: 15 * time.Minute,
 }
 
 type challengesEnv struct {
@@ -81,7 +81,11 @@ func newChallengesEnv(t *testing.T) challengesEnv {
 	e := challengesEnv{flows: &sendFlows{}, outbox: &recordingOutbox{}}
 	// Every random byte is 7: codes are "777777" and tokens are fixed.
 	rnd := bytes.NewReader(bytes.Repeat([]byte{7}, 4096))
-	e.c = app.NewChallenges(e.flows, e.outbox, app.NewMessages(types), testMAC{}, fakes.NewIDs(), fakes.NewClock(now), rnd, challengeRules)
+	c, err := app.NewChallenges(e.flows, e.outbox, app.NewMessages(types), testMAC{}, fakes.NewIDs(), fakes.NewClock(now), rnd, challengeRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.c = c
 	return e
 }
 
@@ -235,5 +239,28 @@ func TestChallengesSendLimits(t *testing.T) {
 				t.Errorf("a refused send recorded %v and wrote %d requests; want nothing", e.flows.sends, len(e.outbox.requests))
 			}
 		})
+	}
+}
+
+func TestNewChallengesRefusesBadRules(t *testing.T) {
+	t.Parallel()
+	types, _ := message.NewTypes(nil)
+	for name, edit := range map[string]func(*app.ChallengeRules){
+		"no OTP lifetime":   func(r *app.ChallengeRules) { r.OTPTTL = 0 },
+		"no link lifetime":  func(r *app.ChallengeRules) { r.LinkTTL = 0 },
+		"short OTP":         func(r *app.ChallengeRules) { r.OTPLength = 5 },
+		"no attempts":       func(r *app.ChallengeRules) { r.MaxAttempts = 0 },
+		"no short window":   func(r *app.ChallengeRules) { r.Windows.Short = 0 },
+		"short above long":  func(r *app.ChallengeRules) { r.Windows.Short = 2 * time.Hour },
+		"no short sends":    func(r *app.ChallengeRules) { r.MaxShort = 0 },
+		"long below short":  func(r *app.ChallengeRules) { r.MaxShort, r.MaxLong = 2, 1 },
+		"negative cooldown": func(r *app.ChallengeRules) { r.Cooldown = -time.Second },
+	} {
+		r := challengeRules
+		edit(&r)
+		if _, err := app.NewChallenges(&sendFlows{}, &recordingOutbox{}, app.NewMessages(types), testMAC{},
+			fakes.NewIDs(), fakes.NewClock(now), bytes.NewReader(nil), r); err == nil {
+			t.Errorf("%s: NewChallenges accepted %+v", name, r)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"log/slog"
 	"time"
 
 	"github.com/uptrace/bun"
@@ -12,14 +13,17 @@ import (
 	"github.com/arafat-hasan/auth1/internal/adapters/system"
 	"github.com/arafat-hasan/auth1/internal/app"
 	"github.com/arafat-hasan/auth1/internal/config"
-	"github.com/arafat-hasan/auth1/internal/domain/flow"
 	"github.com/arafat-hasan/auth1/internal/domain/identifier"
 	"github.com/arafat-hasan/auth1/internal/domain/message"
 	"github.com/arafat-hasan/auth1/internal/domain/password"
 )
 
-// sendWindowLong is the long window of the per-address send limits (TDD-07 L-7): an hour.
-const sendWindowLong = time.Hour
+// The per-address send limits that are not configuration (TDD-07 L-7): one send in the short
+// window (otp.resend_after), and an hour as the long window (otp.max_sends_per_hour in it).
+const (
+	sendsPerShortWindow = 1
+	sendWindowLong      = time.Hour
+)
 
 // registrationParts are what the registration flow is built from: the configuration, the pool
 // and keys, and the components start-up has already built.
@@ -33,6 +37,7 @@ type registrationParts struct {
 	hasher   app.PasswordHasher
 	limits   *app.RateLimits
 	tracing  trace.TracerProvider
+	logger   *slog.Logger
 }
 
 // newRegistration builds the registration flow (TDD-02 §3) on PostgreSQL.
@@ -50,11 +55,14 @@ func newRegistration(p registrationParts) (*app.Registration, error) {
 	ids, clock := system.UUIDv7{}, system.Clock{}
 	flows := postgres.NewFlows(p.db, fc, bidx)
 	outbox := postgres.NewOutbox(p.db, ids)
-	challenges := app.NewChallenges(flows, outbox, app.NewMessages(p.types), mac, ids, clock, rand.Reader, app.ChallengeRules{
+	challenges, err := app.NewChallenges(flows, outbox, app.NewMessages(p.types), mac, ids, clock, rand.Reader, app.ChallengeRules{
 		OTPLength: cfg.OTP.Length, MaxAttempts: cfg.OTP.MaxAttempts, OTPTTL: cfg.OTP.TTL, LinkTTL: cfg.Links.VerificationTTL,
 		Windows:  app.SendWindows{Short: cfg.OTP.ResendAfter, Long: sendWindowLong},
-		MaxShort: 1, MaxLong: cfg.OTP.MaxSendsPerHour,
+		MaxShort: sendsPerShortWindow, MaxLong: cfg.OTP.MaxSendsPerHour, Cooldown: cfg.OTP.Cooldown,
 	})
+	if err != nil {
+		return nil, err
+	}
 	clients := make(map[string]app.RegistrationClient, len(cfg.Clients))
 	for _, c := range cfg.Clients {
 		clients[c.ID] = app.RegistrationClient{ID: c.ID, SelfRegistration: c.SelfRegistration}
@@ -63,9 +71,8 @@ func newRegistration(p registrationParts) (*app.Registration, error) {
 		UnitOfWork: postgres.NewUnitOfWork(p.db, cfg.Database.AcquireTimeout, p.tracing),
 		Accounts:   postgres.NewAccounts(p.db, fc, bidx), Flows: flows, Challenges: challenges, Outbox: outbox,
 		Audit: postgres.NewAudit(p.db), Hasher: p.hasher, Registry: p.registry, Limits: p.limits,
-		IDs: ids, Clock: clock, Rand: rand.Reader, MAC: mac,
+		IDs: ids, Clock: clock, Rand: rand.Reader, MAC: mac, Logger: p.logger,
 	}, app.RegistrationOptions{
-		Clients: clients, Locales: cfg.Locales.Allowed, FlowTTL: cfg.Flows.PendingRegistrationTTL,
-		Password: p.policy, Resend: flow.ResendRules{ResendAfter: cfg.OTP.ResendAfter, Cooldown: cfg.OTP.Cooldown},
-	}), nil
+		Clients: clients, Locales: cfg.Locales.Allowed, FlowTTL: cfg.Flows.PendingRegistrationTTL, Password: p.policy,
+	})
 }
