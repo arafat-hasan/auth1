@@ -255,3 +255,20 @@ middleware installed by the router for every request via `server.Options.ClientI
 `internal/testing/redistest` (`Addr` with a per-test `Prefix`, needing `redistest.Main` in
 `TestMain`; `NewServer` with `Stop`/`Start`, which does not). The Docker gate and the restart proxy
 of pgtest and redistest live in `internal/testing/dockertest`.
+
+Service callers (TDD-05 §1, §3): `internal/http/middleware/caller.Resolver` is in
+`server.Options.APIMiddleware` after `middleware.RateLimit`. It finds the operation before dispatch
+with `gen.Match(basePath)` (by route pattern; `gen.ServiceRoute` is built on it) and passes every
+operation that is not a service one through. For a service operation it resolves the caller by the
+credentials both `service_auth.mode` and the operation's security accept (none: `401
+TOKEN_INVALID`; an unset mode, development only, accepts none), checks `x-auth1-scope` (`403
+CALLER_NOT_ALLOWED`: `auth1_service_calls_denied_total{caller,scope}` with `caller="unknown"` for
+an unconfigured identity, an `auth_audit` row `service_call_denied` written outside any
+transaction, a log line with the route pattern and decision only; a failed audit write is logged
+and the call still refused), then `Auth1-Actor` (one value, 1–128 of `\x20-\x7E`, else `422
+VALIDATION_FAILED`). Handlers read `caller.From(ctx)`, never headers. Identity headers count only
+when the TCP peer (`RemoteAddr`, not `clientip`) is in `trusted_sidecar_cidrs`; XFCC gives the
+first `URI` of its only element (`xfccURI`, fuzzed); `peer_cert` reads `r.TLS.VerifiedChains`,
+though nothing terminates TLS yet. Service tokens go through `caller.TokenVerifier`, nil until
+WP-70. `loadServiceAuth` in `cmd/auth1/serviceauth.go` maps the config for `config check` and
+`serve`, refusing a sidecar entry that is not a CIDR; `serve` warns for one beyond loopback.

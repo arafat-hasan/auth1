@@ -29,6 +29,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/http/handlers"
 	"github.com/arafat-hasan/auth1/internal/http/health"
 	"github.com/arafat-hasan/auth1/internal/http/middleware"
+	"github.com/arafat-hasan/auth1/internal/http/middleware/caller"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/server"
 	"github.com/arafat-hasan/auth1/internal/telemetry"
@@ -108,6 +109,10 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if _, problems := loadPasswordPolicy(cfg); len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
+	callers, problems := loadServiceAuth(cfg)
+	if len(problems) > 0 {
+		return printProblems(cmd.ErrOrStderr(), problems)
+	}
 	// The delivery relay hands the adapter its rows; the resolver arrives with WP-43.
 	var resolver app.DeliveryResolver = unavailableResolver{}
 	if deps.resolver != nil {
@@ -134,6 +139,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	}()
 	logger := tel.Logger()
 	slog.SetDefault(logger)
+	warnSidecars(logger, cfg.ServiceAuth.Mesh.TrustedSidecarCIDRs)
 	otel.SetTextMapPropagator(tel.Propagator())
 
 	keys, problems := loadCryptoKeys(cfg, logger)
@@ -227,6 +233,14 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		return err
 	}
 	pw := problem.New(logger)
+	if callers.Denied, err = metrics.Counter("auth1_service_calls_denied_total"); err != nil {
+		return err
+	}
+	callers.Problems, callers.Audit, callers.Logger = pw, postgres.NewAudit(db), logger
+	services, err := caller.New(callers)
+	if err != nil {
+		return err
+	}
 	router := server.NewRouter(server.Options{
 		BasePath:        cfg.HTTP.BasePath,
 		Logger:          logger,
@@ -237,8 +251,11 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		Health:          checks,
 		Routes:          gen.Routes(api, pw),
 		ClientIP:        ips,
-		APIMiddleware:   []func(http.Handler) http.Handler{middleware.RateLimit(limits, pw, gen.ServiceRoute(cfg.HTTP.BasePath))},
-		Dev:             devRoutes,
+		APIMiddleware: []func(http.Handler) http.Handler{
+			middleware.RateLimit(limits, pw, gen.ServiceRoute(cfg.HTTP.BasePath)),
+			services.Middleware,
+		},
+		Dev: devRoutes,
 	})
 
 	// The keyring pollers and the relay run until the servers have stopped, or until the stop
