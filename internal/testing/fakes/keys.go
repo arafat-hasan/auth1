@@ -67,6 +67,8 @@ type Keys struct {
 	mu        sync.Mutex
 	signer    string // kid; empty: no key signs
 	published []string
+	signErr   error // returned by Sign when set
+	unsynced  bool  // Key and Published find nothing, as before the keyring's first sync
 }
 
 // NewKeys returns a keyring whose RS256 key signs and whose two keys are published.
@@ -75,8 +77,8 @@ func NewKeys() *Keys {
 	return &Keys{signer: ks[0].kid, published: []string{ks[0].kid, ks[1].kid}}
 }
 
-// Kids returns the kids of the RS256 and the ES256 key.
-func (k *Keys) Kids() (rsaKid, ecKid string) {
+// Kids returns the kids, RFC 7638 thumbprints, of the RS256 and the ES256 key.
+func (*Keys) Kids() (rsaKid, ecKid string) {
 	ks := testKeys()
 	return ks[0].kid, ks[1].kid
 }
@@ -90,6 +92,7 @@ func (k *Keys) SetActive(kid string) {
 }
 
 // Unpublish removes the key kid from the published set; it still signs if it is the signing key.
+// An unknown kid is ignored.
 func (k *Keys) Unpublish(kid string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -103,6 +106,21 @@ func (k *Keys) NoSigner() {
 	k.signer = ""
 }
 
+// FailSign makes Sign return err; nil restores signing.
+func (k *Keys) FailSign(err error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.signErr = err
+}
+
+// Unsynced makes Key and Published find nothing, as the keyring does before its first sync with the
+// database.
+func (k *Keys) Unsynced() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.unsynced = true
+}
+
 // Private returns the private key kid, for tests that forge tokens. An unknown kid panics.
 func (k *Keys) Private(kid string) crypto.Signer {
 	return find(kid).private
@@ -111,8 +129,11 @@ func (k *Keys) Private(kid string) crypto.Signer {
 // Sign implements app.TokenSigner.
 func (k *Keys) Sign(payload []byte, typ string) (string, error) {
 	k.mu.Lock()
-	kid := k.signer
+	kid, signErr := k.signer, k.signErr
 	k.mu.Unlock()
+	if signErr != nil {
+		return "", signErr
+	}
 	if kid == "" {
 		return "", app.ErrNoSigningKey
 	}
@@ -139,7 +160,7 @@ func (k *Keys) Sign(payload []byte, typ string) (string, error) {
 func (k *Keys) Key(kid string) (app.PublicKey, bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if !slices.Contains(k.published, kid) {
+	if k.unsynced || !slices.Contains(k.published, kid) {
 		return app.PublicKey{}, false
 	}
 	key := find(kid)
@@ -150,6 +171,9 @@ func (k *Keys) Key(kid string) (app.PublicKey, bool) {
 func (k *Keys) Published() ([]app.PublicKey, bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.unsynced {
+		return nil, false
+	}
 	out := make([]app.PublicKey, len(k.published))
 	for i, kid := range k.published {
 		key := find(kid)

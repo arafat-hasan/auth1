@@ -95,3 +95,27 @@ func TestKeysSignVerifies(t *testing.T) {
 		t.Error("Private returns nil for a known kid")
 	}
 }
+
+func TestKeysToggles(t *testing.T) {
+	t.Parallel()
+	k := NewKeys()
+	rsaKid, _ := k.Kids()
+
+	boom := errors.New("boom")
+	k.FailSign(boom)
+	if _, err := k.Sign([]byte(`{}`), "at+jwt"); !errors.Is(err, boom) {
+		t.Errorf("Sign after FailSign: %v; want boom", err)
+	}
+	k.FailSign(nil)
+	if _, err := k.Sign([]byte(`{}`), "at+jwt"); err != nil {
+		t.Errorf("Sign after FailSign(nil): %v", err)
+	}
+
+	k.Unsynced()
+	if pks, ok := k.Published(); ok || pks != nil {
+		t.Errorf("Published() when unsynced = %v, %v; want nil, false", pks, ok)
+	}
+	if _, ok := k.Key(rsaKid); ok {
+		t.Error("Key finds a kid when unsynced")
+	}
+}
