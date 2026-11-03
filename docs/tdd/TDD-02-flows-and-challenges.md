@@ -105,7 +105,7 @@ The purge job deletes those `pending`-then-`deleted` accounts and their rows 7 d
 `POST /v1/registrations`, with `client_id`, `display_name`, `locale`, `identifiers: {type: value}`
 and `password`:
 
-1. The client exists and has `self_registration`. The per-IP registration window allows it.
+1. The client exists and has `self_registration`; otherwise `VALIDATION_FAILED` on `client_id` (`unknown`). The per-IP registration window allows it.
 2. Every required type is present, and no unknown type. Each value normalises (`IDENTIFIER_NOT_ALLOWED`).
 3. No value is another account's verified, current identifier (`IDENTIFIER_TAKEN`). This reveals that the value is taken: a product requirement (SDD §12).
 4. The password passes the policy against these identifiers (`PASSWORD_REJECTED`). Hash it with Argon2id, outside the transaction.
@@ -115,6 +115,11 @@ and `password`:
    - the password credential;
    - a `registration` flow;
    - one `verify_identifier` challenge per identifier, each sent (§2.4).
+
+   A send that the per-value limits (§2.4 step 1) refuse is skipped, silently: the challenge stays
+   open and unsent, and the registration still answers `201`. The person resends later and meets the
+   limits there. Refusing the registration would tell that someone else is registering the value,
+   and the accounts sharing a value share its send budget (T-20).
 6. Answer `201` with `flow_id`, `handle`, `pending_types` and `expires_at`.
 
 **Verify a code:** `POST /v1/registrations/{flowId}/verify` (`handle`, `identifier_type`, `code`).

@@ -203,6 +203,7 @@ is harmless. Each call is audited (request id, number resolved, number omitted) 
 |---|---|---|---|---|
 | Phone verification | `auth.phone_verification_code` | SMS | `code` | Yes |
 | Email verification | `auth.email_verification_link` | Email | `link` | Yes |
+| Email verification by code (`verify: email_code`) | `auth.email_verification_code` | Email | `code` | Yes |
 | Resume | `auth.registration_resume` | the identifier's | `code` or `link` | Yes |
 | Sign-in code | `auth.sign_in_code` | SMS or email | `code` | Yes |
 | Reset link | `auth.password_reset_link` | Email | `link` | Yes |

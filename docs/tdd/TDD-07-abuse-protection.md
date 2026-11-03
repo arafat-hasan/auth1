@@ -34,10 +34,13 @@ send limits and budgets, and overload behaviour.
 | L-9 | OTP attempts | Challenge | PostgreSQL | 3, then closed; 15-minute cooldown on new sends to that value | `CHALLENGE_CLOSED` | — |
 | L-10 | Second-factor attempts | Flow | PostgreSQL | 5, then closed | `CHALLENGE_CLOSED` | — |
 | L-11 | Second-factor failures | Account | PostgreSQL (`accounts.factor_failures`) | 10 / 1 h, across OTP, TOTP and recovery codes | `RATE_LIMITED` | — |
-| L-12 | Failed verifications | IP | Redis | 30 / 1 h, across accounts | `RATE_LIMITED` | Fail open, alert |
+| L-12 | Verification attempts (codes and links), counted before verifying | IP | Redis | 30 / 1 h, across accounts | `RATE_LIMITED` | Fail open, alert |
 | L-13 | SMS budget | Deployment | PostgreSQL (counter row per hour) | `sms_budget_per_hour` (no default: required when an SMS method is configured) | SMS sends refused, `UNAVAILABLE` | — |
 | L-14 | Resume requests | IP | Redis | 10 / 1 h | 202 (silently not sent) | Fail open, alert |
 | L-15 | Token endpoint | Client id | Redis | 60 / 1 min | `invalid_client` after `429` semantics | Fail open, alert |
+
+L-12 counts every attempt, not only failures: a sliding window cannot be read without counting
+a hit, and counting only failures would let a correct guess through after the limit.
 
 Order of checks: per-IP limits first (cheap), then the per-account and per-value limits, then any
 hashing. **Nothing hashes a password before L-1 and L-2 pass.**
