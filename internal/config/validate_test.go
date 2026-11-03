@@ -341,6 +341,20 @@ func TestValidateRules(t *testing.T) {
 			want: []string{"passwords.max_length"}},
 		{name: "zero access ttl", change: func(c *Config) { c.Tokens.AccessTTL = 0 },
 			want: []string{"tokens.access_ttl"}},
+
+		// Restricted tokens carry the self audience, never a client's (SDD D-5).
+		{name: "client audience is the issuer", change: func(c *Config) {
+			c.Tokens.SelfAudience = ""
+			c.Clients[0].Audience = c.HTTP.Issuer
+		}, want: []string{"clients[0].audience"}},
+		{name: "client audience is the self audience", change: func(c *Config) {
+			c.Tokens.SelfAudience = "self"
+			c.Clients[0].Audience = "self"
+		}, want: []string{"clients[0].audience"}},
+		{name: "client audience is the issuer beside a self audience", change: func(c *Config) {
+			c.Tokens.SelfAudience = "self"
+			c.Clients[0].Audience = c.HTTP.Issuer
+		}},
 		{name: "zero reset ttl", change: func(c *Config) { c.Links.ResetTTL = 0 },
 			want: []string{"links.reset_ttl"}},
 		{name: "zero service token ttl", change: func(c *Config) { c.ServiceAuth.ClientCredentials.TokenTTL = 0 },
