@@ -200,6 +200,10 @@ func (v *validator) ranges() {
 		"service_auth.client_credentials.token_ttl": c.ServiceAuth.ClientCredentials.TokenTTL,
 		"database.acquire_timeout":                  c.Database.AcquireTimeout,
 		"passwords.argon2.queue_timeout":            c.Passwords.Argon2.QueueTimeout,
+		"otp.ttl":                                   c.OTP.TTL,
+		"otp.resend_after":                          c.OTP.ResendAfter,
+		"links.verification_ttl":                    c.Links.VerificationTTL,
+		"flows.pending_registration_ttl":            c.Flows.PendingRegistrationTTL,
 	} {
 		if d == 0 {
 			v.add(path, "must be above 0")
@@ -214,6 +218,9 @@ func (v *validator) ranges() {
 	}
 	if c.OTP.MaxAttempts == 0 {
 		v.add("otp.max_attempts", "must be above 0")
+	}
+	if c.OTP.MaxSendsPerHour == 0 {
+		v.add("otp.max_sends_per_hour", "must be above 0") // else no code is ever sent (TDD-07 L-7)
 	}
 	if c.Database.MaxConns == 0 {
 		v.add("database.max_conns", "must be above 0")
