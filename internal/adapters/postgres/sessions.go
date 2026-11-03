@@ -48,6 +48,13 @@ const sessionColumns = `s.id, s.account_id, s.client_id, s.amr, s.auth_time, s.d
 // sessionLive is the condition of a live session: not revoked and before both expiries.
 const sessionLive = "(s.revoked_at IS NULL AND now() < s.idle_expires_at AND now() < s.absolute_expires_at)"
 
+// tokenInGrace is the condition of a token r within the grace window, whose length in
+// microseconds is its one argument: rotated no more than the window ago, with its successor's
+// value still held (TDD-04 §3). The erase removes values just past it (EraseSuccessors), and
+// nothing reads one outside it, so the erase's timing never widens the window (I-13).
+const tokenInGrace = `(r.rotated_at IS NOT NULL AND r.successor_enc IS NOT NULL
+	AND now() - r.rotated_at <= ? * interval '1 microsecond')`
+
 // scanSession reads a row of sessionColumns, followed by extra.
 func scanSession(row interface{ Scan(...any) error }, extra ...any) (session.Session, error) {
 	var (
@@ -119,8 +126,7 @@ func (r *Sessions) FindToken(ctx context.Context, tokenHash []byte, grace time.D
 	)
 	s, err := scanSession(t.tx.QueryRowContext(ctx, "SELECT "+sessionColumns+`,
 			r.token_hash, r.issued_at, r.rotated_at,
-			(r.rotated_at IS NOT NULL AND r.successor_enc IS NOT NULL
-				AND now() - r.rotated_at <= ? * interval '1 microsecond')
+			`+tokenInGrace+`
 		FROM refresh_tokens r JOIN sessions s ON s.id = r.session_id
 		WHERE r.token_hash = ?
 		FOR UPDATE OF s`, micros(grace), tokenHash),
@@ -201,4 +207,47 @@ func (r *Sessions) Rotate(ctx context.Context, sessionID uuid.UUID, tokenHash, s
 		return false, fmt.Errorf("rotate refresh token: %w", err)
 	}
 	return n == 1, nil
+}
+
+// maxSuccessorSteps is how many successors Successor follows at most (TDD-04 §3 step 4.1).
+const maxSuccessorSteps = 3
+
+// Successor implements app.Sessions. It reads one token per step and opens the value of the
+// current token it ends at from its predecessor's successor_enc.
+func (r *Sessions) Successor(ctx context.Context, sessionID uuid.UUID, tokenHash []byte, grace time.Duration) ([]byte, bool, error) {
+	t, err := lockedSession(ctx, "follow refresh token", sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	var prevHash, prevEnc []byte
+	hash := tokenHash
+	for step := 0; ; step++ {
+		var (
+			next, enc        []byte
+			current, inGrace bool
+		)
+		err := t.tx.QueryRowContext(ctx, `
+			SELECT r.successor_hash, r.successor_enc, r.rotated_at IS NULL, `+tokenInGrace+`
+			FROM refresh_tokens r WHERE r.token_hash = ? AND r.session_id = ?`,
+			micros(grace), hash, sessionID).Scan(&next, &enc, &current, &inGrace)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("follow refresh token: %w", err)
+		}
+		switch {
+		case current && step == 0:
+			return nil, false, nil
+		case current:
+			value, err := r.fc.Open(app.NewKeyPlace(tableRefreshTokens, "successor_enc", prevHash), prevEnc)
+			if err != nil {
+				return nil, false, fmt.Errorf("follow refresh token: open successor: %w", err)
+			}
+			return value, true, nil
+		case !inGrace || step == maxSuccessorSteps:
+			return nil, false, nil
+		}
+		prevHash, prevEnc, hash = hash, enc, next
+	}
 }
