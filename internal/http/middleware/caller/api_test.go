@@ -1,6 +1,7 @@
 package caller_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -32,7 +33,12 @@ func (discardAudit) Write(_ context.Context, e app.AuditEntry) error { return e.
 // api is the stub API with the caller middleware, as serve mounts it.
 func api(t *testing.T, scopes ...string) http.Handler {
 	t.Helper()
-	logger := slog.New(slog.DiscardHandler)
+	return apiAt(t, "", slog.New(slog.DiscardHandler), scopes...)
+}
+
+// apiAt is api under basePath, logging to logger.
+func apiAt(t *testing.T, basePath string, logger *slog.Logger, scopes ...string) http.Handler {
+	t.Helper()
 	meter := noop.NewMeterProvider().Meter("test")
 	hist, err := meter.Float64Histogram("d")
 	if err != nil {
@@ -44,7 +50,7 @@ func api(t *testing.T, scopes ...string) http.Handler {
 	}
 	pw := problem.New(logger)
 	res, err := caller.New(caller.Options{
-		Mode: caller.ModeMesh, Source: caller.SourceHeader, Header: "X-Forwarded-Client-Cert",
+		Mode: caller.ModeMesh, Source: caller.SourceHeader, Header: "X-Forwarded-Client-Cert", BasePath: basePath,
 		Format: caller.FormatXFCC, TrustedSidecars: []string{"127.0.0.1/32", "::1/128"},
 		Callers:  map[string][]string{workload: scopes},
 		Problems: pw, Audit: discardAudit{}, Denied: denied, Logger: logger,
@@ -53,7 +59,7 @@ func api(t *testing.T, scopes ...string) http.Handler {
 		t.Fatal(err)
 	}
 	return server.NewRouter(server.Options{
-		Logger: logger, Problems: pw,
+		BasePath: basePath, Logger: logger, Problems: pw,
 		TracerProvider: tracenoop.NewTracerProvider(), Propagator: propagation.TraceContext{},
 		RequestDuration: hist, Health: health.New(logger),
 		Routes: gen.Routes(gen.Stub{}, pw), APIMiddleware: []func(http.Handler) http.Handler{res.Middleware},
@@ -102,5 +108,53 @@ func TestT10(t *testing.T) {
 	api(t, "tokens:introspect").ServeHTTP(w, introspect("127.0.0.1:41000"))
 	if w.Code != http.StatusNotImplemented {
 		t.Errorf("with the scope from the sidecar: status %d, want the stub's 501\n%s", w.Code, w.Body)
+	}
+}
+
+// TestEveryServiceOperationRequiresCaller: under a base path, every service operation of the
+// contract refuses a request with no caller, whatever the escaping of its path parameter, so no
+// route reaches its handler past the middleware.
+func TestEveryServiceOperationRequiresCaller(t *testing.T) {
+	t.Parallel()
+	h := apiAt(t, "/auth", slog.New(slog.DiscardHandler), "tokens:introspect")
+	n := 0
+	for id, op := range gen.Operations {
+		if !op.IsService() {
+			continue
+		}
+		n++
+		for _, seg := range []string{"0190a0a0-0000-7000-8000-000000000001", "a%2Fb", "a%252Fb", "%2E%2E"} {
+			path := "/auth" + strings.ReplaceAll(op.Path, "{accountId}", seg)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(op.Method, path, strings.NewReader("{}")))
+			if w.Code != http.StatusUnauthorized && w.Code != http.StatusNotFound {
+				t.Errorf("%s: %s %s = %d, want 401 (or 404 for no route)", id, op.Method, path, w.Code)
+			}
+			if seg == "0190a0a0-0000-7000-8000-000000000001" && w.Code != http.StatusUnauthorized {
+				t.Errorf("%s: %s %s = %d, want 401", id, op.Method, path, w.Code)
+			}
+		}
+	}
+	if n < 12 {
+		t.Errorf("%d service operations, want the contract's 12", n)
+	}
+}
+
+// TestDenialLogRouteHasBasePath: the denial's log line carries the route pattern under the base
+// path, not the request path.
+func TestDenialLogRouteHasBasePath(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	h := apiAt(t, "/auth", slog.New(slog.NewJSONHandler(&logs, nil)), "directory:read")
+	req := httptest.NewRequest(http.MethodDelete, "/auth/v1/accounts/0190a0a0-0000-7000-8000-000000000001", nil)
+	req.Header.Set("X-Forwarded-Client-Cert", "URI="+workload)
+	req.RemoteAddr = "127.0.0.1:41000"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want 403", w.Code)
+	}
+	if !strings.Contains(logs.String(), `"route":"/auth/v1/accounts/{accountId}"`) || strings.Contains(logs.String(), "0190a0a0") {
+		t.Errorf("denial log route:\n%s", &logs)
 	}
 }

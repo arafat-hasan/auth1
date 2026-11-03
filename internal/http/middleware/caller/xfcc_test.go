@@ -32,6 +32,11 @@ func TestXFCCURI(t *testing.T) {
 		{"text after closing quote", []string{`Subject="CN=a"x;URI=` + spiffe}, ""},
 		{"pair without =", []string{"Hash;URI=" + spiffe}, ""},
 		{"empty pair", []string{"Hash=abc;;URI=" + spiffe}, ""},
+		{"backslash outside quotes", []string{`URI=spiffe://a\b`}, ""},
+		{"escape at the end of a quoted value", []string{`URI="spiffe://a\`}, ""},
+		{"quoted key", []string{`"URI"=` + spiffe}, ""},
+		{"key with a backslash", []string{`U\RI=` + spiffe}, ""},
+		{"no value after =", []string{"URI="}, ""},
 		{"empty header", []string{""}, ""},
 		{"no header", nil, ""},
 	} {
@@ -65,5 +70,25 @@ func FuzzXFCCURI(f *testing.F) {
 		if ok && len(values) != 1 {
 			t.Fatalf("xfccURI accepted %d header lines", len(values))
 		}
+		if ok && topLevelComma(values[0]) {
+			t.Fatalf("xfccURI(%q) accepted more than one element", values[0])
+		}
 	})
+}
+
+// topLevelComma reports whether s has a ',' outside double quotes, where a backslash escapes the
+// next character: a separator between two XFCC elements.
+func topLevelComma(s string) bool {
+	quoted := false
+	for i := 0; i < len(s); i++ {
+		switch {
+		case quoted && s[i] == '\\':
+			i++
+		case s[i] == '"':
+			quoted = !quoted
+		case !quoted && s[i] == ',':
+			return true
+		}
+	}
+	return false
 }

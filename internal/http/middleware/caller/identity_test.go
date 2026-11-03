@@ -94,6 +94,7 @@ func TestWorkloadIdentity(t *testing.T) {
 		{"peer certificate", peer, "10.1.2.3:41000", nil, verified(t, spiffe, "spiffe://second"), spiffe},
 		{"peer certificate without a URI", peer, "10.1.2.3:41000", nil, verified(t), ""},
 		{"peer certificate not verified", peer, "10.1.2.3:41000", nil, &tls.ConnectionState{}, ""},
+		{"peer certificate with an empty chain", peer, "10.1.2.3:41000", nil, &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{}}}, ""},
 		{"no TLS", peer, "10.1.2.3:41000", nil, nil, ""},
 		{"peer_cert ignores the header", peer, "127.0.0.1:41000", map[string][]string{"X-Forwarded-Client-Cert": {"URI=" + spiffe}}, nil, ""},
 	} {

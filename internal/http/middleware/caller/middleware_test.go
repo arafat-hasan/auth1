@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -432,5 +433,86 @@ func TestModeBothFallsBackToToken(t *testing.T) {
 	resp := rg.call(t, http.MethodPost, "/v1/introspect", sidecar, unknown, "Authorization: Bearer bad")
 	if got := code(t, resp, http.StatusForbidden); got != "CALLER_NOT_ALLOWED" {
 		t.Errorf("unconfigured identity and a bad token: code %q, want CALLER_NOT_ALLOWED", got)
+	}
+}
+
+// verifier is a TokenVerifier returning c for the token "good", counting its calls.
+type verifier struct {
+	c     Caller
+	calls atomic.Int32
+}
+
+func (v *verifier) VerifyServiceToken(_ context.Context, token string) (Caller, error) {
+	v.calls.Add(1)
+	if token != "good" {
+		return Caller{}, errors.New("bad token")
+	}
+	return v.c, nil
+}
+
+// TestVerifierResultChecked: a verifier's caller counts only as a client with an id, and only its
+// kind, id and scopes are kept.
+func TestVerifierResultChecked(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		c    Caller
+		want int
+	}{
+		{"workload kind", Caller{Kind: KindWorkload, ID: "reports", Scopes: []string{"tokens:introspect"}}, http.StatusUnauthorized},
+		{"no kind", Caller{ID: "reports", Scopes: []string{"tokens:introspect"}}, http.StatusUnauthorized},
+		{"no id", Caller{Kind: KindClient, Scopes: []string{"tokens:introspect"}}, http.StatusUnauthorized},
+		{"client", Caller{Kind: KindClient, ID: "reports", Scopes: []string{"tokens:introspect"}, Actor: "forged"}, http.StatusNoContent},
+	} {
+		rg := newRig(t, func(o *Options) { o.Mode = ModeClientCredentials; o.Tokens = &verifier{c: tc.c} })
+		if got := rg.call(t, http.MethodPost, "/v1/introspect", elsewhere, "Authorization: Bearer good").Code; got != tc.want {
+			t.Errorf("%s: status %d, want %d", tc.name, got, tc.want)
+		}
+		if tc.want == http.StatusNoContent && rg.caller.Actor != "" {
+			t.Errorf("%s: Actor %q from the verifier, want none", tc.name, rg.caller.Actor)
+		}
+	}
+}
+
+// TestBearerParsing: only the Bearer scheme, in any case, with a token, reaches the verifier.
+func TestBearerParsing(t *testing.T) {
+	t.Parallel()
+	v := &verifier{c: Caller{Kind: KindClient, ID: "reports", Scopes: []string{"tokens:introspect"}}}
+	rg := newRig(t, func(o *Options) { o.Mode = ModeClientCredentials; o.Tokens = v })
+	for _, tc := range []struct {
+		header string
+		want   int
+		calls  int32 // the verifier's calls so far
+	}{
+		{"Authorization: Basic good", http.StatusUnauthorized, 0},
+		{"Authorization: Bearer", http.StatusUnauthorized, 0},
+		{"Authorization: Bearer ", http.StatusUnauthorized, 0},
+		{"Authorization: good", http.StatusUnauthorized, 0},
+		{"Authorization: bearer good", http.StatusNoContent, 1},
+		{"Authorization: BEARER good", http.StatusNoContent, 2},
+	} {
+		if got := rg.call(t, http.MethodPost, "/v1/introspect", elsewhere, tc.header).Code; got != tc.want {
+			t.Errorf("%q: status %d, want %d", tc.header, got, tc.want)
+		}
+		if got := v.calls.Load(); got != tc.calls {
+			t.Errorf("%q: verifier called %d times so far, want %d", tc.header, got, tc.calls)
+		}
+	}
+}
+
+// TestClientDenialLabelled: a refused client is counted and audited under its own id, not
+// "unknown".
+func TestClientDenialLabelled(t *testing.T) {
+	t.Parallel()
+	rg := newRig(t, func(o *Options) { o.Mode = ModeClientCredentials; o.Tokens = tokens{} })
+	resp := rg.call(t, http.MethodDelete, "/v1/accounts/0190a0a0-0000-7000-8000-000000000001", elsewhere, "Authorization: Bearer good")
+	if got := code(t, resp, http.StatusForbidden); got != "CALLER_NOT_ALLOWED" {
+		t.Fatalf("code %q", got)
+	}
+	if diff := cmp.Diff(map[string]int64{"reports accounts:delete": 1}, rg.denials(t)); diff != "" {
+		t.Errorf("denials (-want +got):\n%s", diff)
+	}
+	if e := rg.audit.written(); len(e) != 1 || e[0].ActorID != "reports" {
+		t.Errorf("audit %+v, want one entry for reports", e)
 	}
 }
