@@ -8,3 +8,11 @@ import "context"
 type UnitOfWork interface {
 	Do(ctx context.Context, fn func(ctx context.Context) error) error
 }
+
+// Savepoints runs part of a use case under a savepoint of the open transaction (TDD-05 §4): when
+// fn returns an error, its writes, and the locks and events recorded since the savepoint, are
+// discarded, and the transaction goes on. Savepoint returns fn's error, or an error outside a
+// transaction.
+type Savepoints interface {
+	Savepoint(ctx context.Context, fn func(ctx context.Context) error) error
+}
