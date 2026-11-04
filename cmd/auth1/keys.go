@@ -14,7 +14,7 @@ type cryptoKeys struct {
 	fields     *crypto.WatchedKeyring
 	blindIndex crypto.Key
 	mac        crypto.Key
-	device     crypto.Key // the device-cookie MAC key (TDD-07 §4)
+	device     crypto.Key             // the device-cookie MAC key (TDD-07 §4)
 	pepper     *crypto.WatchedKeyring // the pepper keyring (TDD-03 §1.1)
 }
 

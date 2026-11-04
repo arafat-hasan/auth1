@@ -57,7 +57,7 @@ func (d *DeviceCookies) Issue() (value string, id uuid.UUID) {
 	id = d.ids.New()
 	b := make([]byte, deviceIDLen+deviceTimeLen, deviceLen)
 	copy(b, id[:])
-	binary.BigEndian.PutUint64(b[deviceIDLen:], uint64(d.clock.Now().Unix()))
+	binary.BigEndian.PutUint64(b[deviceIDLen:], uint64(d.clock.Now().Unix())) //nolint:gosec // after 1970: not negative
 	b = append(b, d.mac.Device(b)...)
 	return base64.RawURLEncoding.EncodeToString(b), id
 }
@@ -77,7 +77,7 @@ func (d *DeviceCookies) Parse(value string) (id uuid.UUID, ok bool) {
 	if subtle.ConstantTimeCompare(d.mac.Device(signed), b[len(signed):]) != 1 {
 		return uuid.UUID{}, false
 	}
-	issued := int64(binary.BigEndian.Uint64(b[deviceIDLen:]))
+	issued := int64(binary.BigEndian.Uint64(b[deviceIDLen:])) //nolint:gosec // MAC'd: written by Issue from a positive time
 	now := d.clock.Now()
 	if issued < now.Add(-DeviceCookieMaxAge).Unix() || issued > now.Add(deviceCookieSkew).Unix() {
 		return uuid.UUID{}, false
