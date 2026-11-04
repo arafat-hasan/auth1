@@ -199,6 +199,22 @@ records locked flows and challenges, and a method without its prerequisite lock 
 counts per window after taking a transaction-scoped advisory lock on the address, so
 check-then-send is exact (I-21); `ExhaustedSince` is the L-9 cooldown query.
 
+Sessions (TDD-04 §2, §3): `app.Sessions` (`postgres.Sessions`) stores `session.Session` /
+`session.Token` (`internal/domain/session`, with the `RevokeReason`s, refused when unknown with
+`session.ErrRevokeReason`); callers pass token hashes (`crypto.SHA256`) and the successor's raw
+value as a redacting `session.Secret`, sealed at `app.NewKeyPlace("refresh_tokens",
+"successor_enc", <presented token_hash>)`. Every stored time but the caller's `AuthTime`, and every
+comparison, is the database's `now()`: `Session.Live` and `Token.InGrace` are computed in SQL, so
+tests back-date rows rather than use a fake clock. `FindToken` locks the session without the
+account, then reads the token in a second statement (one joined `FOR UPDATE OF s` would return the
+token as it was before a racing rotation); `LockSession` locks one of the account's sessions
+(`NOT_FOUND`). `Create` and `RevokeAll` / `RevokeAllExcept` need the account lock, `Rotate`,
+`Successor` and `Revoke` the session lock (`ErrLockOrder`), and `Accounts.GetForUpdate` refuses once
+a session is locked (G-5). `Rotate` is one statement, conditional on `rotated_at IS NULL` (I-3);
+`Successor` follows at most 3 steps within the grace window, and a stored successor gone missing is
+`postgres.ErrSuccessorChain`, not reuse; `EraseSuccessors` (for the retention job) nulls
+`successor_enc` past the window (I-13).
+
 Identifiers (TDD-01 §2): `internal/domain/identifier` holds the `Type` interface (`Normalise`,
 `VerifyMethods`, `CanSignIn`, `Variants`, `CheckPolicy`), the built-in `Email` and `Phone`
 (`identifier.Builtin()`) and the `Registry`. `NewRegistry` checks the `identifiers` policy against

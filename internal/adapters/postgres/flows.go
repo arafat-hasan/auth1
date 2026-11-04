@@ -15,7 +15,9 @@ import (
 )
 
 // ErrLockOrder is returned, without querying, by a method whose prerequisite lock the transaction
-// has not taken: the account before its flow, the flow before its challenges (G-5, TDD-01 §4.2).
+// has not taken: the account before its flow or its sessions, the flow before its challenges, the
+// session before its tokens; and by Accounts.GetForUpdate once a session is locked (G-5,
+// TDD-01 §4.2).
 var ErrLockOrder = errors.New("postgres: lock order: a prerequisite lock is not held")
 
 // The places of the flow aggregate's encrypted columns (TDD-01 §3.1).

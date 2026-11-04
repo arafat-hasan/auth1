@@ -3,7 +3,10 @@
 // aggregate; it encrypts through app.FieldCrypto and writes its conditional updates as explicit
 // SQL. Flows is the repository of the flow aggregate, flows with their challenges (TDD-02 §2,
 // TDD-07 §5): finders lock nothing, LockFlow and LockChallenges lock in the order account, flow,
-// challenge, and the transaction records the locks so methods refuse to run out of order. Outbox
+// challenge, and the transaction records the locks so methods refuse to run out of order.
+// Sessions is the repository of the session aggregate, sessions with their refresh tokens
+// (TDD-04 §2, §3): FindToken locks the session, rotation is one conditional statement (I-3), and
+// the successor's value is read and erased by the grace window on the database's clock (I-13). Outbox
 // and Audit write the outbox and the audit log in the use case's transaction, and
 // UnitOfWork moves the version of each account locked in it before committing.
 package postgres

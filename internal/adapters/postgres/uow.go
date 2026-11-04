@@ -22,14 +22,15 @@ import (
 // txKey is the context key of the open transaction, a *txn.
 type txKey struct{}
 
-// txn is the transaction Do opened and the rows locked in it: accounts, and the flows and
-// challenges whose methods check the lock order (G-5). A use case runs on one goroutine, so txn
-// has no lock of its own, as bun.Tx has none.
+// txn is the transaction Do opened and the rows locked in it: accounts, and the flows,
+// challenges and sessions whose methods check the lock order (G-5). A use case runs on one
+// goroutine, so txn has no lock of its own, as bun.Tx has none.
 type txn struct {
 	tx         bun.Tx
 	locked     []*lockedAccount // in lock order
 	flows      map[uuid.UUID]flow.Kind
 	challenges []uuid.UUID
+	sessions   []uuid.UUID
 }
 
 // lockedAccount is an account locked in the transaction: the version read under the lock and the
@@ -62,6 +63,14 @@ func (t *txn) lockFlow(id uuid.UUID, kind flow.Kind) {
 func (t *txn) lockChallenge(id uuid.UUID) {
 	if !slices.Contains(t.challenges, id) {
 		t.challenges = append(t.challenges, id)
+	}
+}
+
+// lockSession records that the transaction locked the session id. As for lock, take the lock
+// outside a savepoint.
+func (t *txn) lockSession(id uuid.UUID) {
+	if !slices.Contains(t.sessions, id) {
+		t.sessions = append(t.sessions, id)
 	}
 }
 

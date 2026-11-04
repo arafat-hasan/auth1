@@ -113,6 +113,9 @@ func (r *Accounts) GetForUpdate(ctx context.Context, id uuid.UUID) (account.Acco
 	if t == nil {
 		return account.Account{}, fmt.Errorf("lock account: %w", ErrNoTransaction)
 	}
+	if len(t.sessions) > 0 {
+		return account.Account{}, fmt.Errorf("lock account after a session: %w", ErrLockOrder)
+	}
 	a, err := r.get(ctx, id, " FOR UPDATE")
 	if err != nil {
 		return account.Account{}, err
