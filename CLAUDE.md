@@ -335,3 +335,25 @@ nothing terminates TLS yet. Service tokens go through `caller.TokenVerifier`, ni
 `loadServiceAuth` in `cmd/auth1/serviceauth.go` maps the config for `config check` and `serve`,
 refusing a sidecar entry that is not a CIDR and an empty or repeated caller identity; `serve` warns
 for a sidecar range beyond loopback, for service tokens with no verifier and for `peer_cert`.
+
+Idempotency (TDD-05 §4, I-9): `gen.Operation.Idempotent` marks the operations taking
+`Idempotency-Key` (routegen refuses it on one that is not a service operation), and
+`gen.IdempotentRoute` matches them. `internal/http/middleware/idempotency.New` is in
+`server.Options.APIMiddleware` after `caller.Resolver`: it checks the key (one value, 1–255 of
+`\x21-\x7E`, else `422`), hashes `method ‖ 0x00 ‖ escaped path ‖ 0x00 ‖ JCS(body)` (`RequestHash`,
+`github.com/gowebpki/jcs`; a body that is not I-JSON is `422`) and keeps an
+`app.IdempotencyRequest` (caller `<kind>:<id>`; it prints without the key) for `idempotency.From`;
+it opens no transaction. A use case opts in by calling `app.Idempotency.Run(ctx, req, op, render)`
+outside any transaction, around its transactional part (its own `Do` inside `op` joins): `Claim`
+locks the key first (a concurrent holder makes it wait, at most 5 s, then `503`), a stored row
+replays or is `IDEMPOTENCY_KEY_REUSED`, and otherwise `op` runs under `app.Savepoints`
+(`postgres.UnitOfWork.Savepoint`, which restores the lock and event records on rollback, so a
+refused operation moves no version) and `render(opErr)` gives the response. 2xx commits with it,
+4xx rolls `op` back and commits only it, 5xx/429/over `app.MaxStoredBody` stores nothing.
+Handlers render with `idempotency.Render` (a strict response's `Visit…` method) or `RenderError`,
+always send what `Run` returns with `idempotency.Write` (strict handlers return an
+`idempotency.Response` wrapped in a one-method type for the operation), and write `Run`'s error
+with the problem writer. `postgres.IdempotencyKeys` seals `{content_type, body}` in `response`
+(`bytea`, migration `000004`); rows older than `retention.idempotency_keys` are claimed again.
+Refusal audits stay after `Run`, outside the transaction. `test/idempotency` runs it end to end
+behind a test-only handler (T-26).
