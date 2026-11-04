@@ -55,7 +55,7 @@ It carries `Cache-Control: no-store`.
 
 `POST /v1/sessions/refresh`, with the cookie or `refresh_token` in the body. In one transaction:
 
-1. `h = sha256(token)`. Select the token row and lock its session row: `SELECT … FROM refresh_tokens r JOIN sessions s ON s.id = r.session_id WHERE r.token_hash = $1 FOR UPDATE OF s`. No row: `SESSION_INVALID`.
+1. `h = sha256(token)`. Lock the token's session row: `SELECT … FROM sessions s WHERE s.id = (SELECT session_id FROM refresh_tokens WHERE token_hash = $1) FOR UPDATE`. Then read the token row in a second statement: `SELECT … FROM refresh_tokens WHERE token_hash = $1`. No row: `SESSION_INVALID`. Two statements, because under `READ COMMITTED` a statement that waited for the lock re-reads only the locked row. A join locking `s` would return the token row as it was before a racing rotation, and the second of two concurrent refreshes would see the token still current instead of taking step 4.
 2. If the session is revoked, or past its idle or absolute expiry: `SESSION_INVALID`.
 3. **Current token** (`rotated_at IS NULL`):
    1. Read the account's status, version and roles (no lock).
