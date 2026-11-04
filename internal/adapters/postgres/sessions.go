@@ -116,31 +116,39 @@ func (r *Sessions) Create(ctx context.Context, s session.NewSession, tokenHash [
 	return nil
 }
 
-// FindToken implements app.Sessions.
+// FindToken implements app.Sessions. It locks the session first and reads the token in a second
+// statement. One statement locking the session through a join would not do: under READ COMMITTED,
+// a statement that waited for the lock re-reads the locked row but keeps the token row as it was
+// when the statement started, so a refresh racing a rotation would see the token still current.
 func (r *Sessions) FindToken(ctx context.Context, tokenHash []byte, grace time.Duration) (session.Token, session.Session, error) {
 	t := txFrom(ctx)
 	if t == nil {
 		return session.Token{}, session.Session{}, fmt.Errorf("find refresh token: %w", ErrNoTransaction)
 	}
+	s, err := scanSession(t.tx.QueryRowContext(ctx, "SELECT "+sessionColumns+` FROM sessions s
+		WHERE s.id = (SELECT session_id FROM refresh_tokens WHERE token_hash = ?)
+		FOR UPDATE`, tokenHash))
+	if errors.Is(err, sql.ErrNoRows) {
+		return session.Token{}, session.Session{}, sessionInvalid()
+	}
+	if err != nil {
+		return session.Token{}, session.Session{}, fmt.Errorf("find refresh token: lock session: %w", err)
+	}
+	t.lockSession(s.ID)
 	var (
-		tok     session.Token
+		tok     = session.Token{SessionID: s.ID}
 		rotated sql.NullTime
 	)
-	s, err := scanSession(t.tx.QueryRowContext(ctx, "SELECT "+sessionColumns+`,
-			r.token_hash, r.issued_at, r.rotated_at,
-			`+tokenInGrace+`
-		FROM refresh_tokens r JOIN sessions s ON s.id = r.session_id
-		WHERE r.token_hash = ?
-		FOR UPDATE OF s`, micros(grace), tokenHash),
-		&tok.Hash, &tok.IssuedAt, &rotated, &tok.InGrace)
+	err = t.tx.QueryRowContext(ctx, `SELECT r.token_hash, r.issued_at, r.rotated_at, `+tokenInGrace+`
+		FROM refresh_tokens r WHERE r.token_hash = ? AND r.session_id = ?`, micros(grace), tokenHash, s.ID).
+		Scan(&tok.Hash, &tok.IssuedAt, &rotated, &tok.InGrace)
 	if errors.Is(err, sql.ErrNoRows) {
 		return session.Token{}, session.Session{}, sessionInvalid()
 	}
 	if err != nil {
 		return session.Token{}, session.Session{}, fmt.Errorf("find refresh token: %w", err)
 	}
-	t.lockSession(s.ID)
-	tok.SessionID, tok.IssuedAt, tok.RotatedAt = s.ID, tok.IssuedAt.UTC(), timePtr(rotated)
+	tok.IssuedAt, tok.RotatedAt = tok.IssuedAt.UTC(), timePtr(rotated)
 	return tok, s, nil
 }
 

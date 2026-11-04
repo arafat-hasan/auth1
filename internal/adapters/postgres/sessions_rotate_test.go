@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/arafat-hasan/auth1/internal/app"
+	"github.com/arafat-hasan/auth1/internal/domain/session"
 )
 
 // idleTTL is the refresh_idle_ttl the tests rotate with.
@@ -156,49 +157,73 @@ func TestRotateOtherSession(t *testing.T) {
 	}
 }
 
-// TestI3ConcurrentRotation checks I-3 under concurrency: two transactions present one token; the
-// second waits for the session lock, and exactly one rotates it.
+// TestI3ConcurrentRotation checks I-3 under concurrency, and what the loser sees: two transactions
+// present one token; the second waits for the session lock while the first rotates it, then finds
+// the token rotated and within the grace window, follows it to the first's successor, and cannot
+// rotate it again (TDD-04 §3 steps 1, 4).
 func TestI3ConcurrentRotation(t *testing.T) {
 	t.Parallel()
 	e := sessionsDB(t)
 	ns := e.start(t, "a")
 
 	var first bool
-	release := make(chan struct{})
-	firstDone := e.holdSession(t, "a", release, func(ctx context.Context) error {
+	h := e.holdSession(t, "a", func(ctx context.Context) error {
 		var err error
 		first, err = e.sessions.Rotate(ctx, ns.ID, tokenHash("a"), tokenHash("b"), rawToken("b"), idleTTL)
 		return err
 	})
-	var second bool
-	secondDone := make(chan error, 1)
+	var (
+		seen      session.Token
+		followed  []byte
+		second    bool
+		secondErr = make(chan error, 1)
+	)
 	go func() {
-		secondDone <- e.uow.Do(t.Context(), func(ctx context.Context) error {
+		secondErr <- e.uow.Do(t.Context(), func(ctx context.Context) error {
 			var err error
-			second, err = e.rotateIn(ctx, "a", "c")
+			if seen, _, err = e.sessions.FindToken(ctx, tokenHash("a"), grace); err != nil {
+				return err
+			}
+			if followed, _, err = e.sessions.Successor(ctx, ns.ID, tokenHash("a"), grace); err != nil {
+				return err
+			}
+			second, err = e.sessions.Rotate(ctx, ns.ID, tokenHash("a"), tokenHash("c"), rawToken("c"), idleTTL)
 			return err
 		})
 	}()
-	e.waitForLockWaiter(t)
-	close(release)
-	for _, done := range []<-chan error{firstDone, secondDone} {
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
+	e.waitForLockWaiter(t, h)
+	h.release()
+	if err := h.wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondErr; err != nil {
+		t.Fatal(err)
 	}
 	if !first || second {
 		t.Errorf("I-3: first rotated %v, second rotated %v; want exactly the first", first, second)
+	}
+	if seen.Current() || !seen.InGrace {
+		t.Errorf("the waiting FindToken saw current %v, in grace %v; want rotated, in grace", seen.Current(), seen.InGrace)
+	}
+	if !cmp.Equal(followed, rawToken("b")) {
+		t.Error("the waiting transaction did not follow the token to the first's successor")
 	}
 	if rows := e.tokenRows(t); len(rows) != 2 {
 		t.Errorf("%d tokens, want 2", len(rows))
 	}
 }
 
-// waitForLockWaiter waits until a backend on the test's database is waiting for a row lock.
-func (e *sessionsEnv) waitForLockWaiter(t *testing.T) {
+// waitForLockWaiter waits until a backend on the test's database is waiting for a row lock. It
+// fails at once when h, the transaction holding the lock, ends first.
+func (e *sessionsEnv) waitForLockWaiter(t *testing.T, h *held) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case <-h.finished:
+			t.Fatalf("the transaction holding the lock ended: %v", h.err)
+		default:
+		}
 		var n int
 		if err := e.su.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_stat_activity
 			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&n); err != nil {

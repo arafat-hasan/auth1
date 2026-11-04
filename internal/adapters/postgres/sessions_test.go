@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -182,8 +183,7 @@ func TestFindTokenLocksSession(t *testing.T) {
 	t.Parallel()
 	e := sessionsDB(t)
 	e.start(t, "a")
-	release := make(chan struct{})
-	done := e.holdSession(t, "a", release, nil)
+	h := e.holdSession(t, "a", nil)
 
 	second := e.uow.Do(t.Context(), func(ctx context.Context) error {
 		if _, err := postgres.Conn(ctx, e.app).ExecContext(ctx, "SET LOCAL lock_timeout = '100ms'"); err != nil {
@@ -192,8 +192,8 @@ func TestFindTokenLocksSession(t *testing.T) {
 		_, _, err := e.sessions.FindToken(ctx, tokenHash("a"), grace)
 		return err
 	})
-	close(release)
-	if err := <-done; err != nil {
+	h.release()
+	if err := h.wait(); err != nil {
 		t.Fatal(err)
 	}
 	var pgErr *pgconn.PgError
@@ -202,24 +202,48 @@ func TestFindTokenLocksSession(t *testing.T) {
 	}
 }
 
-// holdSession finds name's token in a transaction on another goroutine, locking its session, and
-// returns once it holds the lock. The transaction then waits for release, runs then (when not
-// nil) and commits; done receives its error.
-func (e *sessionsEnv) holdSession(t *testing.T, name string, release <-chan struct{},
-	then func(ctx context.Context) error) (done <-chan error) {
+// held is a transaction holding a session's lock on another goroutine, from holdSession.
+type held struct {
+	release  func()        // lets the transaction go on; safe to call more than once
+	finished chan struct{} // closed when the transaction has ended
+	err      error         // the transaction's error, once finished is closed
+}
+
+// wait waits for the transaction to end and returns its error.
+func (h *held) wait() error {
+	<-h.finished
+	return h.err
+}
+
+// holdSession finds name's token, current, in a transaction on another goroutine, locking its
+// session, and returns once it holds the lock. The transaction then waits for release, runs then
+// (when not nil) and commits. The test's cleanup releases it, so a test that fails early leaks
+// neither the lock nor the connection.
+func (e *sessionsEnv) holdSession(t *testing.T, name string, then func(ctx context.Context) error) *held {
 	t.Helper()
-	locked, result := make(chan struct{}), make(chan error, 1)
+	var (
+		once    sync.Once
+		release = make(chan struct{})
+		locked  = make(chan struct{})
+	)
+	h := &held{release: func() { once.Do(func() { close(release) }) }, finished: make(chan struct{})}
+	t.Cleanup(func() { h.release(); <-h.finished })
 	go func() {
-		result <- e.uow.Do(t.Context(), func(ctx context.Context) error {
+		defer close(h.finished)
+		h.err = e.uow.Do(t.Context(), func(ctx context.Context) error {
 			tok, _, err := e.sessions.FindToken(ctx, tokenHash(name), grace)
-			close(locked)
 			if err != nil {
 				return err
 			}
 			if !tok.Current() {
 				return fmt.Errorf("token %s is not current", name)
 			}
-			<-release
+			close(locked)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 			if then == nil {
 				return nil
 			}
@@ -228,10 +252,10 @@ func (e *sessionsEnv) holdSession(t *testing.T, name string, release <-chan stru
 	}()
 	select {
 	case <-locked:
-	case err := <-result:
-		t.Fatalf("holding %s's session: %v", name, err)
+	case <-h.finished:
+		t.Fatalf("holding %s's session: %v", name, h.err)
 	}
-	return result
+	return h
 }
 
 func TestLockSession(t *testing.T) {
