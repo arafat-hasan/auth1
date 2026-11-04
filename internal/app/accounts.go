@@ -27,7 +27,8 @@ type Accounts interface {
 	// Get returns the account; NOT_FOUND when there is none.
 	Get(ctx context.Context, id uuid.UUID) (account.Account, error)
 	// GetForUpdate is Get, locking the row until the transaction ends, and marking the account
-	// changed: its version moves when the transaction commits. It runs inside UnitOfWork.Do.
+	// changed: its version moves when the transaction commits. It runs inside UnitOfWork.Do, and
+	// refuses once the transaction has locked a session (G-5).
 	GetForUpdate(ctx context.Context, id uuid.UUID) (account.Account, error)
 	// ApplyStatus stores the status change d decided by account.Transition; NOT_FOUND when there
 	// is no account. An unchanged d writes nothing. Of d's effects it applies those inside the

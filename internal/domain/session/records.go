@@ -12,8 +12,9 @@ import (
 
 // The records below are sessions and refresh tokens as the sessions repository stores them
 // (TDD-01 §4, TDD-04 §2, §3): plaintext only, never ciphertext. A token is known by its SHA-256
-// hash, which the caller computes. Times the repository writes, and every comparison with them,
-// are the database's.
+// hash, which the caller computes. Times the repository writes, but for AuthTime, and every
+// comparison with them are the database's. Live and InGrace are the repository's judgement: only
+// it sets them, and callers do not build a Session or a Token themselves.
 
 // NewSession is a session to create when a sign-in completes (TDD-04 §2). Its idle expiry is now
 // + IdleTTL, capped at its absolute expiry, now + AbsoluteTTL. DeviceID is nil and UserAgent empty

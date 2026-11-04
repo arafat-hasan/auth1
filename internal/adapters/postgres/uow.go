@@ -66,7 +66,8 @@ func (t *txn) lockChallenge(id uuid.UUID) {
 	}
 }
 
-// lockSession records that the transaction locked the session id, as lockFlow.
+// lockSession records that the transaction locked the session id. As for lock, take the lock
+// outside a savepoint.
 func (t *txn) lockSession(id uuid.UUID) {
 	if !slices.Contains(t.sessions, id) {
 		t.sessions = append(t.sessions, id)

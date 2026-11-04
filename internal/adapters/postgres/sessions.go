@@ -55,7 +55,7 @@ const sessionLive = "(s.revoked_at IS NULL AND now() < s.idle_expires_at AND now
 
 // tokenInGrace is the condition of a token r within the grace window, whose length in
 // microseconds is its one argument: rotated no more than the window ago, with its successor's
-// value still held (TDD-04 §3). The erase removes values just past it (EraseSuccessors), and
+// value still held (TDD-04 §3). EraseSuccessors removes the values past it, and
 // nothing reads one outside it, so the erase's timing never widens the window (I-13).
 //
 //nolint:gosec // SQL, not a credential
