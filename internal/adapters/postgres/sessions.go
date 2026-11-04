@@ -52,6 +52,8 @@ const sessionLive = "(s.revoked_at IS NULL AND now() < s.idle_expires_at AND now
 // microseconds is its one argument: rotated no more than the window ago, with its successor's
 // value still held (TDD-04 §3). The erase removes values just past it (EraseSuccessors), and
 // nothing reads one outside it, so the erase's timing never widens the window (I-13).
+//
+//nolint:gosec // SQL, not a credential
 const tokenInGrace = `(r.rotated_at IS NOT NULL AND r.successor_enc IS NOT NULL
 	AND now() - r.rotated_at <= ? * interval '1 microsecond')`
 

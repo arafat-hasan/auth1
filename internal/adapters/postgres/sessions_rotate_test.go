@@ -163,36 +163,31 @@ func TestI3ConcurrentRotation(t *testing.T) {
 	e := sessionsDB(t)
 	ns := e.start(t, "a")
 
-	type result struct {
-		ok  bool
-		err error
-	}
-	second := make(chan result, 1)
 	var first bool
-	e.do(t, func(ctx context.Context) error {
-		tok, _, err := e.sessions.FindToken(ctx, tokenHash("a"), grace)
-		if err != nil || !tok.Current() {
-			t.Fatalf("first find: %+v, %v", tok, err)
-		}
-		go func() {
-			var r result
-			r.err = e.uow.Do(context.Background(), func(ctx context.Context) error {
-				var err error
-				r.ok, err = e.rotateIn(ctx, "a", "c")
-				return err
-			})
-			second <- r
-		}()
-		e.waitForLockWaiter(t)
+	release := make(chan struct{})
+	firstDone := e.holdSession(t, "a", release, func(ctx context.Context) error {
+		var err error
 		first, err = e.sessions.Rotate(ctx, ns.ID, tokenHash("a"), tokenHash("b"), rawToken("b"), idleTTL)
 		return err
 	})
-	r := <-second
-	if r.err != nil {
-		t.Fatal(r.err)
+	var second bool
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- e.uow.Do(t.Context(), func(ctx context.Context) error {
+			var err error
+			second, err = e.rotateIn(ctx, "a", "c")
+			return err
+		})
+	}()
+	e.waitForLockWaiter(t)
+	close(release)
+	for _, done := range []<-chan error{firstDone, secondDone} {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !first || r.ok {
-		t.Errorf("I-3: first rotated %v, second rotated %v; want exactly the first", first, r.ok)
+	if !first || second {
+		t.Errorf("I-3: first rotated %v, second rotated %v; want exactly the first", first, second)
 	}
 	if rows := e.tokenRows(t); len(rows) != 2 {
 		t.Errorf("%d tokens, want 2", len(rows))

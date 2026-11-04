@@ -182,24 +182,56 @@ func TestFindTokenLocksSession(t *testing.T) {
 	t.Parallel()
 	e := sessionsDB(t)
 	e.start(t, "a")
-	var second error
-	e.do(t, func(ctx context.Context) error {
-		if _, _, err := e.sessions.FindToken(ctx, tokenHash("a"), grace); err != nil {
+	release := make(chan struct{})
+	done := e.holdSession(t, "a", release, nil)
+
+	second := e.uow.Do(t.Context(), func(ctx context.Context) error {
+		if _, err := postgres.Conn(ctx, e.app).ExecContext(ctx, "SET LOCAL lock_timeout = '100ms'"); err != nil {
 			return err
 		}
-		second = e.uow.Do(t.Context(), func(ctx context.Context) error {
-			if _, err := postgres.Conn(ctx, e.app).ExecContext(ctx, "SET LOCAL lock_timeout = '100ms'"); err != nil {
-				return err
-			}
-			_, _, err := e.sessions.FindToken(ctx, tokenHash("a"), grace)
-			return err
-		})
-		return nil
+		_, _, err := e.sessions.FindToken(ctx, tokenHash("a"), grace)
+		return err
 	})
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 	var pgErr *pgconn.PgError
 	if !errors.As(second, &pgErr) || pgErr.Code != "55P03" {
 		t.Errorf("second FindToken = %v, want lock_not_available (55P03)", second)
 	}
+}
+
+// holdSession finds name's token in a transaction on another goroutine, locking its session, and
+// returns once it holds the lock. The transaction then waits for release, runs then (when not
+// nil) and commits; done receives its error.
+func (e *sessionsEnv) holdSession(t *testing.T, name string, release <-chan struct{},
+	then func(ctx context.Context) error) (done <-chan error) {
+	t.Helper()
+	locked, result := make(chan struct{}), make(chan error, 1)
+	go func() {
+		result <- e.uow.Do(t.Context(), func(ctx context.Context) error {
+			tok, _, err := e.sessions.FindToken(ctx, tokenHash(name), grace)
+			close(locked)
+			if err != nil {
+				return err
+			}
+			if !tok.Current() {
+				return fmt.Errorf("token %s is not current", name)
+			}
+			<-release
+			if then == nil {
+				return nil
+			}
+			return then(ctx)
+		})
+	}()
+	select {
+	case <-locked:
+	case err := <-result:
+		t.Fatalf("holding %s's session: %v", name, err)
+	}
+	return result
 }
 
 func TestLockSession(t *testing.T) {
