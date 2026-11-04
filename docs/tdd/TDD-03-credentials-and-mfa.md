@@ -50,7 +50,7 @@ CPU, with `max_concurrent × memory` within the pod's memory limit plus headroom
 
 1. **Acquire a semaphore slot** within `queue_timeout`; otherwise answer `503 UNAVAILABLE` with `Retry-After: 1`.
 2. **Parse the PHC string** and recompute with its own parameters and the pepper key `pepper_kid`. Compare with `subtle.ConstantTimeCompare`.
-3. **Rehash** if the stored parameters differ from the configured ones, or if `pepper_kid` is not the active pepper key. Hash afresh, outside the transaction, and write it in the sign-in's transaction.
+3. **Rehash** if the stored parameters differ from the configured ones, or if `pepper_kid` is not the active pepper key. Hash afresh, outside the transaction, and write it in the sign-in's transaction. The write applies only while the stored hash is still the one verified, and leaves `changed_at` as it was: a rehash is not a password change.
 4. **Unknown identifier:** verify against a dummy PHC string computed at start-up with the current parameters, so the time is the same.
 5. **Never** hash or verify inside a database transaction.
 

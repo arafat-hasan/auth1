@@ -123,7 +123,7 @@ delivery:
     templates_dir: /config/templates      # message templates for the direct adapter
   retired_address_window: 168h            # a retired identifier stays reserved this long
   notices:
-    new_sign_in: false                    # notify on sign-in from a new device
+    new_sign_in: false                    # notify on every completed sign-in
   types: {}                               # purpose -> message type, e.g. password_reset_link: x.reset; purposes and defaults in TDD-06 §7
 
 service_auth:
