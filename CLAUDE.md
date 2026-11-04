@@ -274,6 +274,25 @@ refuses a `delivery.adapter` with no adapter yet, so until WP-44 run it with
 `AUTH1_DELIVERY_ADAPTER=capture` (the serve tests use `serveEnv`); `serveDeps.resolver` replaces
 `unavailableResolver` in tests until WP-43.
 
+Jobs (TDD-08 §7, TDD-02 §2.5): `internal/worker/jobs.Scheduler` (`jobs.New(Options)`, `Run`) runs
+each `jobs.Job{Name, Lock, Every, Run}` only on the instance that leads its lock: at start, then
+every `Every` (0: once, when first leading, for bootstrap); a run is never overlapped by its own
+next one (missed ticks drop), is cancelled when `Lead`, re-checked every `CheckEvery` (5 s), says
+false, and records `auth1_job_last_success_timestamp{job=<Name>}` when it returns nil. The elector
+is `postgres.Leader`: session-level `pg_try_advisory_lock(postgres.JobLockClass, <Lock>)` on one
+pgx connection of its own per instance (so `max_conns` + 3 connections); a lost connection loses
+every lock, `Lead` returns false with the error and reconnects at its next call. Adding a job: a
+`Run func(ctx) error` that stays correct if two leaders briefly overlap (re-check under row locks,
+`SKIP LOCKED`), a new lock id in `cmd/auth1/jobs.go` (ids are never reused; 2–6 are reserved there),
+and its entry in `newJobs`. `serveDeps.jobEvery` (100 ms in `testDeps`) shortens every interval in
+serve tests. The first job is `app.FlowExpiry` (`app.FlowExpiryJob = "flow-expiry"`, its metric
+label and its system actor id): per pending account whose `registration` or `invitation` flow
+expired (`app.ExpiringFlows.ExpiredPending`, unlocked), one transaction locks the account, then the
+flow (`LockExpired`), `Cancel`s it `expired`, applies `account.Expire` (identifiers retired, I-12;
+`deleted`; nothing else erased), emits `account.registration_expired` and audits
+`registration.expire`; then `CloseExpired` and `CloseExpiredChallenges` close the other expired
+flows and challenges in `SKIP LOCKED` statements without the account lock, moving no version.
+
 Rate limits (TDD-07 §1, §2, §8): `app.RateLimiter` (`Hit`) is the sliding-window port and
 `app.RateLimits` the helper use cases call: `CheckIP(ctx, rule, ip)` (keyed by `app.IPKey`: IPv4
 whole, IPv6 by /64) or `Check(ctx, rule, key)` for L-15's client id; it returns a `RATE_LIMITED`
