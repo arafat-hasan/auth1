@@ -17,6 +17,11 @@ import (
 	"github.com/arafat-hasan/auth1/internal/domain/session"
 )
 
+// ErrSuccessorChain is returned by Successor when a rotated token within the grace window names a
+// successor that is not stored in its session. Rotate never writes such a chain, so it is damage,
+// not reuse.
+var ErrSuccessorChain = errors.New("postgres: refresh token successor chain broken")
+
 // tableRefreshTokens is the table of the session aggregate's encrypted column (TDD-01 §3.1).
 const tableRefreshTokens = "refresh_tokens"
 
@@ -240,10 +245,12 @@ func (r *Sessions) Successor(ctx context.Context, sessionID uuid.UUID, tokenHash
 			SELECT r.successor_hash, r.successor_enc, r.rotated_at IS NULL, `+tokenInGrace+`
 			FROM refresh_tokens r WHERE r.token_hash = ? AND r.session_id = ?`,
 			micros(grace), hash, sessionID).Scan(&next, &enc, &current, &inGrace)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, false, nil
-		}
-		if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows) && step == 0:
+			return nil, false, nil // not a token of the session
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, false, fmt.Errorf("follow refresh token: step %d: %w", step, ErrSuccessorChain)
+		case err != nil:
 			return nil, false, fmt.Errorf("follow refresh token: %w", err)
 		}
 		switch {
@@ -257,6 +264,8 @@ func (r *Sessions) Successor(ctx context.Context, sessionID uuid.UUID, tokenHash
 			return value, true, nil
 		case !inGrace || step == maxSuccessorSteps:
 			return nil, false, nil
+		case next == nil:
+			return nil, false, fmt.Errorf("follow refresh token: step %d: no successor: %w", step, ErrSuccessorChain)
 		}
 		prevHash, prevEnc, hash = hash, enc, next
 	}

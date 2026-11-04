@@ -2,11 +2,15 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/hex"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
 	"github.com/arafat-hasan/auth1/internal/domain/session"
 )
 
@@ -118,4 +122,37 @@ func TestSuccessorErased(t *testing.T) {
 		t.Error("a token without its successor's value is in grace")
 	}
 	e.checkReuse(t, s, "a")
+}
+
+// TestSuccessorChainBroken checks that a chain whose stored successor is missing is an error, not
+// reuse: the rows Rotate writes always lead somewhere, so a gap is damage, and treating it as
+// reuse would revoke the session and audit a theft that never happened.
+func TestSuccessorChainBroken(t *testing.T) {
+	t.Parallel()
+	e := sessionsDB(t)
+	sets := map[string]string{
+		"missing row":     "successor_hash = '\\x00'::bytea",
+		"no successor id": "successor_hash = NULL",
+	}
+	for name, set := range sets {
+		s := e.start(t, name)
+		e.rotate(t, name, name+"-next")
+		e.exec(t, "UPDATE refresh_tokens SET "+set+" WHERE token_hash = ?", tokenHash(name))
+		err := e.uow.Do(t.Context(), func(ctx context.Context) error {
+			if _, err := e.sessions.LockSession(ctx, s.AccountID, s.ID); err != nil {
+				return err
+			}
+			got, ok, err := e.sessions.Successor(ctx, s.ID, tokenHash(name), grace)
+			if ok || got != nil {
+				t.Errorf("%s: followed a broken chain", name)
+			}
+			return err
+		})
+		if !errors.Is(err, postgres.ErrSuccessorChain) {
+			t.Errorf("%s: %v, want ErrSuccessorChain", name, err)
+		}
+		if err != nil && strings.Contains(err.Error(), hex.EncodeToString(tokenHash(name))) {
+			t.Errorf("%s: the error holds the token hash", name)
+		}
+	}
 }
