@@ -314,12 +314,14 @@ type activating struct {
 func (a activating) ExpiredPending(ctx context.Context, limit int) ([]flow.Flow, error) {
 	fs, err := a.ExpiringFlows.ExpiredPending(ctx, limit)
 	for _, f := range fs {
-		a.e.do(a.t, func(ctx context.Context) error {
+		if aerr := a.e.uow.Do(ctx, func(ctx context.Context) error {
 			if _, err := a.e.accounts.GetForUpdate(ctx, f.AccountID); err != nil {
 				return err
 			}
 			return a.e.accounts.Activate(ctx, f.AccountID)
-		})
+		}); aerr != nil {
+			a.t.Error(aerr)
+		}
 	}
 	return fs, err
 }

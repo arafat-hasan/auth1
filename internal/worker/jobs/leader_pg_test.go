@@ -47,7 +47,13 @@ func newReplica(t *testing.T, dsn string) *replica {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
-	r.stop = func() { cancel(); <-done; _ = l.Close(context.Background()) }
+	r.stop = func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("Run = %v", err)
+		}
+		_ = l.Close(context.Background())
+	}
 	t.Cleanup(r.stop)
 	return r
 }

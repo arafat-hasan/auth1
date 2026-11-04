@@ -43,7 +43,6 @@ func testDeps(addrs chan<- [2]string) serveDeps {
 		drainDelay:       300 * time.Millisecond,
 		shutdownTimeout:  5 * time.Second,
 		telemetryTimeout: 5 * time.Second,
-		jobEvery:         100 * time.Millisecond,
 	}
 }
 

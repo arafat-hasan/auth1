@@ -284,8 +284,8 @@ pgx connection of its own per instance (so `max_conns` + 3 connections); a lost 
 every lock, `Lead` returns false with the error and reconnects at its next call. Adding a job: a
 `Run func(ctx) error` that stays correct if two leaders briefly overlap (re-check under row locks,
 `SKIP LOCKED`), a new lock id in `cmd/auth1/jobs.go` (ids are never reused; 2–6 are reserved there),
-and its entry in `newJobs`. `serveDeps.jobEvery` (100 ms in `testDeps`) shortens every interval in
-serve tests. The first job is `app.FlowExpiry` (`app.FlowExpiryJob = "flow-expiry"`, its metric
+and its entry in `newJobs`. `serveDeps.jobEvery` shortens every interval in serve tests
+(`fastJobs`, `startRegServerWith`); by default they run at start and then every minute. The first job is `app.FlowExpiry` (`app.FlowExpiryJob = "flow-expiry"`, its metric
 label and its system actor id): per pending account whose `registration` or `invitation` flow
 expired (`app.ExpiringFlows.ExpiredPending`, unlocked), one transaction locks the account, then the
 flow (`LockExpired`), `Cancel`s it `expired`, applies `account.Expire` (identifiers retired, I-12;

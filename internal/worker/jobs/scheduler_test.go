@@ -175,18 +175,27 @@ func TestSchedulerLostMidRunCancels(t *testing.T) {
 func TestSchedulerNoOverlap(t *testing.T) {
 	t.Parallel()
 	el := &elector{lead: true}
-	var now, most, runs atomic.Int64
+	var (
+		mu        sync.Mutex
+		now, most int
+		runs      atomic.Int64
+	)
 	start(t, el, jobs.Job{Name: "flow-expiry", Lock: 1, Every: 5 * time.Millisecond, Run: func(context.Context) error {
-		n := now.Add(1)
-		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
-		}
+		mu.Lock()
+		now++
+		most = max(most, now)
+		mu.Unlock()
 		time.Sleep(30 * time.Millisecond)
-		now.Add(-1)
+		mu.Lock()
+		now--
+		mu.Unlock()
 		runs.Add(1)
 		return nil
 	}})
 	eventually(t, 3*time.Second, "four runs", func() bool { return runs.Load() >= 4 })
-	if m := most.Load(); m != 1 {
+	mu.Lock()
+	defer mu.Unlock()
+	if m := most; m != 1 {
 		t.Errorf("%d runs at once, want 1", m)
 	}
 }

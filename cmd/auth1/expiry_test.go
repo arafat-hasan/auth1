@@ -9,11 +9,14 @@ import (
 	"github.com/arafat-hasan/auth1/internal/testing/pgtest"
 )
 
+// fastJobs runs every job every 100 ms instead of at its TDD-08 §7 interval.
+func fastJobs(d *serveDeps) { d.jobEvery = 100 * time.Millisecond }
+
 // TestT18ExpiryReleasesIdentifiers checks T-18 through serve and its job: an abandoned
 // registration's identifiers are retired at expiry (I-12), and a new registration with the same
 // values succeeds. The phone is verified first, so the values are held until expiry releases them.
 func TestT18ExpiryReleasesIdentifiers(t *testing.T) {
-	s := startRegServer(t)
+	s := startRegServerWith(t, []func(*serveDeps){fastJobs})
 	identifiers := `{"email":"t18@example.org","phone":"` + regPhone + `"}`
 	flowID, handle := s.register(t, identifiers)
 	code := variable(t, s.messages(t, regPhone, 1)[0], "code")
@@ -62,7 +65,7 @@ func TestT18ExpiryReleasesIdentifiers(t *testing.T) {
 // TestServeRecordsJobSuccess checks that serve runs the flow-expiry job and records
 // auth1_job_last_success_timestamp{job="flow-expiry"} on its metrics.
 func TestServeRecordsJobSuccess(t *testing.T) {
-	_, metrics := startServeWithMetrics(t, append(dsnEnv(t, pgtest.DSN(t)), promoteAtOnce))
+	_, metrics := startServeWithMetrics(t, append(dsnEnv(t, pgtest.DSN(t)), promoteAtOnce), fastJobs)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		_, body := get(t, metrics+"/metrics")
