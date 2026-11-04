@@ -67,12 +67,18 @@ func (f *fakeRegistration) ConfirmLink(_ context.Context, c app.ConfirmLink) (ap
 
 func regRouter(t *testing.T, reg handlers.Registration) http.Handler {
 	t.Helper()
+	return flowRouter(t, defaultMetadata, reg, nil)
+}
+
+// flowRouter is the router serving the API with the registration and sign-in given.
+func flowRouter(t *testing.T, m handlers.MetadataOptions, reg handlers.Registration, signIn handlers.SignIn) http.Handler {
+	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
 	hist, err := noop.NewMeterProvider().Meter("test").Float64Histogram("d")
 	if err != nil {
 		t.Fatal(err)
 	}
-	api, err := handlers.NewAPI(keySet{}, defaultMetadata, reg)
+	api, err := handlers.NewAPI(keySet{}, m, reg, signIn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +90,7 @@ func regRouter(t *testing.T, reg handlers.Registration) http.Handler {
 	return server.NewRouter(server.Options{
 		Logger: logger, Problems: problems, ClientIP: ips,
 		TracerProvider: tracenoop.NewTracerProvider(), Propagator: propagation.TraceContext{},
-		RequestDuration: hist, Health: health.New(logger), Routes: gen.Routes(api, problems),
+		RequestDuration: hist, Health: health.New(logger), Routes: gen.Routes(api, problems), BasePath: m.BasePath,
 	})
 }
 

@@ -208,10 +208,15 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
-	registration, err := newRegistration(registrationParts{
+	parts := registrationParts{
 		cfg: cfg, db: db, keys: keys, registry: registry, types: types, policy: policy,
 		hasher: hasher, limits: limits, tracing: tel.TracerProvider(), logger: logger,
-	})
+	}
+	registration, err := newRegistration(parts)
+	if err != nil {
+		return err
+	}
+	signIn, err := newSignIn(parts, kr)
 	if err != nil {
 		return err
 	}
@@ -219,7 +224,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	api, err := handlers.NewAPI(kr, handlers.MetadataOptions{
 		Issuer: cfg.HTTP.Issuer, BasePath: cfg.HTTP.BasePath,
 		ClientCredentials: mode == config.ServiceAuthClientCredentials || mode == config.ServiceAuthBoth,
-	}, registration)
+	}, registration, signIn)
 	if err != nil {
 		return err
 	}
