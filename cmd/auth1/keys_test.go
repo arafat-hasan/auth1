@@ -31,6 +31,8 @@ var badKeys = []struct {
 		"encryption.keyring_file", "several active keys"},
 	{"short MAC key", "AUTH1_ENCRYPTION_MAC_KEY_FILE", "AAAAAAAAAAAAAAAAAAAAAA==\n",
 		"encryption.mac_key_file", "not 32 bytes"},
+	{"short device-cookie key", "AUTH1_ENCRYPTION_DEVICE_COOKIE_KEY_FILE", "AAAAAAAAAAAAAAAAAAAAAA==\n",
+		"encryption.device_cookie_key_file", "not 32 bytes"},
 	{"blind-index key not base64", "AUTH1_ENCRYPTION_BLIND_INDEX_KEY_FILE", "not a key\n",
 		"encryption.blind_index_key_file", "not standard base64"},
 	{"two active pepper keys", "AUTH1_PASSWORDS_PEPPER_KEYRING_FILE",
@@ -65,7 +67,7 @@ func TestLoadCryptoKeysExample(t *testing.T) {
 	if id, _ := keys.pepper.Current().Active(); id != 1 {
 		t.Errorf("active pepper key %d, want 1", id)
 	}
-	if keys.blindIndex.Bytes() == nil || keys.mac.Bytes() == nil {
+	if keys.blindIndex.Bytes() == nil || keys.mac.Bytes() == nil || keys.device.Bytes() == nil {
 		t.Error("a key file was not loaded")
 	}
 }

@@ -14,6 +14,7 @@ type cryptoKeys struct {
 	fields     *crypto.WatchedKeyring
 	blindIndex crypto.Key
 	mac        crypto.Key
+	device     crypto.Key // the device-cookie MAC key (TDD-07 §4)
 	pepper     *crypto.WatchedKeyring // the pepper keyring (TDD-03 §1.1)
 }
 
@@ -36,6 +37,9 @@ func loadCryptoKeys(cfg *config.Config, logger *slog.Logger) (*cryptoKeys, []*co
 	}
 	if keys.mac, err = crypto.LoadKeyFile(c.MACKeyFile.Path()); err != nil {
 		fail("encryption.mac_key_file", err)
+	}
+	if keys.device, err = crypto.LoadKeyFile(c.DeviceCookieKeyFile.Path()); err != nil {
+		fail("encryption.device_cookie_key_file", err)
 	}
 	if keys.pepper, err = crypto.NewWatchedKeyring(cfg.Passwords.PepperKeyringFile.Path(), crypto.StateVerify, logger); err != nil {
 		fail("passwords.pepper_keyring_file", err)
