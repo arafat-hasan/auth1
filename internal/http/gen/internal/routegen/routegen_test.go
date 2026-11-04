@@ -119,6 +119,35 @@ func TestOperations(t *testing.T) {
 	}
 }
 
+// idempotencyKey is the Idempotency-Key header parameter, as the contract declares it.
+const idempotencyKey = "- { name: Idempotency-Key, in: header, required: true, schema: { type: string } }"
+
+// TestOperationsIdempotent: an operation taking Idempotency-Key is Idempotent, and only a service
+// operation may take it, because a key belongs to its caller (TDD-05 §4).
+func TestOperationsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	service := strings.Replace(string(spec("", "x-auth1-scope: tokens:introspect")),
+		"      responses: { '200': { description: ok } }",
+		"      parameters:\n        "+idempotencyKey+"\n      responses: { '200': { description: ok }, '422': { description: invalid } }", 1)
+	ops, err := operations([]byte(service))
+	if err != nil {
+		t.Fatalf("operations: %v", err)
+	}
+	for _, o := range ops {
+		if want := o.ID == "introspectToken"; o.Idempotent != want {
+			t.Errorf("%s: Idempotent = %v, want %v", o.ID, o.Idempotent, want)
+		}
+	}
+
+	person := strings.Replace(string(spec("", "x-auth1-scope: tokens:introspect")),
+		"        - { name: sessionId,", "        "+idempotencyKey+"\n        - { name: sessionId,", 1)
+	if _, err := operations([]byte(person)); err == nil || !strings.Contains(err.Error(), "revokeMySession") ||
+		!strings.Contains(err.Error(), "Idempotency-Key") {
+		t.Errorf("Idempotency-Key on a person-facing operation: err = %v, want one naming revokeMySession and Idempotency-Key", err)
+	}
+}
+
 // TestContract runs the generator's rules on api/openapi.yaml, and checks that removing one
 // service operation's scope fails them.
 func TestContract(t *testing.T) {
