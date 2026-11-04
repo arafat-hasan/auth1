@@ -100,10 +100,11 @@ func TestSuccessorOutsideGrace(t *testing.T) {
 	e.exec(t, past, (grace + time.Second).Microseconds(), tokenHash("q"))
 	e.checkReuse(t, s, "p")
 
-	// A second inside the window, the token is still in grace.
+	// Half way through the window, the token is still in grace: the margin outlasts the
+	// transactions that follow, which add to the time since rotation.
 	s = e.start(t, "m")
 	e.rotate(t, "m", "n")
-	e.exec(t, past, (grace - time.Second).Microseconds(), tokenHash("m"))
+	e.exec(t, past, (grace / 2).Microseconds(), tokenHash("m"))
 	if tok, _ := e.find(t, "m"); !tok.InGrace {
 		t.Error("a token rotated inside the window is not in grace")
 	}

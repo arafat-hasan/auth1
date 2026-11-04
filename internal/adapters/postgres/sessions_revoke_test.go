@@ -88,7 +88,7 @@ func TestRevokeAll(t *testing.T) {
 	acc, _, _ := e.sessionSet(t)
 	e.underAccount(t, acc, func(ctx context.Context) error {
 		n, err := e.sessions.RevokeAll(ctx, acc, session.RevokePasswordReset)
-		if n != 2 {
+		if err == nil && n != 2 {
 			t.Errorf("revoked %d, want 2", n)
 		}
 		return err
@@ -106,7 +106,7 @@ func TestRevokeAllExcept(t *testing.T) {
 	acc, keep, _ := e.sessionSet(t)
 	e.underAccount(t, acc, func(ctx context.Context) error {
 		n, err := e.sessions.RevokeAllExcept(ctx, acc, keep.ID, session.RevokePasswordChanged)
-		if n != 1 {
+		if err == nil && n != 1 {
 			t.Errorf("revoked %d, want 1", n)
 		}
 		return err
@@ -253,4 +253,69 @@ func TestRevokeUnknownReason(t *testing.T) {
 		}
 	}
 	e.checkRevoked(t, "a", "")
+}
+
+// TestSessionLockOrderWrongID checks that the lock checks are by id: a lock on another session or
+// another account does not stand in for the one a method needs.
+func TestSessionLockOrderWrongID(t *testing.T) {
+	t.Parallel()
+	e := sessionsDB(t)
+	s := e.start(t, "a")
+	x := e.start(t, "x")
+	calls := map[string]func(ctx context.Context) error{
+		"Rotate": func(ctx context.Context) error {
+			_, err := e.sessions.Rotate(ctx, s.ID, tokenHash("a"), tokenHash("b"), rawToken("b"), idleTTL)
+			return err
+		},
+		"Successor": func(ctx context.Context) error {
+			_, _, err := e.sessions.Successor(ctx, s.ID, tokenHash("a"), grace)
+			return err
+		},
+		"Revoke": func(ctx context.Context) error {
+			_, err := e.sessions.Revoke(ctx, s.ID, session.RevokeOperator)
+			return err
+		},
+	}
+	for name, call := range calls {
+		err := e.uow.Do(t.Context(), func(ctx context.Context) error {
+			if _, err := e.sessions.LockSession(ctx, x.AccountID, x.ID); err != nil {
+				return err
+			}
+			return call(ctx)
+		})
+		if !errors.Is(err, postgres.ErrLockOrder) {
+			t.Errorf("%s with another session locked: %v, want ErrLockOrder", name, err)
+		}
+	}
+	accountCalls := map[string]func(ctx context.Context) error{
+		"Create": func(ctx context.Context) error {
+			return e.sessions.Create(ctx, e.newSession(s.AccountID), tokenHash("z"))
+		},
+		"RevokeAll": func(ctx context.Context) error {
+			_, err := e.sessions.RevokeAll(ctx, s.AccountID, session.RevokeOperator)
+			return err
+		},
+		"RevokeAllExcept": func(ctx context.Context) error {
+			_, err := e.sessions.RevokeAllExcept(ctx, s.AccountID, e.ids.New(), session.RevokeOperator)
+			return err
+		},
+	}
+	for name, call := range accountCalls {
+		err := e.uow.Do(t.Context(), func(ctx context.Context) error {
+			if _, err := e.repo.GetForUpdate(ctx, x.AccountID); err != nil {
+				return err
+			}
+			return call(ctx)
+		})
+		if !errors.Is(err, postgres.ErrLockOrder) {
+			t.Errorf("%s with another account locked: %v, want ErrLockOrder", name, err)
+		}
+	}
+	// Nothing changed.
+	if tok, got := e.find(t, "a"); !tok.Current() || !got.Live {
+		t.Errorf("the session: live %v, token current %v", got.Live, tok.Current())
+	}
+	if got, _ := e.sessions.ListLive(t.Context(), s.AccountID); len(got) != 1 {
+		t.Errorf("%d live sessions, want 1", len(got))
+	}
 }

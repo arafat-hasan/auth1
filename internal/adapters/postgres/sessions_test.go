@@ -284,20 +284,41 @@ func TestLockSession(t *testing.T) {
 	}
 }
 
-// TestGetForUpdateAfterSessionLock checks the reverse of G-5: once a session is locked, the
-// transaction may not lock an account.
+// TestGetForUpdateAfterSessionLock checks the reverse of G-5: once a session is locked, by any of
+// the methods that lock one, the transaction may not lock an account, its own or another.
 func TestGetForUpdateAfterSessionLock(t *testing.T) {
 	t.Parallel()
 	e := sessionsDB(t)
 	s := e.start(t, "a")
-	err := e.uow.Do(t.Context(), func(ctx context.Context) error {
-		if _, _, err := e.sessions.FindToken(ctx, tokenHash("a"), grace); err != nil {
+	other := e.sessionAccount(t)
+	locks := map[string]func(ctx context.Context) error{
+		"FindToken": func(ctx context.Context) error {
+			_, _, err := e.sessions.FindToken(ctx, tokenHash("a"), grace)
 			return err
+		},
+		"LockSession": func(ctx context.Context) error {
+			_, err := e.sessions.LockSession(ctx, s.AccountID, s.ID)
+			return err
+		},
+		"Create": func(ctx context.Context) error {
+			if _, err := e.repo.GetForUpdate(ctx, s.AccountID); err != nil {
+				return err
+			}
+			return e.sessions.Create(ctx, e.newSession(s.AccountID), tokenHash("b"))
+		},
+	}
+	for name, lock := range locks {
+		for _, acc := range []uuid.UUID{s.AccountID, other} {
+			err := e.uow.Do(t.Context(), func(ctx context.Context) error {
+				if err := lock(ctx); err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				_, err := e.repo.GetForUpdate(ctx, acc)
+				return err
+			})
+			if !errors.Is(err, postgres.ErrLockOrder) {
+				t.Errorf("GetForUpdate after %s: %v, want ErrLockOrder", name, err)
+			}
 		}
-		_, err := e.repo.GetForUpdate(ctx, s.AccountID)
-		return err
-	})
-	if !errors.Is(err, postgres.ErrLockOrder) {
-		t.Errorf("GetForUpdate after a session lock: %v, want ErrLockOrder", err)
 	}
 }
