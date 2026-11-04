@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -31,6 +32,36 @@ type txn struct {
 	flows      map[uuid.UUID]flow.Kind
 	challenges []uuid.UUID
 	sessions   []uuid.UUID
+	savepoints int // savepoints taken so far, which names the next one
+}
+
+// txnRecords is what a txn has recorded at a savepoint, restored when the savepoint rolls back.
+type txnRecords struct {
+	locked     []lockedAccount
+	flows      map[uuid.UUID]flow.Kind
+	challenges int
+	sessions   int
+}
+
+// records returns a copy of what the transaction has recorded so far.
+func (t *txn) records() txnRecords {
+	r := txnRecords{flows: maps.Clone(t.flows), challenges: len(t.challenges), sessions: len(t.sessions)}
+	for _, a := range t.locked {
+		r.locked = append(r.locked, *a)
+	}
+	return r
+}
+
+// restore goes back to the records r: rolling back to a savepoint releases the row locks taken
+// after it and discards the events written after it.
+func (t *txn) restore(r txnRecords) {
+	t.locked = t.locked[:0]
+	for _, a := range r.locked {
+		t.locked = append(t.locked, &a)
+	}
+	t.flows = r.flows
+	t.challenges = t.challenges[:r.challenges]
+	t.sessions = t.sessions[:r.sessions]
 }
 
 // lockedAccount is an account locked in the transaction: the version read under the lock and the
@@ -177,6 +208,35 @@ func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context) error)
 			return failure(ctx, "commit", err)
 		}
 		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// Savepoint implements app.Savepoints: it runs fn under a savepoint of the transaction Do opened.
+// When fn returns an error, it rolls back to the savepoint, restores the locks and events the
+// transaction had recorded there (the rollback released the later row locks and discarded the
+// later events), and returns fn's error; otherwise it releases the savepoint. Outside a
+// transaction it returns ErrNoTransaction without calling fn.
+func (u *UnitOfWork) Savepoint(ctx context.Context, fn func(ctx context.Context) error) error {
+	t := txFrom(ctx)
+	if t == nil {
+		return fmt.Errorf("savepoint: %w", ErrNoTransaction)
+	}
+	t.savepoints++
+	name := fmt.Sprintf("auth1_sp_%d", t.savepoints)
+	before := t.records()
+	if _, err := t.tx.ExecContext(ctx, "SAVEPOINT "+name); err != nil {
+		return fmt.Errorf("savepoint: %w", err)
+	}
+	if err := fn(ctx); err != nil {
+		if _, rerr := t.tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+name); rerr != nil {
+			return errors.Join(err, fmt.Errorf("roll back to savepoint: %w", rerr))
+		}
+		t.restore(before)
+		return err
+	}
+	if _, err := t.tx.ExecContext(ctx, "RELEASE SAVEPOINT "+name); err != nil {
+		return fmt.Errorf("release savepoint: %w", err)
 	}
 	return nil
 }

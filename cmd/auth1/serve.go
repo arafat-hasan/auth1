@@ -30,6 +30,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/http/health"
 	"github.com/arafat-hasan/auth1/internal/http/middleware"
 	"github.com/arafat-hasan/auth1/internal/http/middleware/caller"
+	"github.com/arafat-hasan/auth1/internal/http/middleware/idempotency"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/server"
 	"github.com/arafat-hasan/auth1/internal/telemetry"
@@ -263,6 +264,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		APIMiddleware: []func(http.Handler) http.Handler{
 			middleware.RateLimit(limits, pw, gen.ServiceRoute(cfg.HTTP.BasePath)),
 			services.Middleware,
+			idempotency.New(idempotency.Options{Match: gen.IdempotentRoute(cfg.HTTP.BasePath), Problems: pw}),
 		},
 		Dev: devRoutes,
 	})

@@ -8,6 +8,8 @@ type Operation struct {
 	Path     string   // the path template, which is also the Chi pattern below http.base_path
 	Scope    string   // x-auth1-scope: the scope a service caller needs; "" for other operations
 	Security []string // the security schemes the operation accepts; empty for a public one
+	// Idempotent is true for an operation taking the Idempotency-Key header (TDD-05 §4).
+	Idempotent bool
 }
 
 // Operations maps each served operation's id to its route metadata.
@@ -22,8 +24,8 @@ var Operations = map[string]Operation{
 	"confirmTotpEnrolment":           {Method: "POST", Path: "/v1/me/totp/confirm", Scope: "", Security: []string{"bearer"}},
 	"confirmTotpReplacement":         {Method: "POST", Path: "/v1/me/totp/replacement/{flowId}/confirm", Scope: "", Security: []string{"bearer"}},
 	"confirmVerificationLink":        {Method: "POST", Path: "/v1/verification-links/confirm", Scope: "", Security: []string{}},
-	"createInvitation":               {Method: "POST", Path: "/v1/invitations", Scope: "accounts:invite", Security: []string{"serviceToken", "workload"}},
-	"deleteAccount":                  {Method: "DELETE", Path: "/v1/accounts/{accountId}", Scope: "accounts:delete", Security: []string{"serviceToken", "workload"}},
+	"createInvitation":               {Method: "POST", Path: "/v1/invitations", Scope: "accounts:invite", Security: []string{"serviceToken", "workload"}, Idempotent: true},
+	"deleteAccount":                  {Method: "DELETE", Path: "/v1/accounts/{accountId}", Scope: "accounts:delete", Security: []string{"serviceToken", "workload"}, Idempotent: true},
 	"getJwks":                        {Method: "GET", Path: "/.well-known/jwks.json", Scope: "", Security: []string{}},
 	"getMe":                          {Method: "GET", Path: "/v1/me", Scope: "", Security: []string{"bearer"}},
 	"getServerMetadata":              {Method: "GET", Path: "/.well-known/oauth-authorization-server", Scope: "", Security: []string{}},
@@ -39,13 +41,13 @@ var Operations = map[string]Operation{
 	"requestSignInOtp":               {Method: "POST", Path: "/v1/sessions/otp", Scope: "", Security: []string{}},
 	"resendPhoneChange":              {Method: "POST", Path: "/v1/me/phone-changes/{flowId}/resend", Scope: "", Security: []string{"bearer"}},
 	"resendRegistrationVerification": {Method: "POST", Path: "/v1/registrations/{flowId}/resend", Scope: "", Security: []string{}},
-	"resetAccountMfa":                {Method: "POST", Path: "/v1/accounts/{accountId}/mfa/reset", Scope: "accounts:mfa:reset", Security: []string{"serviceToken", "workload"}},
+	"resetAccountMfa":                {Method: "POST", Path: "/v1/accounts/{accountId}/mfa/reset", Scope: "accounts:mfa:reset", Security: []string{"serviceToken", "workload"}, Idempotent: true},
 	"resolveDeliveryReferences":      {Method: "POST", Path: "/v1/hooks/delivery/resolve", Scope: "delivery:resolve", Security: []string{"serviceToken", "workload"}},
-	"revokeAccountSessions":          {Method: "POST", Path: "/v1/accounts/{accountId}/sessions/revoke", Scope: "accounts:status:write", Security: []string{"serviceToken", "workload"}},
+	"revokeAccountSessions":          {Method: "POST", Path: "/v1/accounts/{accountId}/sessions/revoke", Scope: "accounts:status:write", Security: []string{"serviceToken", "workload"}, Idempotent: true},
 	"revokeMySession":                {Method: "DELETE", Path: "/v1/me/sessions/{sessionId}", Scope: "", Security: []string{"bearer"}},
 	"searchAccounts":                 {Method: "POST", Path: "/v1/directory/accounts/search", Scope: "directory:read", Security: []string{"serviceToken", "workload"}},
-	"setAccountRoles":                {Method: "PUT", Path: "/v1/accounts/{accountId}/roles", Scope: "accounts:roles:write", Security: []string{"serviceToken", "workload"}},
-	"setAccountStatus":               {Method: "PUT", Path: "/v1/accounts/{accountId}/status", Scope: "accounts:status:write", Security: []string{"serviceToken", "workload"}},
+	"setAccountRoles":                {Method: "PUT", Path: "/v1/accounts/{accountId}/roles", Scope: "accounts:roles:write", Security: []string{"serviceToken", "workload"}, Idempotent: true},
+	"setAccountStatus":               {Method: "PUT", Path: "/v1/accounts/{accountId}/status", Scope: "accounts:status:write", Security: []string{"serviceToken", "workload"}, Idempotent: true},
 	"signIn":                         {Method: "POST", Path: "/v1/sessions", Scope: "", Security: []string{}},
 	"signOut":                        {Method: "DELETE", Path: "/v1/sessions/current", Scope: "", Security: []string{"bearer", "refreshCookie"}},
 	"signOutOtherSessions":           {Method: "DELETE", Path: "/v1/me/sessions", Scope: "", Security: []string{"bearer"}},
@@ -54,7 +56,7 @@ var Operations = map[string]Operation{
 	"startPasswordReset":             {Method: "POST", Path: "/v1/password-resets/start", Scope: "", Security: []string{}},
 	"startPhoneChange":               {Method: "POST", Path: "/v1/me/phone-changes", Scope: "", Security: []string{"bearer"}},
 	"startRegistration":              {Method: "POST", Path: "/v1/registrations", Scope: "", Security: []string{}},
-	"startSupportIdentifierChange":   {Method: "POST", Path: "/v1/accounts/{accountId}/identifier-changes", Scope: "accounts:identifiers:write", Security: []string{"serviceToken", "workload"}},
+	"startSupportIdentifierChange":   {Method: "POST", Path: "/v1/accounts/{accountId}/identifier-changes", Scope: "accounts:identifiers:write", Security: []string{"serviceToken", "workload"}, Idempotent: true},
 	"startTotpEnrolment":             {Method: "POST", Path: "/v1/me/totp", Scope: "", Security: []string{"bearer"}},
 	"startTotpReplacement":           {Method: "POST", Path: "/v1/me/totp/replacement", Scope: "", Security: []string{"bearer"}},
 	"updateMe":                       {Method: "PATCH", Path: "/v1/me", Scope: "", Security: []string{"bearer"}},

@@ -71,6 +71,54 @@ func TestServiceRoute(t *testing.T) {
 	}
 }
 
+// TestIdempotentRoute: the seven account-control writes take Idempotency-Key, and nothing else
+// does (TDD-05 §4).
+func TestIdempotentRoute(t *testing.T) {
+	t.Parallel()
+	const account = "/v1/accounts/0190a0a0-0000-7000-8000-000000000001"
+	for _, basePath := range []string{"", "/auth"} {
+		var got bool
+		record := func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = gen.IdempotentRoute(basePath)(r)
+				next.ServeHTTP(w, r)
+			})
+		}
+		h := limitedRouter(t, basePath, record)
+		for _, tc := range []struct {
+			method, path string
+			want         bool
+		}{
+			{http.MethodDelete, account, true},
+			{http.MethodPut, account + "/status", true},
+			{http.MethodPut, account + "/roles", true},
+			{http.MethodPost, account + "/sessions/revoke", true},
+			{http.MethodPost, account + "/identifier-changes", true},
+			{http.MethodPost, account + "/mfa/reset", true},
+			{http.MethodPost, "/v1/invitations", true},
+			{http.MethodPost, "/v1/directory/accounts/batch-get", false},
+			{http.MethodPost, "/v1/introspect", false},
+			{http.MethodPost, "/v1/sessions", false},
+			{http.MethodGet, "/v1/nope", false},
+		} {
+			got = false
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, basePath+tc.path, nil))
+			if got != tc.want {
+				t.Errorf("base %q: IdempotentRoute(%s %s) = %v, want %v", basePath, tc.method, tc.path, got, tc.want)
+			}
+		}
+	}
+	var n int
+	for _, op := range gen.Operations {
+		if op.Idempotent {
+			n++
+		}
+	}
+	if n != 7 {
+		t.Errorf("%d idempotent operations, want 7", n)
+	}
+}
+
 // TestRateLimitedJWKS: a request over L-1 answers the contract's 429, with Retry-After, and a
 // service operation is never limited.
 func TestRateLimitedJWKS(t *testing.T) {

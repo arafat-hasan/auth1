@@ -65,16 +65,40 @@ directory and account-control operations.
 
 ## 4. Idempotency
 
-Every account-control write requires `Idempotency-Key` (1–255 printable ASCII characters). In the
-operation's transaction:
+Every account-control write requires `Idempotency-Key`: 1–255 visible ASCII characters (`!` to
+`~`, no space), as the contract's pattern. A key belongs to its caller: rows are keyed by
+`(caller, key)`, where `caller` is `<kind>:<id>` (`workload:<identity>` or `client:<client id>`),
+so two callers never share a key. In the operation's transaction:
 
-1. Compute `request_hash = sha256(method ‖ path ‖ JCS(body))`, using the RFC 8785 canonical JSON of the body.
-2. `INSERT INTO idempotency_keys (caller, key, request_hash, created_at) VALUES (…) ON CONFLICT DO NOTHING`.
-   - **Inserted:** run the operation. Store `status` and `response` in the same transaction, then commit.
-   - **Conflict:** the insert waits if another transaction holds the key, then sees its committed row. `SELECT … FOR UPDATE` it. A different `request_hash` answers `422 IDEMPOTENCY_KEY_REUSED`; otherwise replay the stored `status` and `response`.
-3. 2xx and 4xx outcomes are stored and replayed. A 5xx rolls back the transaction, so the key is free for a retry.
+1. Compute `request_hash = sha256(method ‖ 0x00 ‖ path ‖ 0x00 ‖ JCS(body))`: the method in upper
+   case, the escaped request path (so `%00` stays three characters), and the RFC 8785 canonical
+   JSON of the body, empty when no body is sent. A body that is not I-JSON (a duplicate member, say)
+   is `422 VALIDATION_FAILED`. Headers, `Auth1-Actor` included, are not part of the hash.
+2. `INSERT INTO idempotency_keys (caller, key, request_hash, created_at) VALUES (…, now())
+   ON CONFLICT (caller, key) DO UPDATE … WHERE idempotency_keys.created_at < now() - retention`:
+   a row older than `retention.idempotency_keys` counts as absent, though the purge (TDD-01 §5) has
+   not removed it yet.
+   - **Inserted:** run the operation under a savepoint. Store `status` and `response` in the same
+     transaction, then commit.
+   - **Conflict:** the insert waits if another transaction holds the key, then sees its committed
+     row. `SELECT … FOR UPDATE` it. A different `request_hash` answers `422 IDEMPOTENCY_KEY_REUSED`;
+     otherwise replay the stored `status` and `response`. The wait is bounded by a `lock_timeout` of
+     5 s on the claim; past it the answer is `503 UNAVAILABLE` with `Retry-After: 1`, and nothing
+     is stored. If the holder rolls back, the waiting request claims the key and runs the operation
+     itself.
+3. 2xx and 4xx outcomes are stored and replayed, with these rules:
+   - A 4xx first rolls back to the savepoint, so the refused operation leaves no effect, and no
+     version change on an account it locked (TDD-01 §4.2). Only the stored outcome commits.
+   - A 429 is not stored: it says "try later", not what the request did. It rolls back like a 5xx.
+   - A 5xx rolls back the transaction, so the key is free for a retry.
+   - The stored `response` is the content type and the body, at most 64 KiB, sealed with field
+     encryption (TDD-01 §3), because an account in a body carries its display name and may carry
+     identifiers.
 
-No in-flight state is visible to others, because the key row commits only with the operation (I-9).
+The key row is locked before anything else in the transaction (TDD-01 §4.2). No in-flight state is
+visible to others, because the key row commits only with the operation (I-9). The key itself is
+never logged, traced or used as a metric label. Bootstrap invitations (TDD-02 §8.1) use the same
+component without HTTP, with the caller `system` and the key `bootstrap:<email bidx>`.
 
 ## 5. Directory
 
