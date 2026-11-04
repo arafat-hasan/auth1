@@ -222,7 +222,12 @@ func TestIdempotencyClaimTimeout(t *testing.T) {
 	req := idemRequest("client:support", "k-1", "a")
 	claimed, release, done := e.holdKey(t, req, nil)
 	<-claimed
-	defer func() { close(release); <-done }()
+	defer func() {
+		close(release)
+		if err := <-done; !errors.Is(err, errSentinel) {
+			t.Errorf("holder = %v, want its rollback", err)
+		}
+	}()
 
 	start := time.Now()
 	err := e.uow.Do(t.Context(), func(ctx context.Context) error {

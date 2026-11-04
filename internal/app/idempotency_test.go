@@ -84,8 +84,8 @@ func newIdempotency(t *testing.T, s *idemStore) *app.Idempotency {
 }
 
 var (
-	reqA    = app.IdempotencyRequest{Caller: "client:support", Key: "k-1", Hash: []byte("hash-a")}
-	ok201   = app.IdempotentResponse{Status: 201, ContentType: "application/json", Body: []byte(`{"n":1}`)}
+	reqA           = app.IdempotencyRequest{Caller: "client:support", Key: "k-1", Hash: []byte("hash-a")}
+	ok201          = app.IdempotentResponse{Status: 201, ContentType: "application/json", Body: []byte(`{"n":1}`)}
 	statusConflict = &domain.Error{Code: domain.CodeStatusTransitionInvalid}
 )
 
