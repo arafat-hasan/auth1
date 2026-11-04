@@ -103,3 +103,24 @@ type SendCounts struct {
 	Short int
 	Long  int
 }
+
+// ExpiringFlows are the flow queries of the expiry job (TDD-02 §2.5). Expiry closes a flow as
+// "expired" with Flows.Cancel; these find what has expired and close what needs no account lock.
+type ExpiringFlows interface {
+	// ExpiredPending returns up to limit open registration and invitation flows past expires_at
+	// whose account is pending, the earliest expiry first. It locks nothing: the job then locks
+	// the account with Accounts.GetForUpdate and the flow with LockExpired.
+	ExpiredPending(ctx context.Context, limit int) ([]flow.Flow, error)
+	// LockExpired re-reads f, as ExpiredPending returned it, locking its row until the
+	// transaction ends, so Flows.Cancel may close it. It finds nothing (NOT_FOUND) unless the flow
+	// is still open, of the same account and past expires_at. The account must be locked.
+	LockExpired(ctx context.Context, f flow.Flow) (flow.Flow, error)
+	// CloseExpired closes, as "expired", up to limit open flows past expires_at other than the
+	// registration and invitation flows of pending accounts, with their challenges, erasing every
+	// secret (I-5), in one statement. It skips rows another transaction holds and takes no account
+	// lock, so it never waits. It returns how many flows it closed.
+	CloseExpired(ctx context.Context, limit int) (int, error)
+	// CloseExpiredChallenges closes up to limit open challenges past expires_at, erasing their
+	// secrets (I-5), skipping rows another transaction holds. It returns how many it closed.
+	CloseExpiredChallenges(ctx context.Context, limit int) (int, error)
+}

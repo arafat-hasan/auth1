@@ -79,6 +79,12 @@ type regServer struct {
 // test resolver, with environ added.
 func startRegServer(t *testing.T, environ ...string) regServer {
 	t.Helper()
+	return startRegServerWith(t, nil, environ...)
+}
+
+// startRegServerWith is startRegServer with opts adjusting testDeps.
+func startRegServerWith(t *testing.T, opts []func(*serveDeps), environ ...string) regServer {
+	t.Helper()
 	dsn := pgtest.DSN(t)
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -109,7 +115,7 @@ func startRegServer(t *testing.T, environ ...string) regServer {
 	}
 	resolver := dbResolver{db: db, fc: crypto.NewFieldCrypto(keys)}
 	api, _ := startServeConfig(t, path, append(append(dsnEnv(t, dsn), promoteAtOnce), environ...),
-		func(d *serveDeps) { d.resolver = resolver })
+		append([]func(*serveDeps){func(d *serveDeps) { d.resolver = resolver }}, opts...)...)
 	return regServer{api: api, db: db}
 }
 
