@@ -77,7 +77,7 @@ Failures increment only that bucket's row in `sign_in_throttles`. The delay appl
 bucket. So an attacker hammering A from anywhere fills `untrusted`, while A's own browser keeps
 signing in through its device bucket.
 
-**Native clients** send no cookie and always use `untrusted`. *(to be detailed: a device token in
+**Native clients** (`refresh_transport: body`) get no device cookie, any cookie they send is ignored, and they always use `untrusted`. *(to be detailed: a device token in
 the body for native clients)*
 
 **A success** resets the bucket used. A password reset resets all of A's buckets.

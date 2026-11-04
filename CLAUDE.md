@@ -314,6 +314,31 @@ actor). `handlers.NewAPI` takes the registration (nil keeps its operations at 50
 (`startServeConfig`, phones under +44 allowed) with `dbResolver`, a test stand-in for the WP-43
 resolver that reads identifier values and open secrets from the database.
 
+Sign-in (TDD-02 §5.1, §5.3, TDD-07 §4): `app.SignIn` (`NewSignIn` refuses a missing dependency
+or a lifetime not above 0; `cmd/auth1/signin.go` builds it) has `Password` (`POST /v1/sessions`)
+and `Complete`. `Password` checks the client, the type and L-2, then, outside any transaction,
+finds the verified identifier (a miss or a value that does not normalise is `VerifyDummy` and
+`INVALID_CREDENTIALS`), picks the bucket, refuses a delayed one (`SIGN_IN_DELAYED`), verifies,
+decides SDD §8.1 and the roles, and rehashes. A wrong password is `SignInThrottles.Fail` and its
+audit in a transaction that locks no account. The success transaction locks the account and
+decides again on the identifier, the hash and kid, the status, the roles and the TOTP read under
+the lock; it resets the bucket, writes `Accounts.RehashPassword` (compare-and-swap, keeps
+`changed_at`), then opens a `sign_in` flow (`MFA_REQUIRED`, `MFA_ENROLMENT_REQUIRED`: an
+`app.StepCode`, not a `domain.Code`) or calls `Complete` with no flow. `Complete` (for WP-53 and
+WP-54, inside their transaction under the account and flow locks) refuses a session without `mfa`
+where I-16 needs one (`app.ErrMFANotPassed`), completes the flow, creates the session and its
+refresh token, issues the token through `app.AccessIssuer` (`tokens.Issuer.Issue`; `app` cannot
+import `tokens`), audits `sign_in` and sends the new-sign-in notice. `app.SignInThrottles`
+(`postgres.SignInThrottles`, `sign_in_throttles`): `Delay` and `KnownDevice` lock nothing, `Fail`
+needs a transaction but no account lock, `Reset` / `ResetAll` the account lock; the delay rule is
+`account.ThrottlePolicy.Delay`, the buckets `account.UntrustedBucket` and `account.DeviceBucket`.
+The device cookie is `app.DeviceCookies` over `app.DeviceMAC` (`crypto.DeviceMAC`, keyed by
+`encryption.device_cookie_key_file`, `keys.device`); native clients get none and use `untrusted`.
+`signIn` takes the cookie and `User-Agent` as declared parameters; the handler writes both
+`Set-Cookie`s itself (`signInTokens`). API tests in `cmd/auth1/signin_test.go` use
+`startSignInServer` (the `secure` client with `mfa: required`, a Redis of its own, the notice on)
+and `account`, which activates a registered account and grants `user` in SQL until WP-54.
+
 Service callers (TDD-05 §1, §3): `internal/http/middleware/caller.Resolver` is in
 `server.Options.APIMiddleware` after `middleware.RateLimit`. It finds the operation before dispatch
 with `gen.Match(basePath)` (by route pattern; `gen.ServiceRoute` is built on it; the schemes are

@@ -177,11 +177,11 @@ On success, in the same transaction:
    - `pending`: answer `REGISTRATION_INCOMPLETE`.
    - `suspended` or `banned` with `restricted_sign_in: false`: answer `ACCOUNT_RESTRICTED`.
 7. Check that roles ∩ client roles is not empty, else `ROLE_NOT_PERMITTED`.
-8. `[tx]` Reset the bucket, rehash if the parameters are old (TDD-03 §1), and open a `sign_in` flow with `first_factor = pwd`.
+8. `[tx]` Lock the account and re-read what steps 2–7 decided on: the identifier, the password hash, the status, the roles and the TOTP factor. A password or identifier changed since step 4 answers `INVALID_CREDENTIALS` (not counted as a failure); a changed status or role set is decided again by steps 6–7. Reset the bucket and rehash if the parameters are old (TDD-03 §1).
 9. Decide the second step (TDD-03 §3.4):
-   - the account has a confirmed TOTP: answer `202 MFA_REQUIRED`;
-   - it has none and the client has `mfa: required`: answer `202 MFA_ENROLMENT_REQUIRED`;
-   - otherwise complete the sign-in in this transaction (§5.3) and answer `200` with the tokens.
+   - the account has a confirmed TOTP: open a `sign_in` flow (`first_factor = pwd`, `step = second_factor`) and answer `202 MFA_REQUIRED`;
+   - it has none and the client has `mfa: required`: open it at `step = enrolment` and answer `202 MFA_ENROLMENT_REQUIRED`;
+   - otherwise complete the sign-in in this transaction (§5.3), with no flow, and answer `200` with the tokens.
 
 ### 5.2 OTP as the first factor
 
@@ -201,9 +201,9 @@ The second step, when there is one, is specified in TDD-03 §3 and §4. Completi
 after the first factor alone or after the second:
 - re-reads the status;
 - creates a full or restricted session (TDD-04 §2);
-- completes the flow;
+- completes the flow, when there is one;
 - audits `sign_in`;
-- sends the optional new-sign-in notice.
+- sends the optional new-sign-in notice, on every completed sign-in when `delivery.notices.new_sign_in` is on.
 
 ## 6. Recovery
 

@@ -369,7 +369,7 @@ What a failure was, and other non-secret facts, go in `details`.
 |---|---|
 | Changes to one account apply in order (I-10) | Every use case that changes an account first takes `SELECT … FOR UPDATE` on its row, and finishes with `UPDATE accounts SET version = version + n, updated_at = now() WHERE id = $1`. The unit of work runs that update at commit for every account locked in the transaction (TDD-06 §2), so the lock counts as the change: a committed use case that locks an account and then changes nothing in it (an idempotent no-op, or a lock taken for the lock order) still moves its version and `updated_at`. Optimistic preconditions for service callers (`If-Match` on `version`) are not offered in 1.0 |
 | Event order (I-8) | The outbox `account_version` values are assigned from the locked row inside the same transaction (TDD-06 §2) |
-| Lock order | Account row, then flow, then challenge, then session. Never the reverse, to avoid deadlocks |
+| Lock order | Account row, then flow, then challenge, then session. Never the reverse, to avoid deadlocks. A `sign_in_throttles` row comes right after its account row; a failed sign-in locks only its throttle row, through one conditional statement, and not the account, so it moves no `version` (as `factor_failures`, TDD-07 §3) |
 | Isolation | `READ COMMITTED` with explicit row locks and conditional updates. No reliance on `SERIALIZABLE` |
 
 ### 4.3 Migration rules

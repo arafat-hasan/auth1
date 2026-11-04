@@ -82,7 +82,7 @@ func router(t *testing.T, keys app.PublicKeys, m handlers.MetadataOptions) http.
 	if err != nil {
 		t.Fatal(err)
 	}
-	api, err := handlers.NewAPI(keys, m, nil)
+	api, err := handlers.NewAPI(keys, m, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestServerMetadata(t *testing.T) {
 
 func TestNewAPIRefusesBadIssuer(t *testing.T) {
 	t.Parallel()
-	if _, err := handlers.NewAPI(keySet{}, handlers.MetadataOptions{Issuer: "id.example.com"}, nil); err == nil {
+	if _, err := handlers.NewAPI(keySet{}, handlers.MetadataOptions{Issuer: "id.example.com"}, nil, nil); err == nil {
 		t.Error("NewAPI accepted a relative issuer")
 	}
 }

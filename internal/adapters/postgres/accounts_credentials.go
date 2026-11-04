@@ -86,6 +86,28 @@ func (r *Accounts) SetPassword(ctx context.Context, accountID uuid.UUID, hash, p
 	return nil
 }
 
+// RehashPassword implements app.Accounts.
+func (r *Accounts) RehashPassword(ctx context.Context, accountID uuid.UUID, oldHash, hash, pepperKID string) (bool, error) {
+	t := txFrom(ctx)
+	if t == nil {
+		return false, fmt.Errorf("rehash password: %w", ErrNoTransaction)
+	}
+	if t.account(accountID) == nil {
+		return false, fmt.Errorf("rehash password: %w", ErrLockOrder)
+	}
+	res, err := t.tx.ExecContext(ctx,
+		"UPDATE password_credentials SET hash = ?, pepper_kid = ? WHERE account_id = ? AND hash = ?",
+		hash, pepperKID, accountID, oldHash)
+	if err != nil {
+		return false, fmt.Errorf("rehash password: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rehash password: %w", err)
+	}
+	return n == 1, nil
+}
+
 // Activate implements app.Accounts. The password check is in the statement, so it holds against
 // a concurrent erasure too.
 func (r *Accounts) Activate(ctx context.Context, accountID uuid.UUID) error {

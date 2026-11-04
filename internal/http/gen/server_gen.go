@@ -1396,6 +1396,9 @@ type AccountId = openapi_types.UUID
 // Actor defines model for Actor.
 type Actor = string
 
+// DeviceCookie defines model for DeviceCookie.
+type DeviceCookie = string
+
 // FlowId defines model for FlowId.
 type FlowId = openapi_types.UUID
 
@@ -1404,6 +1407,9 @@ type IdempotencyKey = string
 
 // SessionId defines model for SessionId.
 type SessionId = openapi_types.UUID
+
+// UserAgent defines model for UserAgent.
+type UserAgent = string
 
 // BadRequest RFC 9457 problem details, with a stable code
 type BadRequest = Problem
@@ -1536,6 +1542,17 @@ type CreateInvitationParams struct {
 	// Auth1Actor The person on whose behalf the calling service acts, for example `staff:<id>`. Recorded
 	// verbatim in the audit and the event's actor. Information only, never authorisation.
 	Auth1Actor *Actor `json:"Auth1-Actor,omitempty"`
+}
+
+// SignInParams defines parameters for SignIn.
+type SignInParams struct {
+	// UserAgent Recorded on the session, in the audit and in the new-sign-in notice, cut to 512 bytes
+	UserAgent *UserAgent `json:"User-Agent,omitempty"`
+
+	// UnderscoreUnderscoreHostAuth1Dev The device cookie of a browser that has signed in before (TDD-07 §4). A valid one whose
+	// device has signed in to the account puts the sign-in in that device's throttle bucket. An
+	// invalid one counts as none. Ignored for clients whose refresh transport is the body.
+	UnderscoreUnderscoreHostAuth1Dev *DeviceCookie `form:"__Host-auth1_dev,omitempty" json:"__Host-auth1_dev,omitempty"`
 }
 
 // StartSupportIdentifierChangeJSONRequestBody defines body for StartSupportIdentifierChange for application/json ContentType.
@@ -1974,7 +1991,7 @@ type ServerInterface interface {
 	VerifyRegistrationCode(w http.ResponseWriter, r *http.Request, flowId FlowId)
 	// SignIn Sign in with an identifier and a password
 	// (POST /v1/sessions)
-	SignIn(w http.ResponseWriter, r *http.Request)
+	SignIn(w http.ResponseWriter, r *http.Request, params SignInParams)
 	// SignOut Sign out of the current session
 	// (DELETE /v1/sessions/current)
 	SignOut(w http.ResponseWriter, r *http.Request)
@@ -2253,7 +2270,7 @@ func (_ Unimplemented) VerifyRegistrationCode(w http.ResponseWriter, r *http.Req
 
 // SignIn Sign in with an identifier and a password
 // (POST /v1/sessions)
-func (_ Unimplemented) SignIn(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) SignIn(w http.ResponseWriter, r *http.Request, params SignInParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3499,8 +3516,50 @@ func (siw *ServerInterfaceWrapper) VerifyRegistrationCode(w http.ResponseWriter,
 // SignIn operation middleware
 func (siw *ServerInterfaceWrapper) SignIn(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SignInParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "User-Agent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("User-Agent")]; found {
+		var UserAgent UserAgent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "User-Agent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "User-Agent", valueList[0], &UserAgent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "User-Agent", Err: err})
+			return
+		}
+
+		params.UserAgent = &UserAgent
+
+	}
+
+	{
+		var cookie *http.Cookie
+
+		if cookie, err = r.Cookie("__Host-auth1_dev"); err == nil {
+			var value DeviceCookie
+			err = runtime.BindStyledParameterWithOptions("simple", "__Host-auth1_dev", cookie.Value, &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationCookie, Explode: true, Required: false, Type: "string", Format: ""})
+			if err != nil {
+				siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "__Host-auth1_dev", Err: err})
+				return
+			}
+			params.UnderscoreUnderscoreHostAuth1Dev = &value
+
+		}
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.SignIn(w, r)
+		siw.Handler.SignIn(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8198,7 +8257,8 @@ func (response VerifyRegistrationCode429ApplicationProblemPlusJSONResponse) Visi
 }
 
 type SignInRequestObject struct {
-	Body *SignInJSONRequestBody
+	Params SignInParams
+	Body   *SignInJSONRequestBody
 }
 
 type SignInResponseObject interface {
@@ -10644,8 +10704,10 @@ func (sh *strictHandler) VerifyRegistrationCode(w http.ResponseWriter, r *http.R
 }
 
 // SignIn operation middleware
-func (sh *strictHandler) SignIn(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) SignIn(w http.ResponseWriter, r *http.Request, params SignInParams) {
 	var request SignInRequestObject
+
+	request.Params = params
 
 	var body SignInJSONRequestBody
 	if err := runtime.BindJSONBody(r, &body); err != nil {
