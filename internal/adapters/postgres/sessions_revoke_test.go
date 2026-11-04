@@ -215,3 +215,42 @@ func TestSessionLockOrder(t *testing.T) {
 		t.Errorf("%d live sessions, want 1", len(got))
 	}
 }
+
+// TestRevokeUnknownReason checks that a revocation with a reason outside TDD-04 §2 is refused
+// before querying: a revoked session always says why.
+func TestRevokeUnknownReason(t *testing.T) {
+	t.Parallel()
+	e := sessionsDB(t)
+	s := e.start(t, "a")
+	for _, reason := range []session.RevokeReason{"", "expired"} {
+		calls := map[string]func(ctx context.Context) error{
+			"Revoke": func(ctx context.Context) error {
+				if _, err := e.sessions.LockSession(ctx, s.AccountID, s.ID); err != nil {
+					return err
+				}
+				_, err := e.sessions.Revoke(ctx, s.ID, reason)
+				return err
+			},
+			"RevokeAll": func(ctx context.Context) error {
+				if _, err := e.repo.GetForUpdate(ctx, s.AccountID); err != nil {
+					return err
+				}
+				_, err := e.sessions.RevokeAll(ctx, s.AccountID, reason)
+				return err
+			},
+			"RevokeAllExcept": func(ctx context.Context) error {
+				if _, err := e.repo.GetForUpdate(ctx, s.AccountID); err != nil {
+					return err
+				}
+				_, err := e.sessions.RevokeAllExcept(ctx, s.AccountID, e.ids.New(), reason)
+				return err
+			},
+		}
+		for name, call := range calls {
+			if err := e.uow.Do(t.Context(), call); !errors.Is(err, session.ErrRevokeReason) {
+				t.Errorf("%s(%q): %v, want ErrRevokeReason", name, reason, err)
+			}
+		}
+	}
+	e.checkRevoked(t, "a", "")
+}

@@ -277,6 +277,9 @@ func (r *Sessions) Revoke(ctx context.Context, id uuid.UUID, reason session.Revo
 	if err != nil {
 		return false, err
 	}
+	if !reason.Valid() {
+		return false, fmt.Errorf("revoke session: %w", session.ErrRevokeReason)
+	}
 	res, err := t.tx.ExecContext(ctx,
 		"UPDATE sessions SET revoked_at = now(), revoke_reason = ? WHERE id = ? AND revoked_at IS NULL", reason, id)
 	if err != nil {
@@ -308,6 +311,9 @@ func (r *Sessions) revokeAccount(ctx context.Context, op string, accountID, keep
 	}
 	if t.account(accountID) == nil {
 		return 0, fmt.Errorf("%s: %w", op, ErrLockOrder)
+	}
+	if !reason.Valid() {
+		return 0, fmt.Errorf("%s: %w", op, session.ErrRevokeReason)
 	}
 	res, err := t.tx.ExecContext(ctx, "UPDATE sessions s SET revoked_at = now(), revoke_reason = ? "+
 		"WHERE s.account_id = ? AND s.id <> ? AND "+sessionLive, reason, accountID, keep)

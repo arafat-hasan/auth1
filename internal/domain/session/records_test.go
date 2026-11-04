@@ -39,3 +39,18 @@ func TestTokenCurrent(t *testing.T) {
 		t.Error("a rotated token is current")
 	}
 }
+
+func TestRevokeReasonValid(t *testing.T) {
+	t.Parallel()
+
+	for _, r := range Reasons() {
+		if !r.Valid() {
+			t.Errorf("%q is not valid", r)
+		}
+	}
+	for _, r := range []RevokeReason{"", "expired", "Operator"} {
+		if r.Valid() {
+			t.Errorf("%q is valid", r)
+		}
+	}
+}

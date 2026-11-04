@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"slices"
 	"time"
 
@@ -87,11 +88,17 @@ var reasons = []RevokeReason{RevokeSignedOut, RevokeUserRevoked, RevokeRefreshRe
 // Reasons returns every revoke reason, in TDD-04 §2 order.
 func Reasons() []RevokeReason { return slices.Clone(reasons) }
 
+// ErrRevokeReason reports a revocation with a reason that is not one of Reasons().
+var ErrRevokeReason = errors.New("session: unknown revoke reason")
+
+// Valid reports whether r is one of Reasons().
+func (r RevokeReason) Valid() bool { return slices.Contains(reasons, r) }
+
 // ParseRevokeReason returns the reason named s, matched exactly. Any other value is
 // VALIDATION_FAILED on the field "reason".
 func ParseRevokeReason(s string) (RevokeReason, error) {
-	if slices.Contains(reasons, RevokeReason(s)) {
-		return RevokeReason(s), nil
+	if r := RevokeReason(s); r.Valid() {
+		return r, nil
 	}
 	return "", &domain.Error{
 		Code:   domain.CodeValidationFailed,
