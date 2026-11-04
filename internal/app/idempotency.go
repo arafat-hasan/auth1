@@ -1,11 +1,15 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"time"
+
+	"github.com/arafat-hasan/auth1/internal/domain"
 )
 
 // IdempotencyRequest is one request under an Idempotency-Key (TDD-05 §4): the caller the key
@@ -69,4 +73,71 @@ type IdempotencyKeys interface {
 	Claim(ctx context.Context, req IdempotencyRequest, ttl time.Duration) (*StoredIdempotency, error)
 	// Store records resp for the key Claim took.
 	Store(ctx context.Context, req IdempotencyRequest, resp IdempotentResponse) error
+}
+
+// MaxStoredBody bounds the body of a stored response (TDD-05 §4).
+const MaxStoredBody = 64 << 10
+
+// Idempotency runs idempotent operations (TDD-05 §4, I-9). A use case opts in by calling Run
+// around its transactional part, with the request the Idempotency-Key middleware built.
+type Idempotency struct {
+	uow  UnitOfWork
+	sp   Savepoints
+	keys IdempotencyKeys
+	ttl  time.Duration
+}
+
+// NewIdempotency returns the component; ttl is retention.idempotency_keys. It refuses a missing
+// dependency and a ttl not above 0.
+func NewIdempotency(uow UnitOfWork, sp Savepoints, keys IdempotencyKeys, ttl time.Duration) (*Idempotency, error) {
+	if uow == nil || sp == nil || keys == nil {
+		return nil, errors.New("idempotency: missing a dependency")
+	}
+	if ttl <= 0 {
+		return nil, errors.New("idempotency: the key lifetime must be above 0")
+	}
+	return &Idempotency{uow: uow, sp: sp, keys: keys, ttl: ttl}, nil
+}
+
+// Run runs op once per req's key, in one transaction, and returns the response to send. Call it
+// outside any transaction: the key is the transaction's first lock (TDD-01 §4.2).
+//   - A key already stored with another hash is IDEMPOTENCY_KEY_REUSED; with the same hash, Run
+//     returns the stored response without calling op or render.
+//   - Otherwise op runs under a savepoint, and render turns op's error (nil on success) into the
+//     response. A 2xx commits op's effects with the stored response. A 4xx rolls op back to the
+//     savepoint, so it leaves no effect, and commits the stored response only.
+//   - A 5xx, a 429, a status below 200 or a body over MaxStoredBody stores nothing: Run rolls
+//     everything back and returns op's error, or an error naming the fault, so the key stays free.
+func (i *Idempotency) Run(ctx context.Context, req IdempotencyRequest, op func(ctx context.Context) error,
+	render func(err error) IdempotentResponse) (IdempotentResponse, error) {
+	var resp IdempotentResponse
+	err := i.uow.Do(ctx, func(ctx context.Context) error {
+		stored, err := i.keys.Claim(ctx, req, i.ttl)
+		if err != nil {
+			return err
+		}
+		if stored != nil {
+			if !bytes.Equal(stored.Hash, req.Hash) {
+				return &domain.Error{Code: domain.CodeIdempotencyKeyReused, Detail: "The key was used for a different request."}
+			}
+			resp = stored.Response
+			return nil
+		}
+		opErr := i.sp.Savepoint(ctx, op)
+		resp = render(opErr)
+		switch {
+		case resp.Status >= 500 || resp.Status == 429 || resp.Status < 200:
+			if opErr != nil {
+				return opErr
+			}
+			return fmt.Errorf("idempotency: the operation rendered status %d", resp.Status)
+		case len(resp.Body) > MaxStoredBody:
+			return fmt.Errorf("idempotency: a response body of %d bytes is over %d", len(resp.Body), MaxStoredBody)
+		}
+		return i.keys.Store(ctx, req, resp)
+	})
+	if err != nil {
+		return IdempotentResponse{}, err
+	}
+	return resp, nil
 }
