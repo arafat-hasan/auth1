@@ -205,7 +205,7 @@ func TestI3ConcurrentRotation(t *testing.T) {
 	if seen.Current() || !seen.InGrace {
 		t.Errorf("the waiting FindToken saw current %v, in grace %v; want rotated, in grace", seen.Current(), seen.InGrace)
 	}
-	if !cmp.Equal(followed, rawToken("b")) {
+	if !bytes.Equal(followed, rawToken("b")) {
 		t.Error("the waiting transaction did not follow the token to the first's successor")
 	}
 	if rows := e.tokenRows(t); len(rows) != 2 {
@@ -263,8 +263,8 @@ func TestSessionsStoreNoPlaintext(t *testing.T) {
 	}
 	enc := rows[string(tokenHash("a"))].successorEnc
 	got, err := e.fc.Open(app.NewKeyPlace("refresh_tokens", "successor_enc", tokenHash("a")), enc)
-	if err != nil || !cmp.Equal(got, rawToken("b")) {
-		t.Errorf("successor at its place: %v, equal %v", err, cmp.Equal(got, rawToken("b")))
+	if err != nil || !bytes.Equal(got, rawToken("b")) {
+		t.Errorf("successor at its place: %v, equal %v", err, bytes.Equal(got, rawToken("b")))
 	}
 	if _, err := e.fc.Open(app.NewKeyPlace("refresh_tokens", "successor_enc", tokenHash("b")), enc); !errors.Is(err, app.ErrCiphertextInvalid) {
 		t.Errorf("successor at another row: %v, want ErrCiphertextInvalid", err)

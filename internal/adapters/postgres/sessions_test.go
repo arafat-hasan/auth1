@@ -49,8 +49,8 @@ func (e *sessionsEnv) sessionAccount(t *testing.T) uuid.UUID {
 }
 
 // rawToken is a distinct 32-byte refresh token for name, and tokenHash its stored hash.
-func rawToken(name string) []byte  { return crypto.SHA256([]byte("token:" + name)) }
-func tokenHash(name string) []byte { return crypto.SHA256(rawToken(name)) }
+func rawToken(name string) session.Secret { return crypto.SHA256([]byte("token:" + name)) }
+func tokenHash(name string) []byte        { return crypto.SHA256(rawToken(name)) }
 
 // newSession is a session of the account with an hour of idle time and a day in all.
 func (e *sessionsEnv) newSession(accountID uuid.UUID) session.NewSession {

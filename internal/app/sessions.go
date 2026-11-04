@@ -42,13 +42,13 @@ type Sessions interface {
 	// and touches the session: last_used_at now, idle expiry now + idleTTL capped at the absolute
 	// one. It returns false, changing nothing, when the token is not a current token of the
 	// session, so a token rotates at most once (I-3). The session must be locked.
-	Rotate(ctx context.Context, sessionID uuid.UUID, tokenHash, successorHash, successor []byte, idleTTL time.Duration) (bool, error)
+	Rotate(ctx context.Context, sessionID uuid.UUID, tokenHash, successorHash []byte, successor session.Secret, idleTTL time.Duration) (bool, error)
 	// Successor follows the successors of the session's token tokenHash, at most 3 steps, each
 	// from a token within the grace window, to a current token, and returns that token's raw
 	// value (TDD-04 §3 step 4). It returns false when the chain leaves the window, the session or
 	// the step limit, or ends at no current token: the presentation is reuse. It stores nothing.
 	// The session must be locked.
-	Successor(ctx context.Context, sessionID uuid.UUID, tokenHash []byte, grace time.Duration) ([]byte, bool, error)
+	Successor(ctx context.Context, sessionID uuid.UUID, tokenHash []byte, grace time.Duration) (session.Secret, bool, error)
 	// Revoke revokes the session for reason. It returns false, changing nothing, when the session
 	// was revoked already. The session must be locked.
 	Revoke(ctx context.Context, id uuid.UUID, reason session.RevokeReason) (bool, error)

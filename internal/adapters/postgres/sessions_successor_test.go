@@ -1,14 +1,13 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/google/go-cmp/cmp"
 
 	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
 	"github.com/arafat-hasan/auth1/internal/domain/session"
@@ -36,8 +35,8 @@ func (e *sessionsEnv) successor(t *testing.T, s session.NewSession, name string)
 func (e *sessionsEnv) checkSuccessor(t *testing.T, s session.NewSession, from, want string) {
 	t.Helper()
 	got, ok := e.successor(t, s, from)
-	if !ok || !cmp.Equal(got, rawToken(want)) {
-		t.Errorf("following %s: %v, value is %s's %v; want %s's", from, ok, want, cmp.Equal(got, rawToken(want)), want)
+	if !ok || !bytes.Equal(got, rawToken(want)) {
+		t.Errorf("following %s: %v, value is %s's %v; want %s's", from, ok, want, bytes.Equal(got, rawToken(want)), want)
 	}
 }
 

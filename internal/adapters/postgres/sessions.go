@@ -191,12 +191,12 @@ func lockedSession(ctx context.Context, op string, id uuid.UUID) (*txn, error) {
 // Rotate implements app.Sessions. One statement marks the token rotated only while it is current
 // (I-3), stores the successor from that update's result, so nothing is stored when it rotates
 // nothing, and touches the session.
-func (r *Sessions) Rotate(ctx context.Context, sessionID uuid.UUID, tokenHash, successorHash, successor []byte, idleTTL time.Duration) (bool, error) {
+func (r *Sessions) Rotate(ctx context.Context, sessionID uuid.UUID, tokenHash, successorHash []byte, successor session.Secret, idleTTL time.Duration) (bool, error) {
 	t, err := lockedSession(ctx, "rotate refresh token", sessionID)
 	if err != nil {
 		return false, err
 	}
-	enc, err := r.fc.Seal(app.NewKeyPlace(tableRefreshTokens, "successor_enc", tokenHash), successor)
+	enc, err := r.fc.Seal(app.NewKeyPlace(tableRefreshTokens, "successor_enc", tokenHash), []byte(successor))
 	if err != nil {
 		return false, fmt.Errorf("rotate refresh token: seal successor: %w", err)
 	}
@@ -229,7 +229,7 @@ const maxSuccessorSteps = 3
 
 // Successor implements app.Sessions. It reads one token per step and opens the value of the
 // current token it ends at from its predecessor's successor_enc.
-func (r *Sessions) Successor(ctx context.Context, sessionID uuid.UUID, tokenHash []byte, grace time.Duration) ([]byte, bool, error) {
+func (r *Sessions) Successor(ctx context.Context, sessionID uuid.UUID, tokenHash []byte, grace time.Duration) (session.Secret, bool, error) {
 	t, err := lockedSession(ctx, "follow refresh token", sessionID)
 	if err != nil {
 		return nil, false, err
@@ -261,7 +261,7 @@ func (r *Sessions) Successor(ctx context.Context, sessionID uuid.UUID, tokenHash
 			if err != nil {
 				return nil, false, fmt.Errorf("follow refresh token: open successor: %w", err)
 			}
-			return value, true, nil
+			return session.Secret(value), true, nil
 		case !inGrace || step == maxSuccessorSteps:
 			return nil, false, nil
 		case next == nil:
