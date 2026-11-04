@@ -89,14 +89,25 @@ it (TDD-07 §5).
 
 ### 2.5 Expiry
 
-A job runs every minute on the leader:
-1. Take up to 500 open flows with `expires_at < now()`, `FOR UPDATE SKIP LOCKED`.
-2. Close each one (`expired`) and close its challenges.
-3. For an expired `registration` or `invitation` whose account is still `pending`:
+A job runs every minute on the leader (TDD-08 §7), in batches of 500, until a batch comes back short:
+1. **Pending registrations and invitations.** Select, without locks, the open `registration` and
+   `invitation` flows with `expires_at < now()` whose account is still `pending`. For each, `[tx]` in
+   one transaction, in the lock order account, flow, challenges (G-5):
+   - lock the account; skip it unless it is still `pending`;
+   - lock the flow, re-checking that it is still open and past `expires_at`; skip it otherwise;
+   - close the flow (`expired`) and its challenges, erasing their secrets (I-5);
    - retire every current identifier (I-12);
    - set the account `deleted` (`status_reason` stays null; `registered_via` keeps the origin);
-   - emit `account.registration_expired`.
-4. Close challenges past `expires_at` in open flows, which erases their secrets.
+   - emit `account.registration_expired` (actor `system`, `flow-expiry`);
+   - audit `registration.expire`, with the flow id and kind.
+2. **Other flows.** Close the other open flows with `expires_at < now()` (`expired`) and their
+   challenges, in one statement over rows taken `FOR UPDATE SKIP LOCKED`. It takes no account lock,
+   so it never waits and never inverts the lock order; closing a flow is not a change to the
+   account, so no version moves and nothing is emitted or audited.
+3. **Challenges.** Close challenges past `expires_at` in open flows, `FOR UPDATE SKIP LOCKED`,
+   which erases their secrets.
+
+A flow that a request holds locked is skipped and taken at the next run.
 
 The purge job deletes those `pending`-then-`deleted` accounts and their rows 7 days later *(cfg)*.
 
