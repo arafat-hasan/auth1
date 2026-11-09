@@ -38,12 +38,17 @@ func openPool(t *testing.T, dsn string) *bun.DB {
 	return db
 }
 
-// holders returns the backend pids holding the job lock.
+// thisDB limits a pg_locks query to the test's own database: advisory locks are per database, but
+// pg_locks shows the whole server, where the package's other tests hold the same job locks.
+const thisDB = "database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+
+// holders returns the backend pids holding the job lock in the test's database.
 func holders(t *testing.T, su *bun.DB, lock int32) []int {
 	t.Helper()
 	rows, err := su.QueryContext(t.Context(), `
 		SELECT pid FROM pg_locks
-		WHERE locktype = 'advisory' AND classid = ? AND objid = ? AND objsubid = 2 AND granted`,
+		WHERE `+thisDB+` AND locktype = 'advisory' AND classid = ? AND objid = ? AND objsubid = 2
+		  AND granted`,
 		postgres.JobLockClass, lock)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +91,8 @@ func TestLeaderExclusive(t *testing.T) {
 	lead(t, a, 2, false)
 	var count int
 	if err := su.QueryRowContext(t.Context(), `
-		SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = ? AND objsubid = 2`,
+		SELECT count(*) FROM pg_locks
+		WHERE `+thisDB+` AND locktype = 'advisory' AND classid = ? AND objsubid = 2`,
 		postgres.JobLockClass).Scan(&count); err != nil || count != 2 {
 		t.Errorf("advisory job locks %d, %v; want 2", count, err)
 	}

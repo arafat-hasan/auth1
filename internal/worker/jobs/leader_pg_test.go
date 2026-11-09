@@ -58,12 +58,15 @@ func newReplica(t *testing.T, dsn string) *replica {
 	return r
 }
 
-// holder returns the backend pid holding the job lock 1.
+// holder returns the backend pid holding the job lock 1 in the test's database (pg_locks shows
+// every database on the server, and advisory locks are per database).
 func holder(t *testing.T, su *bun.DB) int {
 	t.Helper()
 	var pid int
 	if err := su.QueryRowContext(t.Context(), `
-		SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND classid = ? AND objid = 1 AND objsubid = 2 AND granted`,
+		SELECT pid FROM pg_locks
+		WHERE database = (SELECT oid FROM pg_database WHERE datname = current_database())
+		  AND locktype = 'advisory' AND classid = ? AND objid = 1 AND objsubid = 2 AND granted`,
 		postgres.JobLockClass).Scan(&pid); err != nil {
 		t.Fatal(err)
 	}
