@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -294,6 +297,29 @@ func TestNewIdempotencyRefuses(t *testing.T) {
 	} {
 		if _, err := f(); err == nil {
 			t.Errorf("%s: no error", name)
+		}
+	}
+}
+
+// TestIdempotencyTypesRedacted: the request never shows its key, and a response, alone or in a
+// stored row, never shows its body: not under fmt, slog's text or JSON handler, or json.Marshal.
+func TestIdempotencyTypesRedacted(t *testing.T) {
+	t.Parallel()
+	req := app.IdempotencyRequest{Caller: "client:support", Key: "key-sekrit", Hash: hashOf("a")}
+	resp := app.IdempotentResponse{Status: 201, ContentType: "application/json", Body: []byte(`{"name":"Ada sekrit"}`)}
+	stored := app.StoredIdempotency{Hash: hashOf("a"), Response: resp}
+	for name, v := range map[string]any{"request": req, "response": resp, "stored": stored} {
+		var text, js bytes.Buffer
+		slog.New(slog.NewTextHandler(&text, nil)).Info("x", "v", v)
+		slog.New(slog.NewJSONHandler(&js, nil)).Info("x", "v", v)
+		nested, err := json.Marshal(struct{ V any }{v})
+		if err != nil {
+			t.Fatalf("%s: json.Marshal: %v", name, err)
+		}
+		for _, out := range []string{fmt.Sprint(v), fmt.Sprintf("%#v", v), fmt.Sprintf("%+v", v), text.String(), js.String(), string(nested)} {
+			if strings.Contains(out, "sekrit") || strings.Contains(out, base64.StdEncoding.EncodeToString(resp.Body)[:8]) {
+				t.Errorf("%s: %q holds the key or body", name, out)
+			}
 		}
 	}
 }

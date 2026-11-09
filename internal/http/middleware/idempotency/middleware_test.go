@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -181,19 +180,6 @@ func TestMiddlewarePasses(t *testing.T) {
 				rec.Code, s.called, s.ok, s.body)
 		}
 	})
-}
-
-// TestRequestRedacted: the request prints and logs without its key.
-func TestRequestRedacted(t *testing.T) {
-	t.Parallel()
-	r := app.IdempotencyRequest{Caller: "client:support", Key: "key-sekrit", Hash: []byte{1}}
-	var buf bytes.Buffer
-	slog.New(slog.NewTextHandler(&buf, nil)).Info("x", "req", r)
-	for _, s := range []string{fmt.Sprint(r), fmt.Sprintf("%#v", r), fmt.Sprintf("%+v", r), buf.String()} {
-		if strings.Contains(s, "sekrit") {
-			t.Errorf("%q holds the key", s)
-		}
-	}
 }
 
 func TestNewRefuses(t *testing.T) {

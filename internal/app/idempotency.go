@@ -14,7 +14,7 @@ import (
 )
 
 // IdempotencyRequest is one request under an Idempotency-Key (TDD-05 §4): the caller the key
-// belongs to, the key and the request hash. It prints and logs without the key.
+// belongs to, the key and the request hash. It prints, logs and marshals without the key.
 type IdempotencyRequest struct {
 	// Caller is "<kind>:<id>" for a service caller, or "system" for auth1's own requests.
 	Caller string
@@ -35,9 +35,12 @@ func (r IdempotencyRequest) Format(s fmt.State, _ rune) { _, _ = io.WriteString(
 // LogValue implements slog.LogValuer with String.
 func (r IdempotencyRequest) LogValue() slog.Value { return slog.StringValue(r.String()) }
 
+// MarshalText implements encoding.TextMarshaler with String, so JSON never carries the key.
+func (r IdempotencyRequest) MarshalText() ([]byte, error) { return []byte(r.String()), nil }
+
 // IdempotentResponse is the answer an idempotent operation stores and replays (TDD-05 §4): the
-// HTTP status, the content type and the body, empty for none. It prints and logs without the
-// body, which may hold personal data.
+// HTTP status, the content type and the body, empty for none. It prints, logs and marshals
+// without the body, which may hold personal data.
 type IdempotentResponse struct {
 	Status      int
 	ContentType string
@@ -58,12 +61,30 @@ func (r IdempotentResponse) Format(s fmt.State, _ rune) { _, _ = io.WriteString(
 // LogValue implements slog.LogValuer with String.
 func (r IdempotentResponse) LogValue() slog.Value { return slog.StringValue(r.String()) }
 
+// MarshalText implements encoding.TextMarshaler with String, so JSON never carries the body.
+func (r IdempotentResponse) MarshalText() ([]byte, error) { return []byte(r.String()), nil }
+
 // StoredIdempotency is a key's committed row: the request hash it was claimed with and the
-// response stored for it.
+// response stored for it. It prints, logs and marshals as its response does, without the body.
 type StoredIdempotency struct {
 	Hash     []byte
 	Response IdempotentResponse
 }
+
+// String describes the row without its hash or body.
+func (s StoredIdempotency) String() string { return "StoredIdempotency{" + s.Response.String() + "}" }
+
+// GoString is String.
+func (s StoredIdempotency) GoString() string { return s.String() }
+
+// Format writes String for every verb.
+func (s StoredIdempotency) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, s.String()) }
+
+// LogValue implements slog.LogValuer with String.
+func (s StoredIdempotency) LogValue() slog.Value { return slog.StringValue(s.String()) }
+
+// MarshalText implements encoding.TextMarshaler with String.
+func (s StoredIdempotency) MarshalText() ([]byte, error) { return []byte(s.String()), nil }
 
 // IdempotencyKeys stores idempotency keys (TDD-05 §4, TDD-01 §4). Both methods run in the
 // caller's transaction.
