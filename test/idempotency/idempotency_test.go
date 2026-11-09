@@ -46,6 +46,7 @@ type env struct {
 	api     http.Handler
 	su      *bun.DB
 	account uuid.UUID
+	release chan struct{} // closing it lets a "block" request finish
 }
 
 // open opens a pool of maxConns on dsn.
@@ -121,7 +122,8 @@ func newEnv(t *testing.T) *env {
 	}
 
 	pw := problem.New(slog.New(slog.DiscardHandler))
-	h := &things{uow: uow, accounts: accounts, idem: idem, db: db, pw: pw}
+	release := make(chan struct{})
+	h := &things{uow: uow, accounts: accounts, idem: idem, db: db, pw: pw, release: release}
 	r := chi.NewRouter()
 	r.Use(middleware.BodyLimit(64<<10, pw))
 	mw, err := idempotency.New(idempotency.Options{
@@ -143,21 +145,22 @@ func newEnv(t *testing.T) *env {
 		}
 		r.ServeHTTP(w, req)
 	})
-	return &env{api: api, su: su, account: id}
+	return &env{api: api, su: su, account: id, release: release}
 }
 
 type callerKey struct{}
 
 // things is the test-only operation, a use case and its handler in one: it locks the account,
 // records an effect, and answers 201 with the effect's sequence number. The body's "fail" makes it
-// refuse with 409 after its writes ("conflict"), fail with an unexpected error ("crash"), or
-// answer a body over the stored limit ("big").
+// refuse with 409 after its writes ("conflict"), fail with an unexpected error ("crash"), answer
+// a body over the stored limit ("big"), or hold the key until release is closed ("block").
 type things struct {
 	uow      app.UnitOfWork
 	accounts *postgres.Accounts
 	idem     *app.Idempotency
 	db       *bun.DB
 	pw       *problem.Writer
+	release  chan struct{}
 }
 
 func (h *things) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +188,8 @@ func (h *things) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return &domain.Error{Code: domain.CodeStatusTransitionInvalid, Detail: "Not from this status."}
 			case "crash":
 				return errors.New("the operation crashed")
+			case "block":
+				<-h.release
 			}
 			return nil
 		})
@@ -218,12 +223,15 @@ type answer struct {
 	Body   string
 }
 
-// post sends POST /things/<name> as caller with key and body.
-func (e *env) post(t *testing.T, caller, name, key, body string) answer {
+// post sends POST /things/<name> as caller with key, body and the extra headers, name then value.
+func (e *env) post(t *testing.T, caller, name, key, body string, headers ...string) answer {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/things/"+name, strings.NewReader(body))
 	req.Header.Set(callerHeader, caller)
 	req.Header.Set("Idempotency-Key", key)
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Set(headers[i], headers[i+1])
+	}
 	rec := httptest.NewRecorder()
 	e.api.ServeHTTP(rec, req)
 	b, _ := io.ReadAll(rec.Result().Body)
@@ -390,10 +398,66 @@ func TestClientErrorStoredWithoutEffects(t *testing.T) {
 		t.Errorf("stored status %d, want 409", s)
 	}
 	retry := e.post(t, "support", "a", "k-1", e.body(`,"fail":"conflict"`))
-	if !bytes.Equal([]byte(retry.Body), []byte(first.Body)) || retry.Status != first.Status {
+	if !bytes.Equal([]byte(retry.Body), []byte(first.Body)) || retry.Status != first.Status ||
+		retry.Header.Get("Content-Type") != first.Header.Get("Content-Type") {
 		t.Errorf("retry %+v, want the stored 409 %+v", retry, first)
 	}
 	if n := e.effects(t, "k-1"); n != 0 {
 		t.Errorf("the replay ran the operation: %d effects", n)
 	}
+}
+
+// TestHeadersNotHashed: a retry that differs only in a header, Auth1-Actor here, replays.
+func TestHeadersNotHashed(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	first := e.post(t, "support", "a", "k-1", e.body(""), "Auth1-Actor", "staff:1")
+	retry := e.post(t, "support", "a", "k-1", e.body(""), "Auth1-Actor", "staff:2")
+	if first.Status != http.StatusCreated || retry.Status != first.Status || retry.Body != first.Body {
+		t.Errorf("retry with another actor %+v, want the first response %+v", retry, first)
+	}
+	if n := e.effects(t, "k-1"); n != 1 {
+		t.Errorf("%d effects, want 1", n)
+	}
+}
+
+// TestHeldKeyAnswers503: a request whose key another request holds past 5 s answers 503 with
+// Retry-After: 1 and stores nothing; once the holder finishes, a retry replays its response.
+func TestHeldKeyAnswers503(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	body := e.body(`,"fail":"block"`)
+	first := make(chan answer, 1)
+	go func() { first <- e.post(t, "support", "a", "k-1", body) }()
+	e.waitForEffectLock(t)
+
+	waited := e.post(t, "support", "a", "k-1", body)
+	if waited.Status != http.StatusServiceUnavailable || waited.Header.Get("Retry-After") != "1" || code(waited.Body) != "UNAVAILABLE" {
+		t.Errorf("a request on a held key: %+v, want 503 UNAVAILABLE with Retry-After: 1", waited)
+	}
+	close(e.release)
+	got := <-first
+	if got.Status != http.StatusCreated {
+		t.Fatalf("holder: %+v", got)
+	}
+	if retry := e.post(t, "support", "a", "k-1", body); retry.Status != got.Status || retry.Body != got.Body {
+		t.Errorf("retry %+v, want the holder's response %+v", retry, got)
+	}
+}
+
+// waitForEffectLock waits until a transaction has written to idem_effects, uncommitted: a "block"
+// request has claimed its key and is running its operation.
+func (e *env) waitForEffectLock(t *testing.T) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		var n int
+		if err := e.su.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+			WHERE c.relname = 'idem_effects'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			return
+		}
+	}
+	t.Fatal("the holder never ran its operation")
 }

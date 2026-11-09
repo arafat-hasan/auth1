@@ -13,8 +13,8 @@ import (
 )
 
 // TestServeIdempotencyKey: serve mounts the Idempotency-Key middleware after the caller check.
-// On a stub account-control operation a missing or malformed key is 422; a valid one passes to
-// the stub's 501.
+// On a stub account-control operation no credentials is 401 before the key is looked at; a
+// missing or malformed key is 422; a valid one passes to the stub's 501.
 func TestServeIdempotencyKey(t *testing.T) {
 	dsn := pgtest.DSN(t)
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -37,7 +37,7 @@ func TestServeIdempotencyKey(t *testing.T) {
 	api, _ := startServeConfig(t, path, append(dsnEnv(t, dsn), promoteAtOnce))
 	waitReady(t, api, http.StatusOK, "ok", 5*time.Second)
 
-	setStatus := func(key []string, body string) (int, string) {
+	setStatus := func(identity string, key []string, body string) (int, string) {
 		t.Helper()
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodPut,
 			api+"/v1/accounts/0190a0a0-0000-7000-8000-000000000001/status", strings.NewReader(body))
@@ -45,7 +45,9 @@ func TestServeIdempotencyKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/example/sa/reports")
+		if identity != "" {
+			req.Header.Set("X-Forwarded-Client-Cert", "URI="+identity)
+		}
 		for _, k := range key {
 			req.Header.Add("Idempotency-Key", k)
 		}
@@ -57,7 +59,14 @@ func TestServeIdempotencyKey(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(b)
 	}
-	const body = `{"status":"active"}`
+	const (
+		body     = `{"status":"active"}`
+		identity = "spiffe://cluster.local/ns/example/sa/reports"
+	)
+	// The caller is checked first: no credentials is 401, whatever the key.
+	if code, got := setStatus("", nil, body); code != http.StatusUnauthorized || !strings.Contains(got, `"TOKEN_INVALID"`) {
+		t.Errorf("no credentials and no key: %d %s, want 401 TOKEN_INVALID", code, got)
+	}
 	for _, tc := range []struct {
 		name string
 		key  []string
@@ -69,7 +78,7 @@ func TestServeIdempotencyKey(t *testing.T) {
 		{"a duplicate member", []string{"k-1"}, `{"status":"active","status":"active"}`, http.StatusUnprocessableEntity},
 		{"valid", []string{"k-1"}, body, http.StatusNotImplemented},
 	} {
-		code, got := setStatus(tc.key, tc.body)
+		code, got := setStatus(identity, tc.key, tc.body)
 		if code != tc.want {
 			t.Errorf("%s: %d %s, want %d", tc.name, code, got, tc.want)
 		}
