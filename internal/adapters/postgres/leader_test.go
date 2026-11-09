@@ -103,7 +103,7 @@ func TestLeaderHandOver(t *testing.T) {
 	if len(pids) != 1 {
 		t.Fatalf("holders %v", pids)
 	}
-	if _, err := su.ExecContext(t.Context(), "SELECT pg_terminate_backend(?)", pids[0]); err != nil {
+	if _, err := su.ExecContext(t.Context(), "SELECT pg_terminate_backend(?, 5000)", pids[0]); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := a.Lead(t.Context(), 1); ok || err == nil {
@@ -114,7 +114,8 @@ func TestLeaderHandOver(t *testing.T) {
 	lead(t, b, 1, true)
 }
 
-// TestLeaderClose checks that closing a leader releases its locks.
+// TestLeaderClose checks that closing a leader releases its locks, and that a closed leader leads
+// nothing again.
 func TestLeaderClose(t *testing.T) {
 	t.Parallel()
 	_, newLeader := leaderDB(t)
@@ -124,4 +125,30 @@ func TestLeaderClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	lead(t, b, 1, true)
+	lead(t, b, 2, true)
+	if err := b.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := b.Lead(t.Context(), 3); ok || err == nil {
+		t.Errorf("Lead after Close = %v, %v; want false with an error", ok, err)
+	}
+}
+
+// TestLeaderNilLogger checks that a leader built without a logger survives losing its connection.
+func TestLeaderNilLogger(t *testing.T) {
+	t.Parallel()
+	dsn := pgtest.DSN(t)
+	su := openPool(t, dsn)
+	l, err := postgres.NewLeader(dbConfig(dsnFile(t, pgtest.As(t, dsn, pgtest.App))), config.EnvDevelopment, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close(t.Context()) })
+	lead(t, l, 1, true)
+	if _, err := su.ExecContext(t.Context(), "SELECT pg_terminate_backend(?, 5000)", holders(t, su, 1)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := l.Lead(t.Context(), 1); ok {
+		t.Error("led on a dead connection")
+	}
 }

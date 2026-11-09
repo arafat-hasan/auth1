@@ -92,7 +92,7 @@ func TestTwoSchedulersOneLeader(t *testing.T) {
 		t.Fatalf("both ran: %d and %d runs", leader.runs.runs.Load(), n)
 	}
 
-	if _, err := su.ExecContext(t.Context(), "SELECT pg_terminate_backend(?)", holder(t, su)); err != nil {
+	if _, err := su.ExecContext(t.Context(), "SELECT pg_terminate_backend(?, 5000)", holder(t, su)); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 5*time.Second, "the follower takes over", func() bool { return follower.runs.runs.Load() > 0 })
