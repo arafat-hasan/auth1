@@ -16,6 +16,9 @@ import (
 // scopeExtension names the scope a service operation requires (TDD-05 §3).
 const scopeExtension = "x-auth1-scope"
 
+// idempotencyHeader is the header that makes an operation idempotent (TDD-05 §4).
+const idempotencyHeader = "Idempotency-Key"
+
 // serviceSchemes are the security schemes that make an operation a service operation.
 var serviceSchemes = []string{"workload", "serviceToken"}
 
@@ -26,11 +29,14 @@ type op struct {
 	Path     string   // the path template, which is also the Chi pattern
 	Scope    string   // x-auth1-scope; "" when there is none
 	Security []string // the names of the schemes the operation accepts, sorted
+	// Idempotent is true when the operation takes the Idempotency-Key header.
+	Idempotent bool
 }
 
 // operations reads the served operations of an OpenAPI document, sorted by id, and checks the
 // scope rules: a service operation has an x-auth1-scope, no other operation has one, and every
-// scope is one of the serviceToken scheme's declared scopes. An operation that takes parameters
+// scope is one of the serviceToken scheme's declared scopes. Only a service operation may take
+// Idempotency-Key, because a key belongs to its caller. An operation that takes parameters
 // or a body must also declare the 422 that a binding failure answers. Webhooks are left out: auth1 sends
 // them, it does not serve them.
 func operations(spec []byte) ([]op, error) {
@@ -77,6 +83,11 @@ func operations(spec []byte) ([]op, error) {
 			if n, ok := o.Extensions.Get(scopeExtension); ok && n != nil {
 				cur.Scope = n.Value
 			}
+			for _, p := range slices.Concat(item.Parameters, o.Parameters) {
+				if p != nil && p.In == "header" && p.Name == idempotencyHeader {
+					cur.Idempotent = true
+				}
+			}
 
 			// gen.Routes answers a parameter or body it cannot bind with 422, so the operation must
 			// declare it.
@@ -93,6 +104,9 @@ func operations(spec []byte) ([]op, error) {
 				errs = append(errs, fmt.Errorf("%s: %s on an operation that is not a service operation", cur.ID, scopeExtension))
 			case cur.Scope != "" && !declared[cur.Scope]:
 				errs = append(errs, fmt.Errorf("%s: %s %q is not a scope of the serviceToken scheme", cur.ID, scopeExtension, cur.Scope))
+			}
+			if cur.Idempotent && !service {
+				errs = append(errs, fmt.Errorf("%s: %s on an operation that is not a service operation", cur.ID, idempotencyHeader))
 			}
 			ops = append(ops, cur)
 		}
@@ -114,12 +128,14 @@ type Operation struct {
 	Path     string   // the path template, which is also the Chi pattern below http.base_path
 	Scope    string   // x-auth1-scope: the scope a service caller needs; "" for other operations
 	Security []string // the security schemes the operation accepts; empty for a public one
+	// Idempotent is true for an operation taking the Idempotency-Key header (TDD-05 §4).
+	Idempotent bool
 }
 
 // Operations maps each served operation's id to its route metadata.
 var Operations = map[string]Operation{
 {{- range .}}
-	{{printf "%q" .ID}}: {Method: {{printf "%q" .Method}}, Path: {{printf "%q" .Path}}, Scope: {{printf "%q" .Scope}}, Security: []string{ {{- range $i, $s := .Security}}{{if $i}}, {{end}}{{printf "%q" $s}}{{end -}} }},
+	{{printf "%q" .ID}}: {Method: {{printf "%q" .Method}}, Path: {{printf "%q" .Path}}, Scope: {{printf "%q" .Scope}}, Security: []string{ {{- range $i, $s := .Security}}{{if $i}}, {{end}}{{printf "%q" $s}}{{end -}} }{{if .Idempotent}}, Idempotent: true{{end}}},
 {{- end}}
 }
 `))

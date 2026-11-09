@@ -72,10 +72,10 @@ text, and the policy is validated at start-up against the registry.
 |---|---|
 | Algorithm | AES-256-GCM, 96-bit random nonce |
 | Format | `0x01` (format version) ‖ key id (2 bytes, big-endian) ‖ nonce (12) ‖ ciphertext ‖ tag (16) |
-| Associated data | `auth1|<table>|<column>|<row id>`. The row id is the row's primary key: its uuid in canonical lower-case hyphenated form, or, for `refresh_tokens` (keyed by `token_hash`), the lower-case hex of `token_hash`. A ciphertext moved to another row or column fails to open |
+| Associated data | `auth1|<table>|<column>|<row id>`. The row id is the row's primary key: its uuid in canonical lower-case hyphenated form, or, for `refresh_tokens` (keyed by `token_hash`), the lower-case hex of `token_hash`, and for `idempotency_keys` (keyed by `caller` and `key`), the lower-case hex of `sha256(caller ‖ 0x00 ‖ key)`. A ciphertext moved to another row or column fails to open |
 | Keyring | File `encryption.keyring_file`: a YAML list `keys:` of `{id (1…65535, unique), key (base64, 32 bytes), state: active|decrypt}`, as the signing keyring (TDD-04 §5.1). Exactly one `active` |
 | Rotation | 1) add the key as `decrypt` to every replica; 2) make it `active` (old one `decrypt`); 3) `auth1 crypto reencrypt` rewrites every field under the new key in batches; 4) remove the old key |
-| Encrypted columns | `accounts.display_name`, `identifiers.value`, `challenges.secret`, `challenges.target_value`, `flows.pending_secret`, `totp_factors.secret`, `refresh_tokens.successor_enc` |
+| Encrypted columns | `accounts.display_name`, `identifiers.value`, `challenges.secret`, `challenges.target_value`, `flows.pending_secret`, `totp_factors.secret`, `refresh_tokens.successor_enc`, `idempotency_keys.response` |
 
 *(guideline)* One `FieldCrypto` port with `Seal(place Place, plaintext)` and `Open(place, ciphertext)`, where
 `Place` carries the table, column and row id. Repositories call it; the domain never sees ciphertext.
@@ -297,7 +297,7 @@ CREATE TABLE idempotency_keys (
     key           text NOT NULL,
     request_hash  bytea NOT NULL,
     status        integer,                                      -- null while in flight
-    response      jsonb,
+    response      bytea,                                        -- enc: content type and body (TDD-05 §4)
     created_at    timestamptz NOT NULL,
     PRIMARY KEY (caller, key)
 );
@@ -369,7 +369,7 @@ What a failure was, and other non-secret facts, go in `details`.
 |---|---|
 | Changes to one account apply in order (I-10) | Every use case that changes an account first takes `SELECT … FOR UPDATE` on its row, and finishes with `UPDATE accounts SET version = version + n, updated_at = now() WHERE id = $1`. The unit of work runs that update at commit for every account locked in the transaction (TDD-06 §2), so the lock counts as the change: a committed use case that locks an account and then changes nothing in it (an idempotent no-op, or a lock taken for the lock order) still moves its version and `updated_at`. Optimistic preconditions for service callers (`If-Match` on `version`) are not offered in 1.0 |
 | Event order (I-8) | The outbox `account_version` values are assigned from the locked row inside the same transaction (TDD-06 §2) |
-| Lock order | Account row, then flow, then challenge, then session. Never the reverse, to avoid deadlocks. A `sign_in_throttles` row comes right after its account row; a failed sign-in locks only its throttle row (an upsert, then its delay, in one transaction) and not the account, so, like `factor_failures` (TDD-07 §3), it moves no `version` |
+| Lock order | Idempotency key, then account row, then flow, then challenge, then session. Never the reverse, to avoid deadlocks. A `sign_in_throttles` row comes right after its account row; a failed sign-in locks only its throttle row (an upsert, then its delay, in one transaction) and not the account, so, like `factor_failures` (TDD-07 §3), it moves no `version` |
 | Isolation | `READ COMMITTED` with explicit row locks and conditional updates. No reliance on `SERIALIZABLE` |
 
 ### 4.3 Migration rules

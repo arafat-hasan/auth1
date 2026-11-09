@@ -30,6 +30,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/http/health"
 	"github.com/arafat-hasan/auth1/internal/http/middleware"
 	"github.com/arafat-hasan/auth1/internal/http/middleware/caller"
+	"github.com/arafat-hasan/auth1/internal/http/middleware/idempotency"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 	"github.com/arafat-hasan/auth1/internal/http/server"
 	"github.com/arafat-hasan/auth1/internal/telemetry"
@@ -60,6 +61,8 @@ type serveDeps struct {
 	telemetryTimeout time.Duration
 	// resolver resolves delivery references for the adapter; nil until WP-43 builds it.
 	resolver app.DeliveryResolver
+	// jobEvery replaces every job's interval when above 0.
+	jobEvery time.Duration
 }
 
 func defaultServeDeps() serveDeps {
@@ -208,6 +211,16 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
+	scheduler, leader, err := newJobs(jobParts{cfg: cfg, db: db, keys: keys, metrics: metrics,
+		tracing: tel.TracerProvider(), logger: logger, every: deps.jobEvery})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := leader.Close(context.WithoutCancel(ctx)); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
+	}()
 	parts := registrationParts{
 		cfg: cfg, db: db, keys: keys, registry: registry, types: types, policy: policy,
 		hasher: hasher, limits: limits, tracing: tel.TracerProvider(), logger: logger,
@@ -255,6 +268,10 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
+	idempotent, err := idempotency.New(idempotency.Options{Match: gen.IdempotentRoute(cfg.HTTP.BasePath), Problems: pw})
+	if err != nil {
+		return err
+	}
 	router := server.NewRouter(server.Options{
 		BasePath:        cfg.HTTP.BasePath,
 		Logger:          logger,
@@ -268,6 +285,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		APIMiddleware: []func(http.Handler) http.Handler{
 			middleware.RateLimit(limits, pw, gen.ServiceRoute(cfg.HTTP.BasePath)),
 			services.Middleware,
+			idempotent,
 		},
 		Dev: devRoutes,
 	})
@@ -282,6 +300,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	g.Go(func() error { return kr.Run(gctx) })
 	g.Go(func() error { return listener.Run(gctx) })
 	g.Go(func() error { return deliveries.Run(gctx) })
+	g.Go(func() error { return scheduler.Run(gctx) })
 	err = server.Run(ctx, logger, []server.Listener{
 		{Name: "http", Listener: listeners[0], Handler: router},
 		{Name: "metrics", Listener: listeners[1], Handler: tel.MetricsHandler()},

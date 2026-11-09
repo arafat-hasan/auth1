@@ -274,6 +274,29 @@ refuses a `delivery.adapter` with no adapter yet, so until WP-44 run it with
 `AUTH1_DELIVERY_ADAPTER=capture` (the serve tests use `serveEnv`); `serveDeps.resolver` replaces
 `unavailableResolver` in tests until WP-43.
 
+Jobs (TDD-08 §7, TDD-02 §2.5): `internal/worker/jobs.Scheduler` (`jobs.New(Options)`, `Run`) runs
+each `jobs.Job{Name, Lock, Every, Run}` (`Lock` above 0) only on the instance that leads its lock:
+at start, then every `Every` (0: once, when first leading, retried at each check until a run
+succeeds, for bootstrap); a run is never overlapped by its own next one (missed ticks drop), is
+cancelled when `Lead`, re-checked every `CheckEvery` (5 s) and bounded by it, says false or errs,
+and records `auth1_job_last_success_timestamp{job=<Name>}` when it returns nil with the lead held.
+The elector is `postgres.Leader`: session-level `pg_try_advisory_lock(postgres.JobLockClass,
+<Lock>)` on one pgx connection of its own per instance (so `max_conns` + 3 connections); a failed
+query (lost connection, ended ctx) or a held lock gone drops the connection and every lock, `Lead`
+returns false with the error and reconnects at its next call; after `Close` it leads nothing. Adding a job: a
+`Run func(ctx) error` that stays correct if two leaders briefly overlap (re-check under row locks,
+`SKIP LOCKED`), a new lock id in `cmd/auth1/jobs.go` (ids are never reused; 2–6 are reserved there),
+and its entry in `newJobs`. `serveDeps.jobEvery` replaces every periodic job's interval in serve
+tests (`fastJobs`, `startRegServerWith`); by default flow expiry runs at start and then every minute. The first job is `app.FlowExpiry` (`app.FlowExpiryJob = "flow-expiry"`, its metric
+label and its system actor id): per pending account whose `registration` or `invitation` flow
+expired (`app.ExpiringFlows.ExpiredPending`, unlocked), one transaction locks the account, then the
+flow (`LockExpired`), `Cancel`s it `expired`, applies `account.Expire` (identifiers retired, I-12;
+`deleted`; nothing else erased), emits `account.registration_expired` and audits
+`registration.expire`; then `CloseExpired` and `CloseExpiredChallenges` close the other expired
+flows and challenges in `SKIP LOCKED` statements without the account lock, moving no version. A
+store failure (UNAVAILABLE, ended ctx) ends the pass; a skip is exactly `errSkip`, so a rollback
+failure joined to it is reported.
+
 Rate limits (TDD-07 §1, §2, §8): `app.RateLimiter` (`Hit`) is the sliding-window port and
 `app.RateLimits` the helper use cases call: `CheckIP(ctx, rule, ip)` (keyed by `app.IPKey`: IPv4
 whole, IPv6 by /64) or `Check(ctx, rule, key)` for L-15's client id; it returns a `RATE_LIMITED`
@@ -361,3 +384,29 @@ nothing terminates TLS yet. Service tokens go through `caller.TokenVerifier`, ni
 `loadServiceAuth` in `cmd/auth1/serviceauth.go` maps the config for `config check` and `serve`,
 refusing a sidecar entry that is not a CIDR and an empty or repeated caller identity; `serve` warns
 for a sidecar range beyond loopback, for service tokens with no verifier and for `peer_cert`.
+
+Idempotency (TDD-05 §4, I-9): `gen.Operation.Idempotent` marks the operations taking
+`Idempotency-Key` (routegen refuses it on one that is not a service operation), and
+`gen.IdempotentRoute` matches them. `internal/http/middleware/idempotency.New` (refusing a
+missing `Match` or `Problems`) is in `server.Options.APIMiddleware` after `caller.Resolver`: it
+checks the key (one value, 1–255 of `\x21-\x7E`, else `422`), hashes `method ‖ 0x00 ‖ escaped path ‖ 0x00 ‖ JCS(body)` (`RequestHash`,
+`github.com/gowebpki/jcs`; a body that is not I-JSON is `422`) and keeps an
+`app.IdempotencyRequest` (caller `<kind>:<id>`; it prints, logs and marshals without the key) for
+`idempotency.From`; it opens no transaction. A use case opts in by calling
+`app.Idempotency.Run(ctx, req, op, render)` outside any transaction, around its transactional part
+(its own `Do` inside `op` joins). `Run` refuses a request without caller, key or hash; `Claim`
+must be the transaction's first lock (else `ErrLockOrder`) and waits for a concurrent holder at
+most 5 s (then `503`); a stored row replays or is `IDEMPOTENCY_KEY_REUSED`. Otherwise `op` runs
+under `app.Savepoints` (`postgres.UnitOfWork.Savepoint`, which restores the lock and event records
+when `op` errs, so a refused operation moves no version; a failed rollback matches
+`app.ErrSavepointRollback`) and `render(opErr)` returns the response and an error. A 2xx for a
+success commits with `op`'s effects, a 4xx for a refusal commits only the response; anything else
+(5xx, 429, a status not matching `op`'s result, a body over `app.MaxStoredBody`, a render error)
+stores nothing. Handlers render with `idempotency.Render` (a strict response's `Visit…` method;
+only status, `Content-Type` and body are kept) or `RenderError` (which neither writes nor logs an
+unexpected error), always send what `Run` returns with `idempotency.Write` (strict handlers return
+an `idempotency.Response` wrapped in a one-method type for the operation), and write `Run`'s error
+with the problem writer. `postgres.IdempotencyKeys` seals `{content_type, body}` in `response`
+(`bytea`, migration `000004`); rows older than `retention.idempotency_keys` are claimed again.
+Refusal audits stay after `Run`, outside the transaction. `test/idempotency` runs it end to end
+behind a test-only handler (T-26).

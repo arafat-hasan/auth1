@@ -83,8 +83,21 @@ func startRegServer(t *testing.T, environ ...string) regServer {
 	return startRegServerWith(t, nil, environ...)
 }
 
-// startRegServerWith is startRegServer with edit applied to the configuration as well.
-func startRegServerWith(t *testing.T, edit func(t *testing.T, cfg string) string, environ ...string) regServer {
+// startRegServerWith is startRegServer with opts adjusting testDeps.
+func startRegServerWith(t *testing.T, opts []func(*serveDeps), environ ...string) regServer {
+	t.Helper()
+	return startRegServerFull(t, nil, opts, environ...)
+}
+
+// startRegServerEdit is startRegServer with edit applied to the configuration as well.
+func startRegServerEdit(t *testing.T, edit func(t *testing.T, cfg string) string, environ ...string) regServer {
+	t.Helper()
+	return startRegServerFull(t, edit, nil, environ...)
+}
+
+// startRegServerFull is startRegServer with edit applied to the configuration and opts adjusting
+// testDeps; either may be nil.
+func startRegServerFull(t *testing.T, edit func(t *testing.T, cfg string) string, opts []func(*serveDeps), environ ...string) regServer {
 	t.Helper()
 	dsn := pgtest.DSN(t)
 	db, err := sql.Open("pgx", dsn)
@@ -120,7 +133,7 @@ func startRegServerWith(t *testing.T, edit func(t *testing.T, cfg string) string
 	fc := crypto.NewFieldCrypto(keys)
 	resolver := dbResolver{db: db, fc: fc}
 	api, _ := startServeConfig(t, path, append(append(dsnEnv(t, dsn), promoteAtOnce), environ...),
-		func(d *serveDeps) { d.resolver = resolver })
+		append([]func(*serveDeps){func(d *serveDeps) { d.resolver = resolver }}, opts...)...)
 	return regServer{api: api, db: db, fc: fc}
 }
 
@@ -519,21 +532,29 @@ func TestCooldownAcrossAccounts(t *testing.T) {
 
 // TestResendRefusedRollsBack: a resend that would replace an expired code, but whose send the
 // address's hour budget refuses, changes nothing: the old challenge is not closed and no new one
-// is opened.
+// is opened. The code expires by back-dating its row, not by waiting, so the first resend always
+// finds it live, however slow the run.
 func TestResendRefusedRollsBack(t *testing.T) {
-	s := startRegServer(t, "AUTH1_OTP_RESEND_AFTER=1s", "AUTH1_OTP_MAX_SENDS_PER_HOUR=2", "AUTH1_OTP_TTL=3s")
+	s := startRegServer(t, "AUTH1_OTP_RESEND_AFTER=1s", "AUTH1_OTP_MAX_SENDS_PER_HOUR=2")
 	flowID, handle := s.register(t, `{"email":"budget@example.org","phone":"`+regPhone+`"}`)
-	time.Sleep(1100 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond)                                   // past otp.resend_after: waiting longer changes nothing
 	s.resend(t, flowID, handle, "phone").want(t, http.StatusAccepted, "") // the second send: the budget is used
-	time.Sleep(3 * time.Second)                                           // the code has expired
+
+	var id string
+	if err := s.db.QueryRowContext(t.Context(), `UPDATE challenges SET expires_at = now() - interval '1 second'
+		WHERE method = 'sms_otp' AND closed_at IS NULL RETURNING id`).Scan(&id); err != nil {
+		t.Fatalf("expire the code: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond) // past the short window too, so only the hour budget refuses
 	s.resend(t, flowID, handle, "phone").want(t, http.StatusTooManyRequests, "RATE_LIMITED")
 
-	var challenges, open int
-	if err := s.db.QueryRowContext(t.Context(), `SELECT count(*), count(*) FILTER (WHERE closed_at IS NULL)
-		FROM challenges WHERE method = 'sms_otp'`).Scan(&challenges, &open); err != nil {
+	var challenges, open, sends int
+	var only string
+	if err := s.db.QueryRowContext(t.Context(), `SELECT count(*), count(*) FILTER (WHERE closed_at IS NULL),
+		max(sends), max(id::text) FROM challenges WHERE method = 'sms_otp'`).Scan(&challenges, &open, &sends, &only); err != nil {
 		t.Fatal(err)
 	}
-	if challenges != 1 || open != 1 {
-		t.Errorf("%d phone challenges, %d open; want the one, still open", challenges, open)
+	if challenges != 1 || open != 1 || only != id || sends != 2 {
+		t.Errorf("%d phone challenges, %d open, sends %d; want the one (%s), still open, sent twice", challenges, open, sends, id)
 	}
 }

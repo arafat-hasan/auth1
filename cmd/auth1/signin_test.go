@@ -57,7 +57,7 @@ type signInServer struct {
 func startSignInServer(t *testing.T, environ ...string) signInServer {
 	t.Helper()
 	rds := redistest.NewServer(t)
-	s := startRegServerWith(t, withSecureClient, append([]string{
+	s := startRegServerEdit(t, withSecureClient, append([]string{
 		"AUTH1_REDIS_ADDRESS=" + rds.Addr(), "AUTH1_DELIVERY_NOTICES_NEW_SIGN_IN=true",
 		"AUTH1_RATE_LIMITS_REGISTRATION_IP_LIMIT=100", "AUTH1_RATE_LIMITS_SIGN_IN_IP_LIMIT=1000",
 		"AUTH1_RATE_LIMITS_SEND_IP_LIMIT=100", "AUTH1_RATE_LIMITS_VERIFY_IP_LIMIT=100",
