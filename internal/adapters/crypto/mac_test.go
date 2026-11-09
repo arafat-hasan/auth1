@@ -141,3 +141,27 @@ func TestSHA256(t *testing.T) {
 		t.Errorf("SHA256(abc) = %x, want %s", got, want)
 	}
 }
+
+var _ app.DeviceMAC = (*crypto.DeviceMAC)(nil)
+
+func TestDeviceMAC(t *testing.T) {
+	t.Parallel()
+	m1, err := crypto.NewDeviceMAC(mustKey(t, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := crypto.NewDeviceMAC(mustKey(t, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := []byte("device id and time")
+	if got := m1.Device(msg); len(got) != 32 || !bytes.Equal(got, m1.Device(msg)) {
+		t.Errorf("Device = %x, want 32 stable bytes", got)
+	}
+	if bytes.Equal(m1.Device(msg), m2.Device(msg)) {
+		t.Error("two keys give the same MAC")
+	}
+	if m, err := crypto.NewDeviceMAC(crypto.Key{}); err == nil || m != nil {
+		t.Errorf("NewDeviceMAC(zero key) = %v, %v; want an error", m, err)
+	}
+}

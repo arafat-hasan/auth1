@@ -72,7 +72,8 @@ func (r dbResolver) Resolve(ctx context.Context, _ string, refs []string) (map[s
 // regServer is serve with the capture adapter on a fresh database, with phones under +44 allowed.
 type regServer struct {
 	api string
-	db  *sql.DB // superuser
+	db  *sql.DB             // superuser
+	fc  *crypto.FieldCrypto // the example's field keyring, to seal rows a test writes
 }
 
 // startRegServer starts serve on the example configuration with phones allowed for +44, and the
@@ -84,6 +85,19 @@ func startRegServer(t *testing.T, environ ...string) regServer {
 
 // startRegServerWith is startRegServer with opts adjusting testDeps.
 func startRegServerWith(t *testing.T, opts []func(*serveDeps), environ ...string) regServer {
+	t.Helper()
+	return startRegServerFull(t, nil, opts, environ...)
+}
+
+// startRegServerEdit is startRegServer with edit applied to the configuration as well.
+func startRegServerEdit(t *testing.T, edit func(t *testing.T, cfg string) string, environ ...string) regServer {
+	t.Helper()
+	return startRegServerFull(t, edit, nil, environ...)
+}
+
+// startRegServerFull is startRegServer with edit applied to the configuration and opts adjusting
+// testDeps; either may be nil.
+func startRegServerFull(t *testing.T, edit func(t *testing.T, cfg string) string, opts []func(*serveDeps), environ ...string) regServer {
 	t.Helper()
 	dsn := pgtest.DSN(t)
 	db, err := sql.Open("pgx", dsn)
@@ -105,6 +119,9 @@ func startRegServerWith(t *testing.T, opts []func(*serveDeps), environ ...string
 	if cfg == string(example) {
 		t.Fatal("the example's phone policy line changed; update the test")
 	}
+	if edit != nil {
+		cfg = edit(t, cfg)
+	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil { //nolint:gosec // a test file in a temporary directory
 		t.Fatal(err)
@@ -113,10 +130,11 @@ func startRegServerWith(t *testing.T, opts []func(*serveDeps), environ ...string
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := dbResolver{db: db, fc: crypto.NewFieldCrypto(keys)}
+	fc := crypto.NewFieldCrypto(keys)
+	resolver := dbResolver{db: db, fc: fc}
 	api, _ := startServeConfig(t, path, append(append(dsnEnv(t, dsn), promoteAtOnce), environ...),
 		append([]func(*serveDeps){func(d *serveDeps) { d.resolver = resolver }}, opts...)...)
-	return regServer{api: api, db: db}
+	return regServer{api: api, db: db, fc: fc}
 }
 
 // answer is a served response, its body read.

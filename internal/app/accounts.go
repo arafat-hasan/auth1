@@ -72,6 +72,11 @@ type Accounts interface {
 	PasswordCredential(ctx context.Context, accountID uuid.UUID) (account.PasswordCredential, error)
 	// SetPassword stores or replaces the account's password, changed now. pepperKID is opaque.
 	SetPassword(ctx context.Context, accountID uuid.UUID, hash, pepperKID string) error
+	// RehashPassword replaces the account's password hash oldHash with hash under pepperKID, the
+	// same password hashed afresh (TDD-03 §1.4 step 3). changed_at is kept: a rehash is not a
+	// password change. It reports false, changing nothing, when the stored hash is no longer
+	// oldHash. The account must be locked.
+	RehashPassword(ctx context.Context, accountID uuid.UUID, oldHash, hash, pepperKID string) (bool, error)
 	// Activate moves a pending account that has a password to active (registration and
 	// invitation completion). Any other account is an error: activation never breaks I-17.
 	Activate(ctx context.Context, accountID uuid.UUID) error

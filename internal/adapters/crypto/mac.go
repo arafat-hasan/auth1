@@ -45,3 +45,25 @@ func (m *MAC) sum(prefix string, id uuid.UUID, code []byte) []byte {
 	h.Write(code)
 	return h.Sum(nil)
 }
+
+// DeviceMAC computes the device cookie's MAC under its own key (TDD-07 §4):
+// HMAC-SHA256(device_key, msg). It implements app.DeviceMAC and is safe for concurrent use.
+type DeviceMAC struct {
+	key Key
+}
+
+// NewDeviceMAC returns the MAC under key (encryption.device_cookie_key_file). The zero Key is
+// refused.
+func NewDeviceMAC(key Key) (*DeviceMAC, error) {
+	if key.isZero() {
+		return nil, fmt.Errorf("device MAC: %w", errKeyZero)
+	}
+	return &DeviceMAC{key: key}, nil
+}
+
+// Device returns HMAC-SHA256(key, msg).
+func (m *DeviceMAC) Device(msg []byte) []byte {
+	h := hmac.New(sha256.New, m.key.b()[:])
+	h.Write(msg)
+	return h.Sum(nil)
+}

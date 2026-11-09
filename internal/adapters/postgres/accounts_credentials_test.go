@@ -2,11 +2,13 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 
+	"github.com/arafat-hasan/auth1/internal/adapters/postgres"
 	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/domain/account"
 )
@@ -124,5 +126,82 @@ func TestActivateWithoutPasswordRefused(t *testing.T) {
 	}
 	if got.Status != account.StatusPending {
 		t.Errorf("status = %s, want pending", got.Status)
+	}
+}
+
+// rehash runs RehashPassword from old to the new hash under the account lock.
+func (e *accountsEnv) rehash(t *testing.T, na account.NewAccount, old, hash string) bool {
+	t.Helper()
+	var ok bool
+	e.do(t, func(ctx context.Context) error {
+		if _, err := e.repo.GetForUpdate(ctx, na.ID); err != nil {
+			return err
+		}
+		var err error
+		ok, err = e.repo.RehashPassword(ctx, na.ID, old, hash, "4")
+		return err
+	})
+	return ok
+}
+
+// TestRehashPasswordKeepsChangedAt checks a rehash is not a password change (TDD-03 §1.4).
+func TestRehashPasswordKeepsChangedAt(t *testing.T) {
+	t.Parallel()
+	e := accountsDB(t)
+	na := e.newAccount("", "ada@example.org")
+	e.create(t, na)
+	e.exec(t, "UPDATE password_credentials SET changed_at = now() - interval '1 day' WHERE account_id = ?", na.ID)
+	before, err := e.repo.PasswordCredential(t.Context(), na.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !e.rehash(t, na, na.Password.Hash, "$argon2id$v=19$m=65536,t=3,p=1$bmV3$bmV3") {
+		t.Fatal("RehashPassword = false, want true")
+	}
+	got, err := e.repo.PasswordCredential(t.Context(), na.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Hash != "$argon2id$v=19$m=65536,t=3,p=1$bmV3$bmV3" || got.PepperKID != "4" {
+		t.Errorf("credential after rehash = %s / %s", got.Hash, got.PepperKID)
+	}
+	if !got.ChangedAt.Equal(before.ChangedAt) {
+		t.Errorf("changed_at moved from %v to %v", before.ChangedAt, got.ChangedAt)
+	}
+}
+
+// TestRehashPasswordLosesToChange checks a rehash computed from a hash that has since changed
+// writes nothing.
+func TestRehashPasswordLosesToChange(t *testing.T) {
+	t.Parallel()
+	e := accountsDB(t)
+	na := e.newAccount("", "ada@example.org")
+	e.create(t, na)
+	if err := e.repo.SetPassword(t.Context(), na.ID, "$argon2id$v=19$m=65536,t=2,p=1$Y2hhbmdlZA$Y2hhbmdlZA", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if e.rehash(t, na, na.Password.Hash, "$argon2id$v=19$m=65536,t=3,p=1$bmV3$bmV3") {
+		t.Error("RehashPassword = true over a changed password")
+	}
+	got, err := e.repo.PasswordCredential(t.Context(), na.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Hash != "$argon2id$v=19$m=65536,t=2,p=1$Y2hhbmdlZA$Y2hhbmdlZA" {
+		t.Errorf("hash = %s, want the changed password kept", got.Hash)
+	}
+}
+
+func TestRehashPasswordNeedsAccountLock(t *testing.T) {
+	t.Parallel()
+	e := accountsDB(t)
+	na := e.newAccount("", "ada@example.org")
+	e.create(t, na)
+	err := e.uow.Do(t.Context(), func(ctx context.Context) error {
+		_, err := e.repo.RehashPassword(ctx, na.ID, na.Password.Hash, "x", "4")
+		return err
+	})
+	if !errors.Is(err, postgres.ErrLockOrder) {
+		t.Errorf("RehashPassword without the lock: %v, want ErrLockOrder", err)
 	}
 }

@@ -118,3 +118,18 @@ func allowedRoles(have, allowed []string) []string {
 	slices.Sort(out)
 	return out
 }
+
+var _ app.AccessIssuer = (*Issuer)(nil)
+
+// Issue implements app.AccessIssuer with IssueAccess.
+func (i *Issuer) Issue(g app.AccessGrant) (app.AccessToken, error) {
+	a, err := i.IssueAccess(
+		Session{ID: g.SessionID, ClientID: g.ClientID, AMR: g.AMR, AuthTime: g.AuthTime},
+		Account{ID: g.AccountID, Status: g.Status, Roles: g.Roles},
+		Client{ID: g.ClientID, Audience: g.Audience, AllowedRoles: g.Allowed},
+	)
+	if err != nil {
+		return app.AccessToken{}, err
+	}
+	return app.AccessToken{Token: a.Token, ExpiresAt: a.ExpiresAt, Restricted: a.Restricted}, nil
+}

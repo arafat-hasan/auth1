@@ -77,10 +77,12 @@ Failures increment only that bucket's row in `sign_in_throttles`. The delay appl
 bucket. So an attacker hammering A from anywhere fills `untrusted`, while A's own browser keeps
 signing in through its device bucket.
 
-**Native clients** send no cookie and always use `untrusted`. *(to be detailed: a device token in
+**Native clients** (`refresh_transport: body`) get no device cookie, any cookie they send is ignored, and they always use `untrusted`. *(to be detailed: a device token in
 the body for native clients)*
 
 **A success** resets the bucket used. A password reset resets all of A's buckets.
+
+**Concurrent attempts.** The delay is read before the password is verified and set after it (TDD-02 §5.1 steps 3–5), so attempts that arrive together as a delay ends are each verified and counted. This is accepted: L-2 bounds them per IP, the Argon2id slots per replica, and each counted failure doubles the next delay.
 
 ## 5. Send limits per value (L-7)
 

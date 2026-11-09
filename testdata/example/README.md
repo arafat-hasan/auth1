@@ -17,8 +17,11 @@ only; never use it anywhere else.
 key, `next`, generated for this repository. They too are public development keys, for the
 example and the tests only; never use them anywhere else.
 
+`secrets/mac/device.key` holds the device-cookie MAC key (WP-52, TDD-07 §4), a public
+development key generated for this repository; never use it anywhere else.
+
 The other files are empty placeholders: `config check` only checks that each exists and is
-readable. A real fixture replaces `mac/device.key` when the device cookie arrives.
+readable.
 
 `secrets/db/` holds local development DSNs for the two roles of `deploy/postgres/roles.sql`, with
 each role's name as its password. `dsn` is `auth1_app`'s, which `auth1 serve` reads through
