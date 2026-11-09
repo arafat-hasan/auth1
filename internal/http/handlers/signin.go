@@ -84,7 +84,7 @@ func (t signInTokens) VisitSignInResponse(w http.ResponseWriter) error {
 }
 
 // signInStep is the 202 answer of a sign-in that continues with a second step. Its handle is a
-// secret, so it is not stored either.
+// secret, so it too is sent with Cache-Control: no-store.
 type signInStep struct{ body gen.MfaStep }
 
 // VisitSignInResponse writes the answer.

@@ -96,3 +96,16 @@ func TestNewDeviceCookiesRefusesMissing(t *testing.T) {
 		t.Error("no MAC accepted")
 	}
 }
+
+// TestDeviceCookieSkew checks a cookie issued by a replica whose clock is up to 30 s ahead is
+// accepted.
+func TestDeviceCookieSkew(t *testing.T) {
+	t.Parallel()
+	ahead, clock := newDeviceCookies(t, "key one")
+	clock.Advance(25 * time.Second)
+	value, id := ahead.Issue()
+	here, _ := newDeviceCookies(t, "key one")
+	if got, ok := here.Parse(value); !ok || got != id {
+		t.Errorf("cookie issued 25 s ahead: %v, %v; want accepted", got, ok)
+	}
+}

@@ -20,8 +20,8 @@ type SignInThrottles interface {
 	// Delay returns how long the bucket of the account is still delayed, 0 when it is not. It
 	// locks nothing.
 	Delay(ctx context.Context, accountID uuid.UUID, bucket account.Bucket) (time.Duration, error)
-	// Fail counts one more failure in the bucket of the account and sets its delay to now +
-	// p.Delay(failures), returning the failures counted. Concurrent failures are each counted.
+	// Fail counts one more failure in the bucket of the account and, when p.Delay(failures) is
+	// above 0, sets its delay to now + that, returning the failures counted. Concurrent failures are each counted.
 	// It runs inside UnitOfWork.Do; it needs no account lock.
 	Fail(ctx context.Context, accountID uuid.UUID, bucket account.Bucket, p account.ThrottlePolicy) (int, error)
 	// Reset clears the bucket of the account after a success. The account must be locked.

@@ -16,8 +16,9 @@ import (
 
 var _ app.SignInThrottles = (*postgres.SignInThrottles)(nil)
 
-// throttlePolicy is L-3's default: from the 5th failure, 1 s doubling to 15 min.
-var throttlePolicy = account.ThrottlePolicy{Threshold: 5, FirstDelay: time.Second, MaxDelay: 15 * time.Minute}
+// throttlePolicy is L-3's shape with minute-scale delays, so no assertion depends on how fast the
+// statements run: from the 5th failure, 1 min doubling to 15 min.
+var throttlePolicy = account.ThrottlePolicy{Threshold: 5, FirstDelay: time.Minute, MaxDelay: 15 * time.Minute}
 
 // throttlesEnv is the throttles repository beside the sessions one, on one database.
 type throttlesEnv struct {
@@ -65,12 +66,12 @@ func TestThrottlesFailSetsDelay(t *testing.T) {
 		}
 	}
 	e.fail(t, id, account.UntrustedBucket)
-	if d := e.delay(t, id, account.UntrustedBucket); d <= 0 || d > time.Second {
-		t.Errorf("delay after 5 failures = %v, want in (0, 1s]", d)
+	if d := e.delay(t, id, account.UntrustedBucket); d <= 50*time.Second || d > time.Minute {
+		t.Errorf("delay after 5 failures = %v, want just under 1 min", d)
 	}
 	e.fail(t, id, account.UntrustedBucket)
-	if d := e.delay(t, id, account.UntrustedBucket); d <= time.Second || d > 2*time.Second {
-		t.Errorf("delay after 6 failures = %v, want in (1s, 2s]", d)
+	if d := e.delay(t, id, account.UntrustedBucket); d <= 110*time.Second || d > 2*time.Minute {
+		t.Errorf("delay after 6 failures = %v, want just under 2 min", d)
 	}
 	if _, err := e.su.ExecContext(t.Context(),
 		"UPDATE sign_in_throttles SET delay_until = now() - interval '1 second' WHERE account_id = ?", id); err != nil {
@@ -102,6 +103,54 @@ func TestThrottlesFailCountsEveryFailure(t *testing.T) {
 	wg.Wait()
 	if got := e.fail(t, id, account.UntrustedBucket); got != n+1 {
 		t.Errorf("failures after %d concurrent and one more = %d, want %d", n, got, n+1)
+	}
+}
+
+// TestThrottlesFailWaitsForTheFirst is the deterministic form of the test above: a second Fail
+// in another transaction waits on the row until the first commits, then counts on top of it.
+func TestThrottlesFailWaitsForTheFirst(t *testing.T) {
+	t.Parallel()
+	e := throttlesDB(t)
+	id := e.sessionAccount(t)
+	counted, release := make(chan struct{}), make(chan struct{})
+	first := make(chan error, 1)
+	go func() {
+		first <- e.uow.Do(t.Context(), func(ctx context.Context) error {
+			if _, err := e.throttles.Fail(ctx, id, account.UntrustedBucket, throttlePolicy); err != nil {
+				return err
+			}
+			close(counted)
+			<-release
+			return nil
+		})
+	}()
+	<-counted
+	type result struct {
+		n   int
+		err error
+	}
+	second := make(chan result, 1)
+	go func() {
+		var r result
+		r.err = e.uow.Do(t.Context(), func(ctx context.Context) error {
+			var err error
+			r.n, err = e.throttles.Fail(ctx, id, account.UntrustedBucket, throttlePolicy)
+			return err
+		})
+		second <- r
+	}()
+	select {
+	case r := <-second:
+		close(release)
+		t.Fatalf("the second Fail returned %d, %v before the first committed", r.n, r.err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if r := <-second; r.err != nil || r.n != 2 {
+		t.Errorf("second Fail = %d, %v; want 2", r.n, r.err)
 	}
 }
 

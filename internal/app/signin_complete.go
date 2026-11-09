@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"time"
@@ -23,6 +24,10 @@ import (
 // confirmed TOTP factor or on a client with mfa: required (I-16). The caller decided the second
 // step wrongly: it is a fault, never an answer.
 var ErrMFANotPassed = errors.New("sign-in: the second factor is required (I-16)")
+
+// ErrCompletionMismatch is Complete's refusal of a flow that is not a sign_in flow of the
+// completion's account and client: a fault in the caller, never an answer.
+var ErrCompletionMismatch = errors.New("sign-in: the flow is not this account's sign-in on this client")
 
 // Completion is a sign-in to complete (TDD-02 §5.3): the account, locked by the caller in this
 // transaction; the client; the sign_in flow, locked, or nil when there was no second step; the
@@ -54,6 +59,9 @@ type SignedIn struct {
 	DeviceCookie  string
 }
 
+// LogValue implements slog.LogValuer with String, so no handler encodes the fields.
+func (s SignedIn) LogValue() slog.Value { return slog.StringValue(s.String()) }
+
 // String describes the sign-in without its tokens or cookie.
 func (s SignedIn) String() string {
 	return fmt.Sprintf("app.SignedIn{SessionID: %s, Status: %s, Restricted: %t}", s.SessionID, s.Status, s.Access.Restricted)
@@ -65,17 +73,23 @@ func (s SignedIn) GoString() string { return s.String() }
 // Format writes String for every verb.
 func (s SignedIn) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, s.String()) }
 
-// Complete completes a sign-in (TDD-02 §5.3) inside the caller's transaction, under its account
-// and flow locks: it re-reads the status and the roles, refuses a session without mfa where
-// I-16 needs one, completes the flow, creates the session (full or restricted at each token, from
-// the status) with its first refresh token, issues the access token, audits sign_in and writes
-// the optional new-sign-in notice. WP-53 and WP-54 call it after the second factor.
+// Complete completes a sign-in (TDD-02 §5.3) inside the caller's transaction, under the caller's
+// account lock and, when there is a flow, its flow lock. It refuses a flow that is not the
+// account's sign_in on the client (ErrCompletionMismatch), decides SDD §8.1 again on the locked
+// account and re-reads its roles and TOTP factor, refuses a session without mfa where I-16 needs
+// one, completes the flow, creates the session (full or restricted at each token, from the status)
+// with its first refresh token, issues the access token, audits sign_in and writes the optional
+// new-sign-in notice. A refusal is a *domain.Error. WP-53 and WP-54 call it after the second
+// factor.
 func (s *SignIn) Complete(ctx context.Context, c Completion) (SignedIn, error) {
 	cl, ok := s.o.Clients[c.ClientID]
 	if !ok {
 		return SignedIn{}, fmt.Errorf("complete sign-in: client %q is not configured", c.ClientID)
 	}
 	a := c.Account
+	if f := c.Flow; f != nil && (f.Kind != flow.KindSignIn || f.AccountID != a.ID || f.ClientID != cl.ID) {
+		return SignedIn{}, ErrCompletionMismatch
+	}
 	if answer, err := s.decide(ctx, a, cl); err != nil || answer != nil {
 		if err == nil {
 			err = answer

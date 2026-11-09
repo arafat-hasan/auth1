@@ -321,12 +321,13 @@ finds the verified identifier (a miss or a value that does not normalise is `Ver
 `INVALID_CREDENTIALS`), picks the bucket, refuses a delayed one (`SIGN_IN_DELAYED`), verifies,
 decides SDD §8.1 and the roles, and rehashes. A wrong password is `SignInThrottles.Fail` and its
 audit in a transaction that locks no account. The success transaction locks the account and
-decides again on the identifier, the hash and kid, the status, the roles and the TOTP read under
-the lock; it resets the bucket, writes `Accounts.RehashPassword` (compare-and-swap, keeps
+decides again on the identifier, the password's `changed_at` (a concurrent rehash keeps it), the
+status, the roles and the TOTP read under the lock; it resets the bucket, writes `Accounts.RehashPassword` (compare-and-swap, keeps
 `changed_at`), then opens a `sign_in` flow (`MFA_REQUIRED`, `MFA_ENROLMENT_REQUIRED`: an
 `app.StepCode`, not a `domain.Code`) or calls `Complete` with no flow. `Complete` (for WP-53 and
-WP-54, inside their transaction under the account and flow locks) refuses a session without `mfa`
-where I-16 needs one (`app.ErrMFANotPassed`), completes the flow, creates the session and its
+WP-54, inside their transaction under the account and flow locks) refuses a flow that is not the
+account's `sign_in` on the client (`app.ErrCompletionMismatch`) and a session without `mfa` where
+I-16 needs one (`app.ErrMFANotPassed`), completes the flow, creates the session and its
 refresh token, issues the token through `app.AccessIssuer` (`tokens.Issuer.Issue`; `app` cannot
 import `tokens`), audits `sign_in` and sends the new-sign-in notice. `app.SignInThrottles`
 (`postgres.SignInThrottles`, `sign_in_throttles`): `Delay` and `KnownDevice` lock nothing, `Fail`

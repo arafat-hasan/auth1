@@ -35,7 +35,7 @@ type SignInClient struct {
 type SignInOptions struct {
 	// Clients are the configured clients, by id.
 	Clients map[string]SignInClient
-	// FlowTTL is flows.sign_in_flow_ttl, IdleTTL and AbsoluteTTL are tokens.refresh_idle_ttl and
+	// FlowTTL is mfa.sign_in_flow_ttl, IdleTTL and AbsoluteTTL are tokens.refresh_idle_ttl and
 	// tokens.refresh_absolute_ttl; each above 0.
 	FlowTTL, IdleTTL, AbsoluteTTL time.Duration
 	// KnownDeviceWindow is how long after its last session ended a device stays known (TDD-07 §4:
@@ -43,7 +43,8 @@ type SignInOptions struct {
 	KnownDeviceWindow time.Duration
 	// RestrictedSignIn is statuses.restricted_sign_in.
 	RestrictedSignIn bool
-	// Throttle is rate_limits.sign_in_failures (L-3).
+	// Throttle is rate_limits.sign_in_failures (L-3): a threshold of at least 1 and
+	// 0 < FirstDelay ≤ MaxDelay.
 	Throttle account.ThrottlePolicy
 }
 
@@ -106,6 +107,9 @@ func NewSignIn(d SignInDeps, o SignInOptions) (*SignIn, error) {
 	}
 	if o.FlowTTL <= 0 || o.IdleTTL <= 0 || o.AbsoluteTTL <= 0 || o.KnownDeviceWindow <= 0 {
 		return nil, errors.New("sign-in: the flow, refresh and known-device lifetimes must be above 0")
+	}
+	if t := o.Throttle; t.Threshold < 1 || t.FirstDelay <= 0 || t.MaxDelay < t.FirstDelay {
+		return nil, errors.New("sign-in: the failure throttle needs a threshold of at least 1 and 0 < first delay ≤ max delay")
 	}
 	o.Clients = maps.Clone(o.Clients)
 	return &SignIn{d: d, o: o}, nil
@@ -204,7 +208,9 @@ func (s *SignIn) Password(ctx context.Context, cmd SignInPassword) (SignInResult
 		return SignInResult{}, fmt.Errorf("%s: %w", op, err)
 	}
 	a, err := s.d.Accounts.Get(ctx, id.AccountID)
-	if err != nil {
+	if hasCode(err, domain.CodeNotFound) {
+		return SignInResult{}, s.unknown(ctx, entry, op, cmd.Password) // purged since the lookup
+	} else if err != nil {
 		return SignInResult{}, fmt.Errorf("%s: %w", op, err)
 	}
 	cred, err := s.d.Accounts.PasswordCredential(ctx, a.ID)
@@ -230,7 +236,13 @@ func (s *SignIn) Password(ctx context.Context, cmd SignInPassword) (SignInResult
 	}
 
 	ok, needsRehash, err := s.d.Hasher.Verify(ctx, cred.Hash, cred.PepperKID, cmd.Password)
-	if err != nil {
+	if errors.Is(err, ErrPasswordHashInvalid) || errors.Is(err, ErrPepperKeyUnknown) {
+		// The account cannot sign in until an operator restores the pepper key or the password is
+		// reset; nothing else names it.
+		s.d.Logger.LogAttrs(ctx, slog.LevelError, "stored password unusable", slog.String("account_id", a.ID.String()),
+			slog.String("pepper_kid", cred.PepperKID), slog.String("error", err.Error()))
+		return SignInResult{}, fmt.Errorf("%s: verify the password of account %s: %w", op, a.ID, err)
+	} else if err != nil {
 		return SignInResult{}, s.fail(ctx, entry, op, err)
 	}
 	if !ok {
@@ -243,7 +255,8 @@ func (s *SignIn) Password(ctx context.Context, cmd SignInPassword) (SignInResult
 	if needsRehash {
 		if rehash, rehashKID, err = s.d.Hasher.Hash(ctx, cmd.Password); err != nil {
 			// The sign-in stands; the next one rehashes.
-			s.d.Logger.LogAttrs(ctx, slog.LevelWarn, "password rehash skipped", slog.String("error", err.Error()))
+			s.d.Logger.LogAttrs(ctx, slog.LevelWarn, "password rehash skipped", slog.String("account_id", a.ID.String()),
+				slog.String("pepper_kid", cred.PepperKID), slog.String("error", err.Error()))
 			rehash = ""
 		}
 	}
@@ -258,7 +271,10 @@ func (s *SignIn) Password(ctx context.Context, cmd SignInPassword) (SignInResult
 	)
 	err = s.d.UnitOfWork.Do(ctx, func(ctx context.Context) error {
 		la, err := s.d.Accounts.GetForUpdate(ctx, a.ID)
-		if err != nil {
+		if hasCode(err, domain.CodeNotFound) {
+			answer = invalidCredentials() // purged since the first read
+			return nil
+		} else if err != nil {
 			return err
 		}
 		if answer, err = s.recheck(ctx, la, c, cmd.Type, value, cred); err != nil || answer != nil {
@@ -376,8 +392,9 @@ func (s *SignIn) decide(ctx context.Context, a account.Account, c SignInClient) 
 }
 
 // recheck decides again under the account lock (TDD-02 §5.1 step 8). The identifier must still be
-// the account's, verified and current, and the password the one verified: else
-// INVALID_CREDENTIALS. A changed status or role set is decided by its new value.
+// the account's, verified and current, and the password not changed since it was verified (the
+// same changed_at; a rehash keeps it): else INVALID_CREDENTIALS. A changed status or role set is
+// decided by its new value.
 func (s *SignIn) recheck(ctx context.Context, la account.Account, c SignInClient, idType, value string, cred account.PasswordCredential) (answer, err error) {
 	id, err := s.d.Accounts.FindVerified(ctx, idType, value)
 	if hasCode(err, domain.CodeNotFound) || (err == nil && id.AccountID != la.ID) {
@@ -386,7 +403,7 @@ func (s *SignIn) recheck(ctx context.Context, la account.Account, c SignInClient
 		return nil, err
 	}
 	now, err := s.d.Accounts.PasswordCredential(ctx, la.ID)
-	if hasCode(err, domain.CodeNotFound) || (err == nil && (now.Hash != cred.Hash || now.PepperKID != cred.PepperKID)) {
+	if hasCode(err, domain.CodeNotFound) || (err == nil && !now.ChangedAt.Equal(cred.ChangedAt)) {
 		return invalidCredentials(), nil
 	} else if err != nil {
 		return nil, err
@@ -451,9 +468,12 @@ func (s *SignIn) roleNames(ctx context.Context, accountID uuid.UUID) ([]string, 
 }
 
 // fail answers a step that did not go through, as Registration.fail does: a domain error is
-// audited outside any transaction with its code and returned alone; any other error is returned
-// wrapped with op, unaudited.
+// audited outside any transaction with its code and returned alone, but for ErrOverloaded, which
+// is returned unaudited; any other error is returned wrapped with op, unaudited.
 func (s *SignIn) fail(ctx context.Context, e AuditEntry, op string, err error) error {
+	if errors.Is(err, ErrOverloaded) {
+		return err // a server condition, not a refusal: no audit rows while overloaded
+	}
 	var de *domain.Error
 	if !errors.As(err, &de) {
 		return fmt.Errorf("%s: %w", op, err)
@@ -465,8 +485,9 @@ func (s *SignIn) fail(ctx context.Context, e AuditEntry, op string, err error) e
 	}
 	e.Details["code"] = string(de.Code)
 	if aerr := s.d.Audit.Write(ctx, e); aerr != nil {
-		s.d.Logger.LogAttrs(ctx, slog.LevelError, "audit write failed",
-			slog.String("action", e.Action), slog.String("code", string(de.Code)), slog.String("error", aerr.Error()))
+		s.d.Logger.LogAttrs(ctx, slog.LevelError, "audit write failed", slog.String("action", e.Action),
+			slog.String("code", string(de.Code)), slog.String("account_id", e.AccountID.String()),
+			slog.String("client_id", e.ClientID), slog.String("error", aerr.Error()))
 	}
 	return err
 }

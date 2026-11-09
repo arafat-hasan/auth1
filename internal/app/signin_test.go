@@ -36,6 +36,14 @@ const (
 
 var signInIP = netip.MustParseAddr("192.0.2.20")
 
+// passwordSet is when the test account's password was set.
+var passwordSet = now.Add(-24 * time.Hour)
+
+// cred is a stored password set at passwordSet: a rehash of it keeps that time.
+func cred(hash, kid string) account.PasswordCredential {
+	return account.PasswordCredential{Hash: hash, PepperKID: kid, ChangedAt: passwordSet}
+}
+
 // signAccounts is the accounts repository of the sign-in tests. beforeLock runs at the start of
 // GetForUpdate, to change the account between the unlocked reads and the lock.
 type signAccounts struct {
@@ -109,7 +117,7 @@ func (a *signAccounts) RehashPassword(_ context.Context, id uuid.UUID, oldHash, 
 		return false, nil
 	}
 	a.rehashed = append(a.rehashed, hash)
-	a.creds[id] = account.PasswordCredential{Hash: hash, PepperKID: kid}
+	a.creds[id] = account.PasswordCredential{Hash: hash, PepperKID: kid, ChangedAt: c.ChangedAt}
 	return true, nil
 }
 
@@ -169,6 +177,7 @@ type fakeThrottles struct {
 	failures map[string]int
 	until    map[string]time.Time
 	known    map[string]bool // "account:device"
+	within   []time.Duration // the windows KnownDevice was asked for
 	resets   []account.Bucket
 }
 
@@ -207,7 +216,8 @@ func (f *fakeThrottles) Reset(_ context.Context, id uuid.UUID, b account.Bucket)
 
 func (f *fakeThrottles) ResetAll(context.Context, uuid.UUID) error { return errors.New("not used") }
 
-func (f *fakeThrottles) KnownDevice(_ context.Context, id, device uuid.UUID, _ time.Duration) (bool, error) {
+func (f *fakeThrottles) KnownDevice(_ context.Context, id, device uuid.UUID, within time.Duration) (bool, error) {
+	f.within = append(f.within, within)
 	return f.known[id.String()+":"+device.String()], nil
 }
 
@@ -220,6 +230,7 @@ type signHasher struct {
 	dummies  int
 	hashes   int
 	err      error // returned by Verify and VerifyDummy when set
+	hashErr  error // returned by Hash when set
 }
 
 func (h *signHasher) inTx(op string) {
@@ -231,6 +242,9 @@ func (h *signHasher) inTx(op string) {
 func (h *signHasher) Hash(_ context.Context, pw []byte) (string, string, error) {
 	h.inTx("Hash")
 	h.hashes++
+	if h.hashErr != nil {
+		return "", "", h.hashErr
+	}
 	return "phc:" + string(pw), "1", nil
 }
 
@@ -281,6 +295,7 @@ type signEnv struct {
 	deps      app.SignInDeps
 	opts      app.SignInOptions
 	accountID uuid.UUID
+	logs      *syncBuffer
 }
 
 // signInClients are the clients of the sign-in tests: web (cookie transport, MFA optional),
@@ -314,14 +329,14 @@ func newSignInEnv(t *testing.T, newSignIn bool) *signEnv {
 			accounts: map[uuid.UUID]account.Account{}, creds: map[uuid.UUID]account.PasswordCredential{},
 			roles: map[uuid.UUID][]string{}, totp: map[uuid.UUID]account.TOTPFactor{}},
 		flows: &signFlows{uow: uow}, sessions: &signSessions{uow: uow}, throttles: newFakeThrottles(uow, clock),
-		limiter: fakes.NewRateLimiter(), accountID: ids.New(),
+		limiter: fakes.NewRateLimiter(), accountID: ids.New(), logs: &syncBuffer{},
 	}
 	e.hasher = &signHasher{t: t, uow: uow}
 	verified := now.Add(-time.Hour)
 	e.accounts.verified["email:"+signInEmail] = account.Identifier{ID: ids.New(), AccountID: e.accountID,
 		Type: "email", Value: signInEmail, VerifiedAt: &verified}
 	e.accounts.accounts[e.accountID] = account.Account{ID: e.accountID, Status: account.StatusActive, Locale: "en", Version: 3}
-	e.accounts.creds[e.accountID] = account.PasswordCredential{Hash: "phc:" + signInPassword, PepperKID: "1"}
+	e.accounts.creds[e.accountID] = cred("phc:"+signInPassword, "1")
 	e.accounts.roles[e.accountID] = []string{"member"}
 	if e.devices, err = app.NewDeviceCookies(hmacDevice("device key"), clock, ids); err != nil {
 		t.Fatal(err)
@@ -332,7 +347,7 @@ func newSignInEnv(t *testing.T, newSignIn bool) *signEnv {
 		UnitOfWork: uow, Accounts: e.accounts, Flows: e.flows, Sessions: e.sessions, Throttles: e.throttles,
 		Notices: notices, Audit: e.audit, Hasher: e.hasher, Registry: registry, Limits: newLimits(t, e.limiter, 30),
 		Access: e.access, Devices: e.devices, IDs: ids, Clock: clock,
-		Rand: bytes.NewReader(bytes.Repeat([]byte{9}, 1<<16)), Logger: slog.New(slog.DiscardHandler),
+		Rand: bytes.NewReader(bytes.Repeat([]byte{9}, 1<<16)), Logger: slog.New(slog.NewTextHandler(e.logs, nil)),
 	}
 	e.opts = app.SignInOptions{
 		Clients: signInClients, FlowTTL: 10 * time.Minute, IdleTTL: 168 * time.Hour, AbsoluteTTL: 720 * time.Hour,
@@ -670,11 +685,17 @@ func TestSignInReChecksUnderLock(t *testing.T) {
 		token  string
 	}{
 		{"password changed", func(e *signEnv) {
-			e.accounts.creds[e.accountID] = account.PasswordCredential{Hash: "phc:another", PepperKID: "1"}
+			e.accounts.creds[e.accountID] = account.PasswordCredential{Hash: "phc:another", PepperKID: "1",
+				ChangedAt: now}
 		}, domain.CodeInvalidCredentials, ""},
-		{"pepper key changed", func(e *signEnv) {
-			e.accounts.creds[e.accountID] = account.PasswordCredential{Hash: "phc:" + signInPassword, PepperKID: "2"}
-		}, domain.CodeInvalidCredentials, ""},
+		{"credential erased", func(e *signEnv) { delete(e.accounts.creds, e.accountID) },
+			domain.CodeInvalidCredentials, ""},
+		{"account gone", func(e *signEnv) { delete(e.accounts.accounts, e.accountID) },
+			domain.CodeInvalidCredentials, ""},
+		// Another sign-in rehashed the same password meanwhile: not a password change.
+		{"rehashed meanwhile", func(e *signEnv) {
+			e.accounts.creds[e.accountID] = cred("phc:"+signInPassword, "2")
+		}, "", "full"},
 		{"identifier retired", func(e *signEnv) { delete(e.accounts.verified, "email:"+signInEmail) },
 			domain.CodeInvalidCredentials, ""},
 		{"identifier moved to another account", func(e *signEnv) {
@@ -705,6 +726,10 @@ func TestSignInReChecksUnderLock(t *testing.T) {
 				if last := e.audit.entries[len(e.audit.entries)-1]; last.Outcome != app.OutcomeFailure {
 					t.Errorf("last audit entry %v, want the failure", last)
 				}
+			case "full":
+				if err != nil || res.Tokens == nil || res.Tokens.Access.Restricted {
+					t.Errorf("Password = %+v, %v; want a full session", res, err)
+				}
 			case "restricted":
 				if err != nil || res.Tokens == nil || !res.Tokens.Access.Restricted {
 					t.Errorf("Password = %+v, %v; want a restricted session", res, err)
@@ -721,7 +746,7 @@ func TestSignInReChecksUnderLock(t *testing.T) {
 func TestSignInRehash(t *testing.T) {
 	t.Parallel()
 	e := newSignInEnv(t, false)
-	e.accounts.creds[e.accountID] = account.PasswordCredential{Hash: "phc:" + signInPassword, PepperKID: "0"}
+	e.accounts.creds[e.accountID] = cred("phc:"+signInPassword, "0")
 	if res, err := e.run(t, signCmd("web", signInPassword)); err != nil || res.Tokens == nil {
 		t.Fatalf("Password = %+v, %v", res, err)
 	}
@@ -732,17 +757,31 @@ func TestSignInRehash(t *testing.T) {
 		t.Errorf("pepper key after rehash %q, want 1", got)
 	}
 
-	// A stored hash that changes between the verification and the lock is not overwritten: the
-	// re-check refuses the sign-in first.
+	// Another sign-in rehashed the password between the verification and the lock: this one
+	// signs in, and its own rehash, computed from the old hash, writes nothing.
 	e = newSignInEnv(t, false)
-	e.accounts.creds[e.accountID] = account.PasswordCredential{Hash: "phc:" + signInPassword, PepperKID: "0"}
-	e.accounts.beforeLock = func() {
-		e.accounts.creds[e.accountID] = account.PasswordCredential{Hash: "phc:changed", PepperKID: "1"}
+	e.accounts.creds[e.accountID] = cred("phc:"+signInPassword, "0")
+	e.accounts.beforeLock = func() { e.accounts.creds[e.accountID] = cred("phc:"+signInPassword+"#other", "1") }
+	if res, err := e.run(t, signCmd("web", signInPassword)); err != nil || res.Tokens == nil {
+		t.Fatalf("after a concurrent rehash: %+v, %v; want tokens", res, err)
 	}
-	_, err := e.run(t, signCmd("web", signInPassword))
-	wantCode(t, err, domain.CodeInvalidCredentials)
-	if got := e.accounts.creds[e.accountID].Hash; got != "phc:changed" {
-		t.Errorf("hash %q, want the changed password kept", got)
+	if got := e.accounts.creds[e.accountID].Hash; got != "phc:"+signInPassword+"#other" || len(e.accounts.rehashed) != 0 {
+		t.Errorf("hash %q, rehashed %v; want the other rehash kept", got, e.accounts.rehashed)
+	}
+
+	// A failed rehash leaves the sign-in standing, and is logged with the account.
+	e = newSignInEnv(t, false)
+	e.accounts.creds[e.accountID] = cred("phc:"+signInPassword, "0")
+	e.hasher.hashErr = app.ErrOverloaded
+	if res, err := e.run(t, signCmd("web", signInPassword)); err != nil || res.Tokens == nil {
+		t.Fatalf("with the rehash failing: %+v, %v; want tokens", res, err)
+	}
+	if len(e.accounts.rehashed) != 0 || e.accounts.creds[e.accountID].PepperKID != "0" {
+		t.Error("a failed rehash wrote a hash")
+	}
+	if logs := e.logs.String(); !strings.Contains(logs, "password rehash skipped") ||
+		!strings.Contains(logs, "account_id="+e.accountID.String()) || !strings.Contains(logs, "pepper_kid=0") {
+		t.Errorf("logs %q, want the skipped rehash with the account and pepper key", logs)
 	}
 }
 
@@ -1002,7 +1041,182 @@ func TestSignInOverloaded(t *testing.T) {
 	if de := asCode(t, err, domain.CodeUnavailable); de.RetryAfter != time.Second {
 		t.Errorf("RetryAfter %v, want 1s", de.RetryAfter)
 	}
-	if len(e.throttles.failures) != 0 {
-		t.Error("an overloaded verify counted a failure")
+	if len(e.throttles.failures) != 0 || len(e.audit.entries) != 0 {
+		t.Errorf("an overloaded verify counted a failure or wrote %d audit entries", len(e.audit.entries))
+	}
+}
+
+// TestSignInBrokenHash checks a stored hash the hasher cannot use is a fault that names the
+// account, in the error and the log, and is not answered as a wrong password.
+func TestSignInBrokenHash(t *testing.T) {
+	t.Parallel()
+	for _, fault := range []error{app.ErrPasswordHashInvalid, app.ErrPepperKeyUnknown} {
+		e := newSignInEnv(t, false)
+		e.hasher.err = fault
+		_, err := e.run(t, signCmd("web", signInPassword))
+		if !errors.Is(err, fault) || hasDomainCode(err, domain.CodeInvalidCredentials) {
+			t.Errorf("%v: Password = %v, want the fault", fault, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), e.accountID.String()) {
+			t.Errorf("%v: error %q does not name the account", fault, err)
+		}
+		if logs := e.logs.String(); !strings.Contains(logs, "account_id="+e.accountID.String()) {
+			t.Errorf("%v: logs %q, want the account", fault, logs)
+		}
+		if len(e.throttles.failures) != 0 {
+			t.Errorf("%v: counted as a failure", fault)
+		}
+	}
+}
+
+// TestSignInAccountGone checks an account or credential missing after the identifier was found
+// answers as an unknown identifier, with the dummy verification: never NOT_FOUND.
+func TestSignInAccountGone(t *testing.T) {
+	t.Parallel()
+	for name, remove := range map[string]func(*signEnv){
+		"account":    func(e *signEnv) { delete(e.accounts.accounts, e.accountID) },
+		"credential": func(e *signEnv) { delete(e.accounts.creds, e.accountID) },
+	} {
+		e := newSignInEnv(t, false)
+		remove(e)
+		_, err := e.run(t, signCmd("web", signInPassword))
+		wantCode(t, err, domain.CodeInvalidCredentials)
+		if e.hasher.dummies != 1 || e.hasher.verifies != 0 || len(e.throttles.failures) != 0 {
+			t.Errorf("%s gone: dummies %d, verifies %d, failures %v", name, e.hasher.dummies, e.hasher.verifies,
+				e.throttles.failures)
+		}
+	}
+}
+
+func TestSignInKnownDeviceWindow(t *testing.T) {
+	t.Parallel()
+	e := newSignInEnv(t, false)
+	c := signCmd("web", signInPassword)
+	c.DeviceCookie, _ = e.devices.Issue()
+	if _, err := e.run(t, c); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(e.throttles.within, []time.Duration{90 * 24 * time.Hour}) {
+		t.Errorf("KnownDevice windows %v, want 90 days", e.throttles.within)
+	}
+}
+
+// TestSignInStepAudit checks the audit of a sign-in that continues with a second step names the
+// flow and the bucket kind, never the device id.
+func TestSignInStepAudit(t *testing.T) {
+	t.Parallel()
+	e := newSignInEnv(t, false)
+	e.confirmTOTP()
+	c := signCmd("web", signInPassword)
+	var device uuid.UUID
+	c.DeviceCookie, device = e.devices.Issue()
+	e.throttles.known[e.accountID.String()+":"+device.String()] = true
+	res, err := e.run(t, c)
+	if err != nil || res.Step == nil {
+		t.Fatalf("Password = %+v, %v", res, err)
+	}
+	last := e.audit.entries[len(e.audit.entries)-1]
+	want := map[string]any{"bucket": "device", "flow_id": res.Step.FlowID.String(), "kind": "sign_in", "step": "MFA_REQUIRED"}
+	if last.Action != "sign_in.password" || last.Outcome != app.OutcomeSuccess || fmt.Sprint(last.Details) != fmt.Sprint(want) {
+		t.Errorf("audit %s %s %v, want sign_in.password success %v", last.Action, last.Outcome, last.Details, want)
+	}
+	if strings.Contains(fmt.Sprint(e.audit.entries), device.String()) {
+		t.Error("the audit holds the device id")
+	}
+}
+
+func TestNewSignInRefusesThrottlePolicy(t *testing.T) {
+	t.Parallel()
+	e := newSignInEnv(t, false)
+	for name, p := range map[string]account.ThrottlePolicy{
+		"no threshold":         {Threshold: 0, FirstDelay: time.Second, MaxDelay: time.Minute},
+		"no first delay":       {Threshold: 5, MaxDelay: time.Minute},
+		"max below first":      {Threshold: 5, FirstDelay: time.Minute, MaxDelay: time.Second},
+		"negative first delay": {Threshold: 5, FirstDelay: -time.Second, MaxDelay: time.Minute},
+	} {
+		o := e.opts
+		o.Throttle = p
+		if _, err := app.NewSignIn(e.deps, o); err == nil {
+			t.Errorf("%s: NewSignIn accepted %+v", name, p)
+		}
+	}
+}
+
+// TestSignedInLogsWithoutSecrets checks a SignedIn logged as a value, under the JSON handler the
+// service uses, holds none of its tokens or cookie.
+func TestSignedInLogsWithoutSecrets(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	s := app.SignedIn{Access: app.AccessToken{Token: "access-secret"}, Refresh: session.Secret("refresh-secret"),
+		DeviceCookie: "cookie-secret", SessionID: fakes.ID(1)}
+	slog.New(slog.NewJSONHandler(&buf, nil)).Info("x", slog.Any("signed_in", s), slog.Any("ptr", &s))
+	for _, secret := range []string{"access-secret", "refresh-secret", "cookie-secret"} {
+		if strings.Contains(buf.String(), secret) {
+			t.Errorf("log %s holds %s", buf.String(), secret)
+		}
+	}
+}
+
+// completeIn runs Complete in a transaction, under the account lock.
+func (e *signEnv) completeIn(t *testing.T, c app.Completion) error {
+	t.Helper()
+	return e.uow.Do(t.Context(), func(ctx context.Context) error {
+		a, err := e.accounts.GetForUpdate(ctx, e.accountID)
+		if err != nil {
+			return err
+		}
+		c.Account = a
+		_, err = e.signIn.Complete(ctx, c)
+		return err
+	})
+}
+
+// TestCompleteRefusesOtherFlow checks Complete refuses a flow that is not the account's sign-in
+// on the client given.
+func TestCompleteRefusesOtherFlow(t *testing.T) {
+	t.Parallel()
+	for name, change := range map[string]func(*flow.Flow){
+		"another account": func(f *flow.Flow) { f.AccountID = fakes.ID(99) },
+		"another client":  func(f *flow.Flow) { f.ClientID = "native" },
+		"another kind":    func(f *flow.Flow) { f.Kind = flow.KindRegistration },
+	} {
+		e := newSignInEnv(t, false)
+		e.confirmTOTP()
+		f := &flow.Flow{ID: fakes.ID(50), Kind: flow.KindSignIn, AccountID: e.accountID, ClientID: "web",
+			State: flow.SignInState{FirstFactor: flow.FirstFactorPassword, Step: flow.StepSecondFactor}}
+		change(f)
+		err := e.completeIn(t, app.Completion{ClientID: "web", Flow: f, First: flow.FirstFactorPassword, Second: flow.SecondTOTP})
+		if !errors.Is(err, app.ErrCompletionMismatch) {
+			t.Errorf("%s: Complete = %v, want ErrCompletionMismatch", name, err)
+		}
+		if len(e.sessions.created)+len(e.flows.completed) != 0 {
+			t.Errorf("%s: a session or a completed flow", name)
+		}
+	}
+}
+
+// TestCompleteDecidesStatus checks Complete decides SDD §8.1 on the locked account itself, for
+// callers that did not.
+func TestCompleteDecidesStatus(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		status account.Status
+		code   domain.Code
+	}{
+		{account.StatusPending, domain.CodeRegistrationIncomplete},
+		{account.StatusSuspended, domain.CodeAccountRestricted},
+		{account.StatusDeleted, domain.CodeInvalidCredentials},
+	} {
+		e := newSignInEnv(t, false)
+		e.opts.RestrictedSignIn = false
+		e.rebuild(t)
+		e.setStatus(tt.status)
+		f := &flow.Flow{ID: fakes.ID(50), Kind: flow.KindSignIn, AccountID: e.accountID, ClientID: "web",
+			State: flow.SignInState{FirstFactor: flow.FirstFactorPassword, Step: flow.StepSecondFactor}}
+		err := e.completeIn(t, app.Completion{ClientID: "web", Flow: f, First: flow.FirstFactorPassword, Second: flow.SecondTOTP})
+		wantCode(t, err, tt.code)
+		if len(e.sessions.created)+len(e.flows.completed) != 0 {
+			t.Errorf("%s: a session or a completed flow", tt.status)
+		}
 	}
 }
