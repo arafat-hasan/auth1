@@ -391,7 +391,7 @@ Each is a short procedure kept in `docs/runbooks/`. To be written with the imple
 | Bootstrap | Start-up | Yes | TDD-02 §8.1 |
 
 **Leader election.**
-- Each leader-elected job holds a session-level `pg_try_advisory_lock(<job id>)` on a dedicated connection, one per instance for all its jobs.
+- Each leader-elected job holds a session-level `pg_try_advisory_lock(<class>, <job id>)` on a dedicated connection, one per instance for all its jobs. The class is "jobs" in ASCII, so the two-key lock never meets the migrator's.
 - A lost connection loses the lock, and another replica takes over at its next tick. The leader checks it still holds the lock before each run, and during a run every 5 s, cancelling the run when it does not; a write a run had in flight re-checks under its row locks, so a short overlap with the next leader changes nothing twice.
 - A run never overlaps the job's previous run: ticks missed while a run is going are dropped.
 - Every job records `auth1_job_last_success_timestamp`.
