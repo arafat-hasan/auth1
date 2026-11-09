@@ -20,8 +20,9 @@ const header = "Idempotency-Key"
 const maxKeyLen = 255
 
 const (
-	keyDetail  = "Idempotency-Key must be one value of 1 to 255 visible ASCII characters."
-	bodyDetail = "The request body is not valid JSON."
+	keyDetail    = "Idempotency-Key must be one value of 1 to 255 visible ASCII characters."
+	bodyDetail   = "The request body is not valid JSON."
+	unreadDetail = "The request body could not be read."
 )
 
 // Options configures the middleware.
@@ -35,14 +36,19 @@ type Options struct {
 	Caller func(context.Context) (caller.Caller, bool)
 }
 
-// New returns the Idempotency-Key middleware. Install it after caller.Resolver and below
-// middleware.BodyLimit. A request Match refuses passes untouched. For one it matches:
+// New returns the Idempotency-Key middleware; it refuses Options without Match or Problems.
+// Install it after caller.Resolver and below middleware.BodyLimit. A request Match refuses passes
+// untouched. For one it matches, in this order:
 //   - anything but exactly one key of 1 to 255 characters in \x21-\x7E answers 422 VALIDATION_FAILED;
-//   - a body over the limit answers 413; a non-empty body that is not I-JSON answers 422;
 //   - with no caller (a wiring fault) the answer is 503;
+//   - a body over the limit answers 413, one that cannot be read (the client went away) 422, and
+//     a non-empty body that is not I-JSON 422;
 //   - otherwise the handler runs with the body intact and the app.IdempotencyRequest in its
 //     context (From).
-func New(o Options) func(http.Handler) http.Handler {
+func New(o Options) (func(http.Handler) http.Handler, error) {
+	if o.Match == nil || o.Problems == nil {
+		return nil, errors.New("idempotency: the middleware needs Match and Problems")
+	}
 	callerOf := o.Caller
 	if callerOf == nil {
 		callerOf = caller.From
@@ -64,8 +70,12 @@ func New(o Options) func(http.Handler) http.Handler {
 				return
 			}
 			body, err := io.ReadAll(r.Body)
+			if me := (*http.MaxBytesError)(nil); errors.As(err, &me) {
+				o.Problems.Write(w, r, err) // 413
+				return
+			}
 			if err != nil {
-				o.Problems.Write(w, r, err) // a *http.MaxBytesError renders as 413
+				o.Problems.Write(w, r, &domain.Error{Code: domain.CodeValidationFailed, Detail: unreadDetail})
 				return
 			}
 			hash, err := RequestHash(r.Method, r.URL.EscapedPath(), body)
@@ -77,7 +87,7 @@ func New(o Options) func(http.Handler) http.Handler {
 			req := app.IdempotencyRequest{Caller: string(c.Kind) + ":" + c.ID, Key: key, Hash: hash}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, req)))
 		})
-	}
+	}, nil
 }
 
 // keyOf returns the request's one valid key, or false.

@@ -44,7 +44,7 @@ func serve(t *testing.T, matched bool, c *caller.Caller, req *http.Request) (*ht
 		s.body = string(b)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mw := New(Options{
+	mw, err := New(Options{
 		Match:    func(*http.Request) bool { return matched },
 		Problems: pw,
 		Caller: func(context.Context) (caller.Caller, bool) {
@@ -54,6 +54,9 @@ func serve(t *testing.T, matched bool, c *caller.Caller, req *http.Request) (*ht
 			return *c, true
 		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	rec := httptest.NewRecorder()
 	middleware.BodyLimit(64<<10, pw)(mw(next)).ServeHTTP(rec, req)
 	return rec, s
@@ -190,5 +193,52 @@ func TestRequestRedacted(t *testing.T) {
 		if strings.Contains(s, "sekrit") {
 			t.Errorf("%q holds the key", s)
 		}
+	}
+}
+
+func TestNewRefuses(t *testing.T) {
+	t.Parallel()
+	pw := problem.New(slog.New(slog.DiscardHandler))
+	match := func(*http.Request) bool { return true }
+	for name, o := range map[string]Options{
+		"no match":    {Problems: pw},
+		"no problems": {Match: match},
+	} {
+		if _, err := New(o); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+}
+
+// failingBody fails to read, as a body whose client went away.
+type failingBody struct{}
+
+func (failingBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+// TestMiddlewareUnreadableBody: a body that cannot be read is the client's 422, not a logged
+// server error.
+func TestMiddlewareUnreadableBody(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	pw := problem.New(slog.New(slog.NewTextHandler(&logs, nil)))
+	mw, err := New(Options{
+		Match: func(*http.Request) bool { return true }, Problems: pw,
+		Caller: func(context.Context) (caller.Caller, bool) {
+			return caller.Caller{Kind: caller.KindClient, ID: "s"}, true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, path, failingBody{})
+	req.Header.Set("Idempotency-Key", "k")
+	rec := httptest.NewRecorder()
+	called := false
+	mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity || problemCode(t, rec) != "VALIDATION_FAILED" || called {
+		t.Errorf("status %d, body %s, handler ran = %v; want 422 VALIDATION_FAILED", rec.Code, rec.Body, called)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("logged: %s", logs.String())
 	}
 }

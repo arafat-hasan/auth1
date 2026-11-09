@@ -251,6 +251,10 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
+	idempotent, err := idempotency.New(idempotency.Options{Match: gen.IdempotentRoute(cfg.HTTP.BasePath), Problems: pw})
+	if err != nil {
+		return err
+	}
 	router := server.NewRouter(server.Options{
 		BasePath:        cfg.HTTP.BasePath,
 		Logger:          logger,
@@ -264,7 +268,7 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 		APIMiddleware: []func(http.Handler) http.Handler{
 			middleware.RateLimit(limits, pw, gen.ServiceRoute(cfg.HTTP.BasePath)),
 			services.Middleware,
-			idempotency.New(idempotency.Options{Match: gen.IdempotentRoute(cfg.HTTP.BasePath), Problems: pw}),
+			idempotent,
 		},
 		Dev: devRoutes,
 	})

@@ -124,14 +124,18 @@ func newEnv(t *testing.T) *env {
 	h := &things{uow: uow, accounts: accounts, idem: idem, db: db, pw: pw}
 	r := chi.NewRouter()
 	r.Use(middleware.BodyLimit(64<<10, pw))
-	r.Use(idempotency.New(idempotency.Options{
+	mw, err := idempotency.New(idempotency.Options{
 		Match:    func(r *http.Request) bool { return strings.HasPrefix(r.URL.Path, "/things/") },
 		Problems: pw,
 		Caller: func(ctx context.Context) (caller.Caller, bool) {
 			c, ok := ctx.Value(callerKey{}).(caller.Caller)
 			return c, ok
 		},
-	}))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Use(mw)
 	r.Post("/things/{name}", h.ServeHTTP)
 	api := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if id := req.Header.Get(callerHeader); id != "" {
