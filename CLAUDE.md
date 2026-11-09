@@ -335,3 +335,29 @@ nothing terminates TLS yet. Service tokens go through `caller.TokenVerifier`, ni
 `loadServiceAuth` in `cmd/auth1/serviceauth.go` maps the config for `config check` and `serve`,
 refusing a sidecar entry that is not a CIDR and an empty or repeated caller identity; `serve` warns
 for a sidecar range beyond loopback, for service tokens with no verifier and for `peer_cert`.
+
+Idempotency (TDD-05 §4, I-9): `gen.Operation.Idempotent` marks the operations taking
+`Idempotency-Key` (routegen refuses it on one that is not a service operation), and
+`gen.IdempotentRoute` matches them. `internal/http/middleware/idempotency.New` (refusing a
+missing `Match` or `Problems`) is in `server.Options.APIMiddleware` after `caller.Resolver`: it
+checks the key (one value, 1–255 of `\x21-\x7E`, else `422`), hashes `method ‖ 0x00 ‖ escaped path ‖ 0x00 ‖ JCS(body)` (`RequestHash`,
+`github.com/gowebpki/jcs`; a body that is not I-JSON is `422`) and keeps an
+`app.IdempotencyRequest` (caller `<kind>:<id>`; it prints, logs and marshals without the key) for
+`idempotency.From`; it opens no transaction. A use case opts in by calling
+`app.Idempotency.Run(ctx, req, op, render)` outside any transaction, around its transactional part
+(its own `Do` inside `op` joins). `Run` refuses a request without caller, key or hash; `Claim`
+must be the transaction's first lock (else `ErrLockOrder`) and waits for a concurrent holder at
+most 5 s (then `503`); a stored row replays or is `IDEMPOTENCY_KEY_REUSED`. Otherwise `op` runs
+under `app.Savepoints` (`postgres.UnitOfWork.Savepoint`, which restores the lock and event records
+when `op` errs, so a refused operation moves no version; a failed rollback matches
+`app.ErrSavepointRollback`) and `render(opErr)` returns the response and an error. A 2xx for a
+success commits with `op`'s effects, a 4xx for a refusal commits only the response; anything else
+(5xx, 429, a status not matching `op`'s result, a body over `app.MaxStoredBody`, a render error)
+stores nothing. Handlers render with `idempotency.Render` (a strict response's `Visit…` method;
+only status, `Content-Type` and body are kept) or `RenderError` (which neither writes nor logs an
+unexpected error), always send what `Run` returns with `idempotency.Write` (strict handlers return
+an `idempotency.Response` wrapped in a one-method type for the operation), and write `Run`'s error
+with the problem writer. `postgres.IdempotencyKeys` seals `{content_type, body}` in `response`
+(`bytea`, migration `000004`); rows older than `retention.idempotency_keys` are claimed again.
+Refusal audits stay after `Run`, outside the transaction. `test/idempotency` runs it end to end
+behind a test-only handler (T-26).

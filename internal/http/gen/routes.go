@@ -85,3 +85,13 @@ func ServiceRoute(basePath string) func(*http.Request) bool {
 		return ok && op.IsService()
 	}
 }
+
+// IdempotentRoute returns a predicate telling, before dispatch, whether a request is for an
+// operation mounted under basePath that takes Idempotency-Key (Match; TDD-05 §4).
+func IdempotentRoute(basePath string) func(*http.Request) bool {
+	match := Match(basePath)
+	return func(r *http.Request) bool {
+		_, op, ok := match(r)
+		return ok && op.Idempotent
+	}
+}
