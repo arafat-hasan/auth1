@@ -167,7 +167,7 @@ On success, in the same transaction:
 
 `POST /v1/sessions` (`client_id`, `identifier` as `{type, value}`, `password`):
 
-1. Check the per-IP sign-in window. The type must be a sign-in type for this deployment, and `password` must be in the client's `first_factors`.
+1. `password` must be in the client's `first_factors`, and the type must be a sign-in type for this deployment. Then check the per-IP sign-in window.
 2. Find the account through a **verified, current** identifier of that type. If none matches, verify against the dummy hash and answer `INVALID_CREDENTIALS`.
 3. Read the device cookie (TDD-07 §4), choose the throttle bucket, and refuse with `SIGN_IN_DELAYED` while it is delayed.
 4. Verify the Argon2id hash, outside a transaction.
@@ -177,7 +177,7 @@ On success, in the same transaction:
    - `pending`: answer `REGISTRATION_INCOMPLETE`.
    - `suspended` or `banned` with `restricted_sign_in: false`: answer `ACCOUNT_RESTRICTED`.
 7. Check that roles ∩ client roles is not empty, else `ROLE_NOT_PERMITTED`.
-8. `[tx]` Lock the account and re-read what steps 2–7 decided on: the identifier, the password hash, the status, the roles and the TOTP factor. A password or identifier changed since step 4 answers `INVALID_CREDENTIALS` (not counted as a failure); a changed status or role set is decided again by steps 6–7. Reset the bucket and rehash if the parameters are old (TDD-03 §1).
+8. `[tx]` Lock the account and re-read the identifier, the password's `changed_at`, the status and the roles (steps 2–7), and the TOTP factor (step 9). A password changed since step 4 (a later `changed_at`; a rehash keeps it) or an identifier no longer the account's answers `INVALID_CREDENTIALS` (not counted as a failure); a changed status or role set is decided again by steps 6–7. Reset the bucket and rehash if the parameters are old (TDD-03 §1).
 9. Decide the second step (TDD-03 §3.4):
    - the account has a confirmed TOTP: open a `sign_in` flow (`first_factor = pwd`, `step = second_factor`) and answer `202 MFA_REQUIRED`;
    - it has none and the client has `mfa: required`: open it at `step = enrolment` and answer `202 MFA_ENROLMENT_REQUIRED`;

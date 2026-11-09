@@ -1550,8 +1550,9 @@ type SignInParams struct {
 	UserAgent *UserAgent `json:"User-Agent,omitempty"`
 
 	// UnderscoreUnderscoreHostAuth1Dev The device cookie of a browser that has signed in before (TDD-07 §4). A valid one whose
-	// device has signed in to the account puts the sign-in in that device's throttle bucket. An
-	// invalid one counts as none. Ignored for clients whose refresh transport is the body.
+	// device is on one of the account's sessions, live or ended within 90 days, puts the sign-in
+	// in that device's throttle bucket. An invalid one counts as none. Ignored for clients whose
+	// refresh transport is the body.
 	UnderscoreUnderscoreHostAuth1Dev *DeviceCookie `form:"__Host-auth1_dev,omitempty" json:"__Host-auth1_dev,omitempty"`
 }
 

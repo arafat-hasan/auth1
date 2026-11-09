@@ -82,6 +82,8 @@ the body for native clients)*
 
 **A success** resets the bucket used. A password reset resets all of A's buckets.
 
+**Concurrent attempts.** The delay is read before the password is verified and set after it (TDD-02 §5.1 steps 3–5), so attempts that arrive together as a delay ends are each verified and counted. This is accepted: L-2 bounds them per IP, the Argon2id slots per replica, and each counted failure doubles the next delay.
+
 ## 5. Send limits per value (L-7)
 
 Before a send, in the transaction, with the account locked, take a transaction-scoped lock on the
