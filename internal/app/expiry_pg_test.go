@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/adapters/system"
 	"github.com/arafat-hasan/auth1/internal/app"
 	"github.com/arafat-hasan/auth1/internal/config"
+	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/domain/account"
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
 	"github.com/arafat-hasan/auth1/internal/testing/pgtest"
@@ -160,6 +162,7 @@ func (e *expiryEnv) seed(t *testing.T, kind flow.Kind, ago int) seeded {
 	}
 	states := map[flow.Kind]flow.State{
 		flow.KindRegistration: flow.RegistrationState{PendingTypes: []string{"phone"}},
+		flow.KindInvitation:   flow.InvitationState{Roles: []string{"member"}, Accepted: true, PendingTypes: []string{"phone"}},
 		flow.KindSignIn:       flow.SignInState{FirstFactor: flow.FirstFactorPassword, Step: flow.StepSecondFactor},
 	}
 	handle := crypto.SHA256([]byte(s.flow.String()))
@@ -307,8 +310,9 @@ func TestFlowExpiryLeavesLive(t *testing.T) {
 // pending: a registration completed between the select and the lock.
 type activating struct {
 	app.ExpiringFlows
-	e *expiryEnv
-	t *testing.T
+	e       *expiryEnv
+	t       *testing.T
+	version map[uuid.UUID]int64 // each account's version once activated
 }
 
 func (a activating) ExpiredPending(ctx context.Context, limit int) ([]flow.Flow, error) {
@@ -322,6 +326,7 @@ func (a activating) ExpiredPending(ctx context.Context, limit int) ([]flow.Flow,
 		}); aerr != nil {
 			a.t.Error(aerr)
 		}
+		_, _, _, a.version[f.AccountID] = a.e.state(a.t, f.AccountID)
 	}
 	return fs, err
 }
@@ -331,7 +336,8 @@ func TestFlowExpiryLeavesActivated(t *testing.T) {
 	e := newExpiryEnv(t)
 	s := e.seed(t, flow.KindRegistration, 60)
 	d := e.deps()
-	d.Expiring = activating{ExpiringFlows: e.flows, e: e, t: t}
+	act := activating{ExpiringFlows: e.flows, e: e, t: t, version: map[uuid.UUID]int64{}}
+	d.Expiring = act
 	x, err := app.NewFlowExpiry(d, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -339,8 +345,15 @@ func TestFlowExpiryLeavesActivated(t *testing.T) {
 	if err := x.Run(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if status, _, _, _ := e.state(t, s.account); status != "active" {
+	status, _, _, version := e.state(t, s.account)
+	if status != "active" {
 		t.Errorf("status %q, want active", status)
+	}
+	if version != act.version[s.account] {
+		t.Errorf("version %d, want %d: a skipped account rolls back, moving no version", version, act.version[s.account])
+	}
+	if r := e.flowReason(t, s.flow); r != "expired" {
+		t.Errorf("the active account's expired flow: close reason %q, want expired", r)
 	}
 	if n := e.currentIdentifiers(t, s.account); n != 2 {
 		t.Errorf("%d current identifiers, want 2", n)
@@ -439,7 +452,112 @@ func TestFlowExpiryFailureSkipped(t *testing.T) {
 
 func TestNewFlowExpiryRefusesMissing(t *testing.T) {
 	t.Parallel()
-	if _, err := app.NewFlowExpiry(app.FlowExpiryDeps{}, 0); err == nil {
-		t.Fatal("no error for missing dependencies")
+	_, err := app.NewFlowExpiry(app.FlowExpiryDeps{}, 0)
+	if want := "flow expiry: missing UnitOfWork, Accounts, Flows, Expiring, Outbox, Audit"; err == nil || err.Error() != want {
+		t.Fatalf("error %v, want %q", err, want)
+	}
+}
+
+// TestFlowExpiryReleasesInvitedAccount checks TDD-02 §2.5 step 1 for an invitation: I-12, and the
+// event's client_id "invitation".
+func TestFlowExpiryReleasesInvitedAccount(t *testing.T) {
+	t.Parallel()
+	e := newExpiryEnv(t)
+	s := e.seed(t, flow.KindInvitation, 60)
+	e.exec(t, "UPDATE accounts SET registered_via = 'invitation' WHERE id = ?", s.account)
+	if err := e.expiry(t, 0).Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.currentIdentifiers(t, s.account); n != 0 {
+		t.Errorf("I-12: %d current identifiers, want 0", n)
+	}
+	if status, _, _, _ := e.state(t, s.account); status != "deleted" {
+		t.Errorf("status %q, want deleted", status)
+	}
+	var client, kind string
+	if err := e.su.QueryRowContext(t.Context(), `
+		SELECT (SELECT body->>'client_id' FROM outbox WHERE subject = ? AND type = 'account.registration_expired'),
+		       (SELECT details->>'kind' FROM auth_audit WHERE account_id = ? AND action = 'registration.expire')`,
+		s.account, s.account).Scan(&client, &kind); err != nil {
+		t.Fatal(err)
+	}
+	if client != "invitation" || kind != "invitation" {
+		t.Errorf("event client_id %q, audit kind %q; want invitation, invitation", client, kind)
+	}
+}
+
+func TestFlowExpiryCancelled(t *testing.T) {
+	t.Parallel()
+	e := newExpiryEnv(t)
+	s := e.seed(t, flow.KindRegistration, 60)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := e.expiry(t, 0).Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v, want context.Canceled: a cut-short run is no success", err)
+	}
+	if status, _, _, _ := e.state(t, s.account); status != "pending" {
+		t.Errorf("status %q, want pending", status)
+	}
+}
+
+// unavailableOutbox fails every event with UNAVAILABLE, as the store does in an outage.
+type unavailableOutbox struct {
+	app.OutboxWriter
+	hits atomic.Int64
+}
+
+func (o *unavailableOutbox) Event(context.Context, string, uuid.UUID, any) error {
+	o.hits.Add(1)
+	return &domain.Error{Code: domain.CodeUnavailable, Detail: "The service is temporarily unavailable."}
+}
+
+// TestFlowExpiryStopsOnOutage checks that a failure of the store, not of one flow, ends the pass
+// at once instead of trying, and logging, every expired flow.
+func TestFlowExpiryStopsOnOutage(t *testing.T) {
+	t.Parallel()
+	e := newExpiryEnv(t)
+	for range 4 {
+		e.seed(t, flow.KindRegistration, 60)
+	}
+	out := &unavailableOutbox{OutboxWriter: e.outbox}
+	d := e.deps()
+	d.Outbox = out
+	x, err := app.NewFlowExpiry(d, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.Run(t.Context()); err == nil {
+		t.Fatal("Run succeeded in an outage")
+	}
+	if n := out.hits.Load(); n != 1 {
+		t.Errorf("tried %d accounts in an outage, want 1", n)
+	}
+}
+
+// rollbackFailing is the environment's unit of work, failing every rollback.
+type rollbackFailing struct{ app.UnitOfWork }
+
+func (u rollbackFailing) Do(ctx context.Context, fn func(context.Context) error) error {
+	if err := u.UnitOfWork.Do(ctx, fn); err != nil {
+		return errors.Join(err, errors.New("roll back: connection lost"))
+	}
+	return nil
+}
+
+// TestFlowExpirySkipRollbackFailure checks that a rollback failure on a skipped account is
+// reported, not taken for a skip.
+func TestFlowExpirySkipRollbackFailure(t *testing.T) {
+	t.Parallel()
+	e := newExpiryEnv(t)
+	e.seed(t, flow.KindRegistration, 60)
+	d := e.deps()
+	d.Expiring = activating{ExpiringFlows: e.flows, e: e, t: t, version: map[uuid.UUID]int64{}}
+	d.UnitOfWork = rollbackFailing{e.uow}
+	x, err := app.NewFlowExpiry(d, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.Run(t.Context()); err == nil {
+		t.Fatal("Run succeeded although a rollback failed")
 	}
 }

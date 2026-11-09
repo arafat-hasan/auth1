@@ -27,6 +27,9 @@ func (e *flowsEnv) openFlow(t *testing.T, kind flow.Kind) flow.NewFlow {
 	t.Helper()
 	acc := e.flowAccount(t)
 	f := e.newFlow(acc, kind, handle(uuid.NewString()))
+	if kind == flow.KindInvitation {
+		f.State = flow.InvitationState{PendingTypes: []string{"email"}}
+	}
 	e.open(t, f)
 	idID, value := e.identifierOf(t, acc)
 	e.openChallenges(t, f, e.otpChallenge(f.ID, idID, value, "123456"))
@@ -165,12 +168,25 @@ func TestCloseExpired(t *testing.T) {
 	e.exec(t, "UPDATE flows SET pending_secret = '\\x00' WHERE id = ?", signIn.ID)
 	pending := e.openFlow(t, flow.KindRegistration)
 	e.expire(t, pending.ID, 60)
+	invited := e.openFlow(t, flow.KindInvitation)
+	e.expire(t, invited.ID, 60)
+	activated := e.openFlow(t, flow.KindRegistration)
+	e.expire(t, activated.ID, 60)
+	e.do(t, func(ctx context.Context) error {
+		if _, err := e.repo.GetForUpdate(ctx, activated.AccountID); err != nil {
+			return err
+		}
+		return e.repo.Activate(ctx, activated.AccountID)
+	})
 	live := e.openFlow(t, flow.KindSignIn)
 	before := e.version(t, signIn.AccountID)
 
 	n, err := e.flows.CloseExpired(t.Context(), 10)
-	if err != nil || n != 1 {
-		t.Fatalf("CloseExpired = %d, %v; want 1", n, err)
+	if err != nil || n != 2 {
+		t.Fatalf("CloseExpired = %d, %v; want 2 (the sign-in flow, the active account's registration)", n, err)
+	}
+	if cancelled, _, reason, _ := e.flowCols(t, activated.ID); !cancelled || reason != "expired" {
+		t.Errorf("an active account's expired registration: cancelled %v, reason %q", cancelled, reason)
 	}
 	cancelled, _, reason, secret := e.flowCols(t, signIn.ID)
 	if !cancelled || reason != "expired" || secret != nil {
@@ -182,7 +198,7 @@ func TestCloseExpired(t *testing.T) {
 	if v := e.version(t, signIn.AccountID); v != before {
 		t.Errorf("account version %d, want %d: closing a flow is not an account change", v, before)
 	}
-	for name, f := range map[string]flow.NewFlow{"pending registration": pending, "live": live} {
+	for name, f := range map[string]flow.NewFlow{"pending registration": pending, "pending invitation": invited, "live": live} {
 		if cancelled, completed, _, _ := e.flowCols(t, f.ID); cancelled || completed {
 			t.Errorf("%s flow closed", name)
 		}

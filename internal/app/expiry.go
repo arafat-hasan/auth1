@@ -24,7 +24,7 @@ const DefaultExpiryBatch = 500
 // auditRegistrationExpire is the audit action of an expired registration or invitation.
 const auditRegistrationExpire = "registration.expire"
 
-// FlowExpiryDeps are the ports the expiry job uses. Every field is required.
+// FlowExpiryDeps are the ports the expiry job uses. Every field but Logger is required.
 type FlowExpiryDeps struct {
 	UnitOfWork UnitOfWork
 	Accounts   Accounts
@@ -32,18 +32,22 @@ type FlowExpiryDeps struct {
 	Expiring   ExpiringFlows
 	Outbox     OutboxWriter
 	Audit      AuditWriter
-	Logger     *slog.Logger // for an account the run could not expire
+	Logger     *slog.Logger // for an account the run could not expire; nil logs nothing
 }
 
-// missing returns the names of the fields of d that are nil.
+// missing returns the names of the required fields of d that are nil, in field order.
 func (d FlowExpiryDeps) missing() []string {
+	fields := []struct {
+		name string
+		nil  bool
+	}{
+		{"UnitOfWork", d.UnitOfWork == nil}, {"Accounts", d.Accounts == nil}, {"Flows", d.Flows == nil},
+		{"Expiring", d.Expiring == nil}, {"Outbox", d.Outbox == nil}, {"Audit", d.Audit == nil},
+	}
 	var out []string
-	for name, isNil := range map[string]bool{
-		"UnitOfWork": d.UnitOfWork == nil, "Accounts": d.Accounts == nil, "Flows": d.Flows == nil,
-		"Expiring": d.Expiring == nil, "Outbox": d.Outbox == nil, "Audit": d.Audit == nil, "Logger": d.Logger == nil,
-	} {
-		if isNil {
-			out = append(out, name)
+	for _, f := range fields {
+		if f.nil {
+			out = append(out, f.name)
 		}
 	}
 	return out
@@ -63,6 +67,9 @@ func NewFlowExpiry(d FlowExpiryDeps, batch int) (*FlowExpiry, error) {
 	}
 	if batch <= 0 {
 		batch = DefaultExpiryBatch
+	}
+	if d.Logger == nil {
+		d.Logger = slog.New(slog.DiscardHandler)
 	}
 	return &FlowExpiry{d: d, batch: batch}, nil
 }
@@ -86,15 +93,27 @@ func (e *FlowExpiry) Run(ctx context.Context) error {
 }
 
 // expirePending expires the pending accounts of expired registrations and invitations. A flow it
-// leaves (failed, or skipped under the lock) is not taken again in this run, so the run ends.
+// leaves (failed, or skipped under the lock) is not taken again in this run, so the run ends. A
+// failure of one flow is logged and the others go on; a failure of the store (UNAVAILABLE, or ctx
+// ended) ends the pass at once. It returns the first failure, with how many flows failed.
 func (e *FlowExpiry) expirePending(ctx context.Context) error {
 	left := map[uuid.UUID]bool{}
-	var errs []error
+	var first error
+	failed := 0
+	result := func() error {
+		switch failed {
+		case 0:
+			return nil
+		case 1:
+			return first
+		}
+		return fmt.Errorf("%d flows not expired; the first: %w", failed, first)
+	}
 	for ctx.Err() == nil {
 		limit := e.batch + len(left)
 		fs, err := e.d.Expiring.ExpiredPending(ctx, limit)
 		if err != nil {
-			return errors.Join(append(errs, err)...)
+			return errors.Join(result(), err)
 		}
 		tried := 0
 		for _, f := range fs {
@@ -104,10 +123,16 @@ func (e *FlowExpiry) expirePending(ctx context.Context) error {
 			tried++
 			expired, err := e.expire(ctx, f)
 			if err != nil {
+				failed++
+				if first == nil {
+					first = err
+				}
+				if outage(err) {
+					return result()
+				}
 				e.d.Logger.LogAttrs(ctx, slog.LevelError, "flow expiry failed", slog.String("job", FlowExpiryJob),
 					slog.String("flow_id", f.ID.String()), slog.String("account_id", f.AccountID.String()),
 					slog.String("error", err.Error()))
-				errs = append(errs, err)
 			}
 			if !expired {
 				left[f.ID] = true
@@ -117,7 +142,15 @@ func (e *FlowExpiry) expirePending(ctx context.Context) error {
 			break
 		}
 	}
-	return errors.Join(errs...)
+	return result()
+}
+
+// outage reports whether err is a failure of the store or of the run rather than of one flow: the
+// next flows would fail the same way.
+func outage(err error) bool {
+	var de *domain.Error
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		(errors.As(err, &de) && de.Code == domain.CodeUnavailable)
 }
 
 // errSkip rolls back a transaction that found nothing to expire under its locks.
@@ -161,7 +194,7 @@ func (e *FlowExpiry) expire(ctx context.Context, f flow.Flow) (bool, error) {
 		entry.withFlow(lf)
 		return e.d.Audit.Write(ctx, entry)
 	})
-	if errors.Is(err, errSkip) {
+	if err == errSkip { //nolint:errorlint // exactly the sentinel: a rollback failure joined to it is a failure
 		return false, nil
 	}
 	if err != nil {
