@@ -21,7 +21,7 @@ func AccountActor(id uuid.UUID) EventActor {
 	return EventActor{Kind: ActorAccount, ID: id.String()}
 }
 
-// SystemActor is a job of auth1's own acting, named by its job name (TDD-08 §7).
+// SystemActor is auth1 acting through one of its jobs, the job's name as its id (TDD-08 §7).
 func SystemActor(job string) EventActor {
 	return EventActor{Kind: ActorSystem, ID: job}
 }

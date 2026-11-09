@@ -59,8 +59,9 @@ func (r *Flows) LockExpired(ctx context.Context, f flow.Flow) (flow.Flow, error)
 }
 
 // CloseExpired implements app.ExpiringFlows. The flows are taken FOR UPDATE SKIP LOCKED, and
-// their challenges are updated only through them: every other writer of a challenge holds its
-// flow's lock first (G-5), so the statement waits for nothing.
+// their challenges are updated only through them: every request that writes a challenge holds its
+// flow's lock first (G-5), so the statement waits at most for a concurrent CloseExpiredChallenges,
+// which never waits itself.
 func (r *Flows) CloseExpired(ctx context.Context, limit int) (int, error) {
 	var n int
 	err := Conn(ctx, r.db).QueryRowContext(ctx, `

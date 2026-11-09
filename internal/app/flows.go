@@ -118,7 +118,7 @@ type ExpiringFlows interface {
 	// CloseExpired closes, as "expired", up to limit open flows past expires_at other than the
 	// registration and invitation flows of pending accounts, with their challenges, erasing every
 	// secret (I-5), in one statement. It skips rows another transaction holds and takes no account
-	// lock, so it never waits. It returns how many flows it closed.
+	// lock, so it does not wait for requests. It returns how many flows it closed.
 	CloseExpired(ctx context.Context, limit int) (int, error)
 	// CloseExpiredChallenges closes up to limit open challenges past expires_at, erasing their
 	// secrets (I-5), skipping rows another transaction holds. It returns how many it closed.

@@ -275,23 +275,27 @@ refuses a `delivery.adapter` with no adapter yet, so until WP-44 run it with
 `unavailableResolver` in tests until WP-43.
 
 Jobs (TDD-08 §7, TDD-02 §2.5): `internal/worker/jobs.Scheduler` (`jobs.New(Options)`, `Run`) runs
-each `jobs.Job{Name, Lock, Every, Run}` only on the instance that leads its lock: at start, then
-every `Every` (0: once, when first leading, for bootstrap); a run is never overlapped by its own
-next one (missed ticks drop), is cancelled when `Lead`, re-checked every `CheckEvery` (5 s), says
-false, and records `auth1_job_last_success_timestamp{job=<Name>}` when it returns nil. The elector
-is `postgres.Leader`: session-level `pg_try_advisory_lock(postgres.JobLockClass, <Lock>)` on one
-pgx connection of its own per instance (so `max_conns` + 3 connections); a lost connection loses
-every lock, `Lead` returns false with the error and reconnects at its next call. Adding a job: a
+each `jobs.Job{Name, Lock, Every, Run}` (`Lock` above 0) only on the instance that leads its lock:
+at start, then every `Every` (0: once, when first leading, retried at each check until a run
+succeeds, for bootstrap); a run is never overlapped by its own next one (missed ticks drop), is
+cancelled when `Lead`, re-checked every `CheckEvery` (5 s) and bounded by it, says false or errs,
+and records `auth1_job_last_success_timestamp{job=<Name>}` when it returns nil with the lead held.
+The elector is `postgres.Leader`: session-level `pg_try_advisory_lock(postgres.JobLockClass,
+<Lock>)` on one pgx connection of its own per instance (so `max_conns` + 3 connections); a failed
+query (lost connection, ended ctx) or a held lock gone drops the connection and every lock, `Lead`
+returns false with the error and reconnects at its next call; after `Close` it leads nothing. Adding a job: a
 `Run func(ctx) error` that stays correct if two leaders briefly overlap (re-check under row locks,
 `SKIP LOCKED`), a new lock id in `cmd/auth1/jobs.go` (ids are never reused; 2–6 are reserved there),
-and its entry in `newJobs`. `serveDeps.jobEvery` shortens every interval in serve tests
-(`fastJobs`, `startRegServerWith`); by default they run at start and then every minute. The first job is `app.FlowExpiry` (`app.FlowExpiryJob = "flow-expiry"`, its metric
+and its entry in `newJobs`. `serveDeps.jobEvery` replaces every periodic job's interval in serve
+tests (`fastJobs`, `startRegServerWith`); by default flow expiry runs at start and then every minute. The first job is `app.FlowExpiry` (`app.FlowExpiryJob = "flow-expiry"`, its metric
 label and its system actor id): per pending account whose `registration` or `invitation` flow
 expired (`app.ExpiringFlows.ExpiredPending`, unlocked), one transaction locks the account, then the
 flow (`LockExpired`), `Cancel`s it `expired`, applies `account.Expire` (identifiers retired, I-12;
 `deleted`; nothing else erased), emits `account.registration_expired` and audits
 `registration.expire`; then `CloseExpired` and `CloseExpiredChallenges` close the other expired
-flows and challenges in `SKIP LOCKED` statements without the account lock, moving no version.
+flows and challenges in `SKIP LOCKED` statements without the account lock, moving no version. A
+store failure (UNAVAILABLE, ended ctx) ends the pass; a skip is exactly `errSkip`, so a rollback
+failure joined to it is reported.
 
 Rate limits (TDD-07 §1, §2, §8): `app.RateLimiter` (`Hit`) is the sliding-window port and
 `app.RateLimits` the helper use cases call: `CheckIP(ctx, rule, ip)` (keyed by `app.IPKey`: IPv4
