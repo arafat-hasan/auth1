@@ -185,7 +185,7 @@ func (h *things) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 	}
-	render := func(err error) app.IdempotentResponse {
+	render := func(err error) (app.IdempotentResponse, error) {
 		if err != nil {
 			return idempotency.RenderError(h.pw, r, err)
 		}

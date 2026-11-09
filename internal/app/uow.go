@@ -1,6 +1,9 @@
 package app
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // UnitOfWork runs a use case in one database transaction (SDD §6.3, TDD-01 §6). Do commits once
 // when fn returns nil and rolls back when it returns an error or panics; the panic continues. A Do
@@ -16,3 +19,7 @@ type UnitOfWork interface {
 type Savepoints interface {
 	Savepoint(ctx context.Context, fn func(ctx context.Context) error) error
 }
+
+// ErrSavepointRollback is matched by the error of a Savepoint whose fn failed and that then could
+// not roll back: the transaction is unusable, and the fn's error is not its outcome.
+var ErrSavepointRollback = errors.New("savepoint not rolled back")

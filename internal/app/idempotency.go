@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -100,16 +101,24 @@ func NewIdempotency(uow UnitOfWork, sp Savepoints, keys IdempotencyKeys, ttl tim
 }
 
 // Run runs op once per req's key, in one transaction, and returns the response to send. Call it
-// outside any transaction: the key is the transaction's first lock (TDD-01 §4.2).
+// outside any transaction: the key is the transaction's first lock (TDD-01 §4.2), and the
+// repository refuses a claim after another lock.
+//   - A request without its caller, key or a SHA-256 hash is refused before anything runs.
 //   - A key already stored with another hash is IDEMPOTENCY_KEY_REUSED; with the same hash, Run
 //     returns the stored response without calling op or render.
-//   - Otherwise op runs under a savepoint, and render turns op's error (nil on success) into the
-//     response. A 2xx commits op's effects with the stored response. A 4xx rolls op back to the
-//     savepoint, so it leaves no effect, and commits the stored response only.
-//   - A 5xx, a 429, a status below 200 or a body over MaxStoredBody stores nothing: Run rolls
-//     everything back and returns op's error, or an error naming the fault, so the key stays free.
+//   - Otherwise op runs under a savepoint: an error from op, a refusal, rolls op back to the
+//     savepoint, so it leaves no effect. render turns op's error (nil on success) into the
+//     response, which must be a 2xx when op succeeded and a 4xx when it refused. Either is stored
+//     and committed, with op's effects for a 2xx.
+//   - Anything else stores nothing, and Run rolls everything back so the key stays free: a 5xx,
+//     a 429, a status that does not match op's result, a body over MaxStoredBody, an error from
+//     render, or a savepoint that could not roll back (ErrSavepointRollback). Run returns op's
+//     error for a 5xx or 429, else an error naming the fault, joined with render's error if any.
 func (i *Idempotency) Run(ctx context.Context, req IdempotencyRequest, op func(ctx context.Context) error,
-	render func(err error) IdempotentResponse) (IdempotentResponse, error) {
+	render func(err error) (IdempotentResponse, error)) (IdempotentResponse, error) {
+	if req.Caller == "" || req.Key == "" || len(req.Hash) != sha256.Size {
+		return IdempotentResponse{}, errors.New("idempotency: the request has no caller, key or hash")
+	}
 	var resp IdempotentResponse
 	err := i.uow.Do(ctx, func(ctx context.Context) error {
 		stored, err := i.keys.Claim(ctx, req, i.ttl)
@@ -124,13 +133,23 @@ func (i *Idempotency) Run(ctx context.Context, req IdempotencyRequest, op func(c
 			return nil
 		}
 		opErr := i.sp.Savepoint(ctx, op)
-		resp = render(opErr)
+		if errors.Is(opErr, ErrSavepointRollback) {
+			return opErr
+		}
+		var renderErr error
+		resp, renderErr = render(opErr)
 		switch {
-		case resp.Status >= 500 || resp.Status == 429 || resp.Status < 200:
+		case renderErr != nil:
+			return fmt.Errorf("idempotency: render the response: %w", renderErr)
+		case resp.Status >= 500 || resp.Status == 429:
 			if opErr != nil {
 				return opErr
 			}
-			return fmt.Errorf("idempotency: the operation rendered status %d", resp.Status)
+			return fmt.Errorf("idempotency: the operation succeeded but rendered status %d", resp.Status)
+		case opErr == nil && (resp.Status < 200 || resp.Status > 299):
+			return fmt.Errorf("idempotency: the operation succeeded but rendered status %d", resp.Status)
+		case opErr != nil && (resp.Status < 400 || resp.Status > 499):
+			return fmt.Errorf("idempotency: the operation refused but rendered status %d: %w", resp.Status, opErr)
 		case len(resp.Body) > MaxStoredBody:
 			return fmt.Errorf("idempotency: a response body of %d bytes is over %d", len(resp.Body), MaxStoredBody)
 		}

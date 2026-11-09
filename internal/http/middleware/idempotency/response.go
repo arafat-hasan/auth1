@@ -2,20 +2,23 @@ package idempotency
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 
 	"github.com/arafat-hasan/auth1/internal/app"
+	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/http/problem"
 )
 
 // Render returns the response write sends, for app.Idempotency.Run's render callback: the status
 // (200 when write sets none), the Content-Type and the body. Only those are stored and replayed
-// (TDD-05 §4). write is a strict response's Visit method, or anything writing a response; one that
-// fails renders as 500, which Run never stores.
-func Render(write func(w http.ResponseWriter) error) app.IdempotentResponse {
+// (TDD-05 §4): other headers, Location and Retry-After among them, are dropped, so an idempotent
+// operation must not answer with them. write is a strict response's Visit method, or anything
+// writing a response; when it fails, Render returns a 500 and its error, and Run stores nothing.
+func Render(write func(w http.ResponseWriter) error) (app.IdempotentResponse, error) {
 	rec := &recorder{header: http.Header{}}
 	if err := write(rec); err != nil {
-		return app.IdempotentResponse{Status: http.StatusInternalServerError}
+		return app.IdempotentResponse{Status: http.StatusInternalServerError}, err
 	}
 	if rec.status == 0 {
 		rec.status = http.StatusOK
@@ -24,11 +27,20 @@ func Render(write func(w http.ResponseWriter) error) app.IdempotentResponse {
 	if rec.body.Len() > 0 {
 		body = bytes.Clone(rec.body.Bytes())
 	}
-	return app.IdempotentResponse{Status: rec.status, ContentType: rec.header.Get("Content-Type"), Body: body}
+	return app.IdempotentResponse{Status: rec.status, ContentType: rec.header.Get("Content-Type"), Body: body}, nil
 }
 
-// RenderError is Render of the problem pw writes for err.
-func RenderError(pw *problem.Writer, r *http.Request, err error) app.IdempotentResponse {
+// RenderError is Render of the problem pw writes for a refusal: a *domain.Error, or an
+// *http.MaxBytesError. Any other error renders as a bare 503 without being written or logged:
+// Run stores nothing for it and returns it, and the handler writes it, logged once.
+func RenderError(pw *problem.Writer, r *http.Request, err error) (app.IdempotentResponse, error) {
+	var (
+		de *domain.Error
+		me *http.MaxBytesError
+	)
+	if !errors.As(err, &de) && !errors.As(err, &me) {
+		return app.IdempotentResponse{Status: http.StatusServiceUnavailable}, nil
+	}
 	return Render(func(w http.ResponseWriter) error {
 		pw.Write(w, r, err)
 		return nil

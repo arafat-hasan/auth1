@@ -16,6 +16,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/arafat-hasan/auth1/internal/app"
 	"github.com/arafat-hasan/auth1/internal/domain"
 	"github.com/arafat-hasan/auth1/internal/domain/flow"
 )
@@ -215,7 +216,8 @@ func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context) error)
 // Savepoint implements app.Savepoints: it runs fn under a savepoint of the transaction Do opened.
 // When fn returns an error, it rolls back to the savepoint, restores the locks and events the
 // transaction had recorded there (the rollback released the later row locks and discarded the
-// later events), and returns fn's error; otherwise it releases the savepoint. Outside a
+// later events), and returns fn's error; when that rollback fails, fn's error joined with one
+// matching app.ErrSavepointRollback. Otherwise it releases the savepoint. Outside a
 // transaction it returns ErrNoTransaction without calling fn.
 func (u *UnitOfWork) Savepoint(ctx context.Context, fn func(ctx context.Context) error) error {
 	t := txFrom(ctx)
@@ -230,7 +232,7 @@ func (u *UnitOfWork) Savepoint(ctx context.Context, fn func(ctx context.Context)
 	}
 	if err := fn(ctx); err != nil {
 		if _, rerr := t.tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+name); rerr != nil {
-			return errors.Join(err, fmt.Errorf("roll back to savepoint: %w", rerr))
+			return errors.Join(err, fmt.Errorf("roll back to savepoint: %w: %w", app.ErrSavepointRollback, rerr))
 		}
 		t.restore(before)
 		return err

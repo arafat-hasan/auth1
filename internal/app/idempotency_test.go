@@ -3,7 +3,9 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -17,11 +19,13 @@ import (
 // idemStore is a transactional fake of the unit of work, its savepoints and the key repository:
 // rows claimed and stored in a Do commit when fn returns nil and are dropped otherwise.
 type idemStore struct {
-	committed map[string]app.StoredIdempotency
-	pending   map[string]app.StoredIdempotency
-	inTx      bool
-	rollbacks int // savepoints rolled back
-	claimErr  error
+	committed   map[string]app.StoredIdempotency
+	pending     map[string]app.StoredIdempotency
+	inTx        bool
+	rollbacks   int   // savepoints rolled back
+	claims      int   // Claim calls
+	claimErr    error // what Claim returns
+	rollbackErr error // when set, a savepoint whose fn fails cannot roll back
 }
 
 func newIdemStore() *idemStore {
@@ -44,6 +48,9 @@ func (s *idemStore) Do(ctx context.Context, fn func(context.Context) error) erro
 
 func (s *idemStore) Savepoint(ctx context.Context, fn func(context.Context) error) error {
 	err := fn(ctx)
+	if err != nil && s.rollbackErr != nil {
+		return errors.Join(err, s.rollbackErr)
+	}
 	if err != nil {
 		s.rollbacks++
 	}
@@ -54,6 +61,7 @@ func (s *idemStore) Claim(_ context.Context, req app.IdempotencyRequest, ttl tim
 	if !s.inTx || ttl != time.Hour {
 		return nil, errors.New("claim outside a transaction or with the wrong ttl")
 	}
+	s.claims++
 	if s.claimErr != nil {
 		return nil, s.claimErr
 	}
@@ -84,10 +92,15 @@ func newIdempotency(t *testing.T, s *idemStore) *app.Idempotency {
 }
 
 var (
-	reqA           = app.IdempotencyRequest{Caller: "client:support", Key: "k-1", Hash: []byte("hash-a")}
+	reqA           = app.IdempotencyRequest{Caller: "client:support", Key: "k-1", Hash: hashOf("a")}
 	ok201          = app.IdempotentResponse{Status: 201, ContentType: "application/json", Body: []byte(`{"n":1}`)}
 	statusConflict = &domain.Error{Code: domain.CodeStatusTransitionInvalid}
 )
+
+func hashOf(s string) []byte {
+	h := sha256.Sum256([]byte(s))
+	return h[:]
+}
 
 // call counts op and render calls; render answers by err with status.
 type call struct {
@@ -96,22 +109,23 @@ type call struct {
 	status       int // the status render gives an error
 	body         []byte
 	fixed        *app.IdempotentResponse // when set, what render always gives
+	renderErr    error                   // what render returns beside the response
 }
 
 func (c *call) op(context.Context) error { c.ops++; return c.opErr }
 
-func (c *call) render(err error) app.IdempotentResponse {
+func (c *call) render(err error) (app.IdempotentResponse, error) {
 	c.renders++
 	if c.fixed != nil {
-		return *c.fixed
+		return *c.fixed, c.renderErr
 	}
 	if err != nil {
-		return app.IdempotentResponse{Status: c.status, ContentType: "application/problem+json", Body: []byte(`{"code":"x"}`)}
+		return app.IdempotentResponse{Status: c.status, ContentType: "application/problem+json", Body: []byte(`{"code":"x"}`)}, c.renderErr
 	}
 	if c.body != nil {
-		return app.IdempotentResponse{Status: 201, ContentType: "application/json", Body: c.body}
+		return app.IdempotentResponse{Status: 201, ContentType: "application/json", Body: c.body}, c.renderErr
 	}
-	return ok201
+	return ok201, c.renderErr
 }
 
 func TestRunStoresAndReplays(t *testing.T) {
@@ -146,7 +160,7 @@ func TestRunReused(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := reqA
-	other.Hash = []byte("hash-b")
+	other.Hash = hashOf("b")
 	c := &call{}
 	_, err := i.Run(t.Context(), other, c.op, c.render)
 	var de *domain.Error
@@ -199,6 +213,10 @@ func TestRunLeavesKeyFree(t *testing.T) {
 		{"rate limited", &call{opErr: limited, status: 429}, limited},
 		{"rendered 500 without an error", &call{fixed: &app.IdempotentResponse{Status: 500}}, nil},
 		{"status below 200", &call{fixed: &app.IdempotentResponse{Status: 101}}, nil},
+		{"a refusal rendered for a success", &call{fixed: &app.IdempotentResponse{Status: 409}}, nil},
+		{"a redirect rendered for a success", &call{fixed: &app.IdempotentResponse{Status: 302}}, nil},
+		{"a success rendered for a refusal", &call{opErr: statusConflict, fixed: &ok201}, statusConflict},
+		{"a render that failed", &call{fixed: &app.IdempotentResponse{Status: 500}, renderErr: errRender}, errRender},
 		{"oversized body", &call{body: []byte(strings.Repeat("x", 64<<10+1))}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -217,6 +235,40 @@ func TestRunLeavesKeyFree(t *testing.T) {
 				t.Errorf("retry = %v, op ran %d times; want it to run", err, retry.ops)
 			}
 		})
+	}
+}
+
+var errRender = errors.New("encode the response")
+
+// TestRunRollbackFailed: a savepoint that cannot roll back is a fault, not the refusal op
+// returned; nothing is rendered or stored.
+func TestRunRollbackFailed(t *testing.T) {
+	t.Parallel()
+	s := newIdemStore()
+	s.rollbackErr = fmt.Errorf("roll back: %w", app.ErrSavepointRollback)
+	c := &call{opErr: statusConflict, status: 409}
+	_, err := newIdempotency(t, s).Run(t.Context(), reqA, c.op, c.render)
+	if !errors.Is(err, app.ErrSavepointRollback) || c.renders != 0 || len(s.committed) != 0 {
+		t.Errorf("Run = %v, render ran %d times, committed %v; want ErrSavepointRollback, no render, nothing stored",
+			err, c.renders, s.committed)
+	}
+}
+
+// TestRunRefusesIncompleteRequest: a request without its caller, key or hash, as a handler that
+// did not get it from the middleware would pass, claims nothing.
+func TestRunRefusesIncompleteRequest(t *testing.T) {
+	t.Parallel()
+	for name, req := range map[string]app.IdempotencyRequest{
+		"zero":       {},
+		"no caller":  {Key: "k-1", Hash: hashOf("a")},
+		"no key":     {Caller: "client:support", Hash: hashOf("a")},
+		"short hash": {Caller: "client:support", Key: "k-1", Hash: []byte("a")},
+	} {
+		s := newIdemStore()
+		c := &call{}
+		if _, err := newIdempotency(t, s).Run(t.Context(), req, c.op, c.render); err == nil || s.claims != 0 || c.ops != 0 {
+			t.Errorf("%s: Run = %v, %d claims, op ran %d times; want an error and nothing run", name, err, s.claims, c.ops)
+		}
 	}
 }
 
