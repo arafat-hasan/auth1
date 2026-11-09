@@ -238,6 +238,8 @@ func TestNewRefuses(t *testing.T) {
 		"negative every": {Elector: &elector{}, Jobs: []jobs.Job{{Name: "x", Lock: 1, Every: -time.Second, Run: ok}}},
 		"repeated name":  {Elector: &elector{}, Jobs: []jobs.Job{job, {Name: "flow-expiry", Lock: 2, Run: ok}}},
 		"repeated lock":  {Elector: &elector{}, Jobs: []jobs.Job{job, {Name: "purge", Lock: 1, Run: ok}}},
+		"zero lock":      {Elector: &elector{}, Jobs: []jobs.Job{{Name: "x", Run: ok}}},
+		"negative lock":  {Elector: &elector{}, Jobs: []jobs.Job{{Name: "x", Lock: -1, Run: ok}}},
 	} {
 		if _, err := jobs.New(o); err == nil {
 			t.Errorf("%s: no error", name)
@@ -246,4 +248,88 @@ func TestNewRefuses(t *testing.T) {
 	if _, err := jobs.New(jobs.Options{Elector: &elector{}, Jobs: []jobs.Job{job}}); err != nil {
 		t.Errorf("valid options: %v", err)
 	}
+}
+
+// TestSchedulerOnceRetriesFailure checks that a once job that fails runs again at the next check,
+// until it succeeds, and then no more.
+func TestSchedulerOnceRetriesFailure(t *testing.T) {
+	t.Parallel()
+	el := &elector{lead: true}
+	var runs atomic.Int64
+	start(t, el, jobs.Job{Name: "bootstrap", Lock: 6, Run: func(context.Context) error {
+		if runs.Add(1) < 3 {
+			return errors.New("not yet")
+		}
+		return nil
+	}})
+	eventually(t, 2*time.Second, "three tries", func() bool { return runs.Load() == 3 })
+	time.Sleep(100 * time.Millisecond)
+	if n := runs.Load(); n != 3 {
+		t.Errorf("once job ran %d times, want 3", n)
+	}
+}
+
+// failingElector answers true with an error: the lead is not established.
+type failingElector struct{}
+
+func (failingElector) Lead(context.Context, int32) (bool, error) { return true, errors.New("lost") }
+
+func TestSchedulerErrorIsNotLead(t *testing.T) {
+	t.Parallel()
+	var c counting
+	_, stop := start(t, failingElector{}, jobs.Job{Name: "flow-expiry", Lock: 1, Every: 10 * time.Millisecond, Run: c.run})
+	time.Sleep(100 * time.Millisecond)
+	stop()
+	if n := c.runs.Load(); n != 0 {
+		t.Errorf("ran %d times on a lead check that failed", n)
+	}
+}
+
+// hangingElector leads at its first check and then hangs until its context ends, as a check on a
+// half-open connection would.
+type hangingElector struct{ calls atomic.Int64 }
+
+func (h *hangingElector) Lead(ctx context.Context, _ int32) (bool, error) {
+	if h.calls.Add(1) == 1 {
+		return true, nil
+	}
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+// TestSchedulerLeadCheckBounded checks that a hanging lead check ends within CheckEvery and
+// cancels the run.
+func TestSchedulerLeadCheckBounded(t *testing.T) {
+	t.Parallel()
+	running, cancelled := make(chan struct{}, 1), make(chan struct{}, 1)
+	start(t, &hangingElector{}, jobs.Job{Name: "flow-expiry", Lock: 1, Every: time.Hour, Run: func(ctx context.Context) error {
+		running <- struct{}{}
+		<-ctx.Done()
+		cancelled <- struct{}{}
+		return ctx.Err()
+	}})
+	<-running
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a hanging lead check did not cancel the run")
+	}
+}
+
+// TestNewKeepsItsJobs checks that changing the caller's slice after New changes nothing.
+func TestNewKeepsItsJobs(t *testing.T) {
+	t.Parallel()
+	var c counting
+	js := []jobs.Job{{Name: "flow-expiry", Lock: 1, Every: 10 * time.Millisecond, Run: c.run}}
+	s, err := jobs.New(jobs.Options{Elector: &elector{lead: true}, Jobs: js, CheckEvery: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	js[0].Run = nil
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	eventually(t, time.Second, "a run", func() bool { return c.runs.Load() > 0 })
+	cancel()
+	<-done
 }

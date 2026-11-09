@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,8 +20,9 @@ const DefaultCheckEvery = 5 * time.Second
 
 // Elector decides which instance leads a job (postgres.Leader).
 type Elector interface {
-	// Lead reports whether this instance holds the job lock lock, taking it when it is free. An
-	// error means it does not.
+	// Lead reports whether this instance holds the job lock lock, taking it when it is free. On
+	// an error the instance leads no job: the scheduler treats every lock as lost, whatever the
+	// boolean. The scheduler bounds each call by its CheckEvery.
 	Lead(ctx context.Context, lock int32) (bool, error)
 }
 
@@ -29,9 +31,10 @@ type Job struct {
 	// Name is the job's metric label (auth1_job_last_success_timestamp{job}), its log field and
 	// the id of the system actor of what it writes. It holds nothing personal.
 	Name string
-	// Lock is the job's advisory lock id, unique among the jobs.
+	// Lock is the job's advisory lock id: above 0, and unique among the jobs.
 	Lock int32
-	// Every is the interval between runs; 0 runs the job once, when this instance first leads it.
+	// Every is the interval between runs. 0 runs the job once, when this instance first leads
+	// it; a run that fails or is cancelled is tried again at the next check, until one succeeds.
 	Every time.Duration
 	// Run does one run. It returns when ctx ends, which happens when the instance stops or
 	// loses the lead. A nil error records a success.
@@ -43,8 +46,9 @@ type Options struct {
 	// Elector and Jobs are required.
 	Elector Elector
 	Jobs    []Job
-	// CheckEvery is how often a running job re-checks the lead; zero means DefaultCheckEvery. A
-	// job not yet led is retried at its interval (or at CheckEvery for a once job).
+	// CheckEvery is how often a running job re-checks the lead, and the bound on each check;
+	// zero means DefaultCheckEvery. A job not led is tried again at its interval (at CheckEvery for
+	// a once job).
 	CheckEvery time.Duration
 	Logger     *slog.Logger
 	// LastSuccess is auth1_job_last_success_timestamp; nil records nothing.
@@ -57,7 +61,8 @@ type Scheduler struct {
 }
 
 // New returns the scheduler, or an error for a missing elector, or a job with no name or run, a
-// negative interval, or a name or lock another job has.
+// lock not above 0, a negative interval, or a name or lock another job has. It keeps its own copy
+// of the jobs.
 func New(o Options) (*Scheduler, error) {
 	if o.Elector == nil {
 		return nil, errors.New("jobs: no elector")
@@ -69,6 +74,8 @@ func New(o Options) (*Scheduler, error) {
 			return nil, errors.New("jobs: a job has no name")
 		case j.Run == nil:
 			return nil, fmt.Errorf("jobs: job %s has no run", j.Name)
+		case j.Lock <= 0:
+			return nil, fmt.Errorf("jobs: job %s has lock %d, not above 0", j.Name, j.Lock)
 		case j.Every < 0:
 			return nil, fmt.Errorf("jobs: job %s has a negative interval", j.Name)
 		case names[j.Name]:
@@ -78,6 +85,7 @@ func New(o Options) (*Scheduler, error) {
 		}
 		names[j.Name], locks[j.Lock] = true, true
 	}
+	o.Jobs = slices.Clone(o.Jobs)
 	if o.CheckEvery <= 0 {
 		o.CheckEvery = DefaultCheckEvery
 	}
@@ -102,7 +110,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	return nil
 }
 
-// loop runs one job until ctx ends, or until a once job has run.
+// loop runs one job until ctx ends, or until a once job has succeeded.
 func (s *Scheduler) loop(ctx context.Context, j Job) {
 	every := j.Every
 	if every == 0 {
@@ -113,8 +121,7 @@ func (s *Scheduler) loop(ctx context.Context, j Job) {
 	var leading atomic.Bool
 	for {
 		if s.lead(ctx, j, &leading) {
-			s.run(ctx, j, &leading)
-			if j.Every == 0 {
+			if s.run(ctx, j, &leading) && j.Every == 0 {
 				return
 			}
 			select { // drop a tick that came during the run
@@ -130,11 +137,17 @@ func (s *Scheduler) loop(ctx context.Context, j Job) {
 	}
 }
 
-// lead asks the elector whether this instance leads j, and logs a change.
+// lead asks the elector, within CheckEvery, whether this instance leads j, and logs a change.
+// An error is no lead.
 func (s *Scheduler) lead(ctx context.Context, j Job, leading *atomic.Bool) bool {
-	ok, err := s.o.Elector.Lead(ctx, j.Lock)
-	if err != nil && ctx.Err() == nil {
-		s.o.Logger.Warn("job leader check failed", slog.String("job", j.Name), slog.String("error", err.Error()))
+	cctx, cancel := context.WithTimeout(ctx, s.o.CheckEvery)
+	defer cancel()
+	ok, err := s.o.Elector.Lead(cctx, j.Lock)
+	if err != nil {
+		ok = false
+		if ctx.Err() == nil {
+			s.o.Logger.Warn("job leader check failed", slog.String("job", j.Name), slog.String("error", err.Error()))
+		}
 	}
 	if leading.Swap(ok) != ok {
 		msg := "job leadership acquired"
@@ -146,8 +159,9 @@ func (s *Scheduler) lead(ctx context.Context, j Job, leading *atomic.Bool) bool 
 	return ok
 }
 
-// run runs j once, cancelling it when a check finds the lead lost, and records a success.
-func (s *Scheduler) run(ctx context.Context, j Job, leading *atomic.Bool) {
+// run runs j once, cancelling it when a check finds the lead lost, and records a success. It
+// reports whether the run succeeded: returned nil, with the lead held to the end.
+func (s *Scheduler) run(ctx context.Context, j Job, leading *atomic.Bool) bool {
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -171,13 +185,18 @@ func (s *Scheduler) run(ctx context.Context, j Job, leading *atomic.Bool) {
 	err := j.Run(rctx)
 	close(done)
 	wg.Wait()
-	if err != nil {
-		if ctx.Err() == nil {
-			s.o.Logger.Error("job run failed", slog.String("job", j.Name), slog.String("error", err.Error()),
-				slog.Float64("duration", time.Since(start).Seconds()))
-		}
-		return
+	attrs := []slog.Attr{slog.String("job", j.Name), slog.Float64("duration", time.Since(start).Seconds())}
+	switch {
+	case ctx.Err() != nil && (err == nil || errors.Is(err, context.Canceled)):
+		return false // stopping
+	case rctx.Err() != nil && ctx.Err() == nil:
+		s.o.Logger.LogAttrs(ctx, slog.LevelInfo, "job run cancelled: lead lost", attrs...)
+		return false
+	case err != nil:
+		s.o.Logger.LogAttrs(ctx, slog.LevelError, "job run failed", append(attrs, slog.String("error", err.Error()))...)
+		return false
 	}
 	s.o.LastSuccess.Record(ctx, float64(time.Now().Unix()), metric.WithAttributes(attribute.String("job", j.Name)))
-	s.o.Logger.Debug("job run", slog.String("job", j.Name), slog.Float64("duration", time.Since(start).Seconds()))
+	s.o.Logger.LogAttrs(ctx, slog.LevelDebug, "job run", attrs...)
+	return true
 }

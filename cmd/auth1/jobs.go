@@ -31,7 +31,8 @@ type jobParts struct {
 	metrics *telemetry.Metrics
 	tracing trace.TracerProvider
 	logger  *slog.Logger
-	// every replaces every job's interval when above 0 (tests).
+	// every, when above 0, replaces the interval of every periodic job (tests); a once job stays
+	// once.
 	every time.Duration
 }
 
@@ -61,7 +62,7 @@ func newJobs(p jobParts) (*jobs.Scheduler, *postgres.Leader, error) {
 		return nil, nil, err
 	}
 	every := func(d time.Duration) time.Duration {
-		if p.every > 0 {
+		if p.every > 0 && d > 0 {
 			return p.every
 		}
 		return d
