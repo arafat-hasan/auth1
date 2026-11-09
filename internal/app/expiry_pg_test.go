@@ -326,7 +326,11 @@ func (a activating) ExpiredPending(ctx context.Context, limit int) ([]flow.Flow,
 		}); aerr != nil {
 			a.t.Error(aerr)
 		}
-		_, _, _, a.version[f.AccountID] = a.e.state(a.t, f.AccountID)
+		var v int64
+		if err := a.e.su.QueryRowContext(ctx, "SELECT version FROM accounts WHERE id = ?", f.AccountID).Scan(&v); err != nil {
+			a.t.Error(err)
+		}
+		a.version[f.AccountID] = v
 	}
 	return fs, err
 }

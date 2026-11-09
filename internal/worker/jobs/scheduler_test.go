@@ -331,5 +331,7 @@ func TestNewKeepsItsJobs(t *testing.T) {
 	go func() { done <- s.Run(ctx) }()
 	eventually(t, time.Second, "a run", func() bool { return c.runs.Load() > 0 })
 	cancel()
-	<-done
+	if err := <-done; err != nil {
+		t.Errorf("Run = %v", err)
+	}
 }
