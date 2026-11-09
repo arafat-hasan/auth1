@@ -19,7 +19,8 @@ type IdempotencyRequest struct {
 	// Caller is "<kind>:<id>" for a service caller, or "system" for auth1's own requests.
 	Caller string
 	Key    string
-	// Hash is sha256(method ‖ 0x00 ‖ path ‖ 0x00 ‖ JCS(body)).
+	// Hash is the request hash, 32 bytes: for HTTP, sha256(method ‖ 0x00 ‖ escaped path ‖ 0x00 ‖
+	// JCS(body)), which the Idempotency-Key middleware computes (TDD-05 §4).
 	Hash []byte
 }
 
@@ -91,8 +92,8 @@ func (s StoredIdempotency) MarshalText() ([]byte, error) { return []byte(s.Strin
 type IdempotencyKeys interface {
 	// Claim takes the key for req, as the transaction's first lock: it returns nil when the key
 	// was free, or held by a row older than ttl, and is now this transaction's; otherwise it
-	// waits for a transaction holding the key and returns the committed row, locked. A wait past
-	// its bound is UNAVAILABLE.
+	// returns the committed row, locked, after waiting for any transaction holding the key
+	// uncommitted. A wait past its bound is UNAVAILABLE.
 	Claim(ctx context.Context, req IdempotencyRequest, ttl time.Duration) (*StoredIdempotency, error)
 	// Store records resp for the key Claim took in this transaction, once; anything else is an
 	// error.
