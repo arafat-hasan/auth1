@@ -402,8 +402,15 @@ func TestWaitBoundsTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The wait bounds connecting too: connect first, so that on a loaded host the 100ms goes to
+	// the lock and the error is the lock's. Status reuses the idle connection.
+	waiter := openDB(t, dsn)
+	if err := waiter.PingContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
 	start := time.Now()
-	_, err = migrate.New(openDB(t, dsn), okFS, migrate.WithWait(100*time.Millisecond)).Status(t.Context())
+	_, err = migrate.New(waiter, okFS, migrate.WithWait(100*time.Millisecond)).Status(t.Context())
 	wantErr(t, err, "migration lock")
 	if d := time.Since(start); d > 2*time.Second {
 		t.Errorf("Status took %v; want about the 100ms wait", d)
