@@ -254,3 +254,155 @@ func TestIdempotencyNoTransaction(t *testing.T) {
 		t.Errorf("Store outside Do = %v, want ErrNoTransaction", err)
 	}
 }
+
+// TestIdempotencyClaimFirstLock: the key is the transaction's first lock (TDD-01 §4.2); a claim
+// after another lock is refused before it queries.
+func TestIdempotencyClaimFirstLock(t *testing.T) {
+	t.Parallel()
+	e := keysDB(t)
+	na := e.newAccount("", "ada@example.org")
+	e.create(t, na)
+	err := e.uow.Do(t.Context(), func(ctx context.Context) error {
+		if _, err := e.repo.GetForUpdate(ctx, na.ID); err != nil {
+			return err
+		}
+		_, err := e.keys.Claim(ctx, idemRequest("client:support", "k-1", "a"), day)
+		return err
+	})
+	if !errors.Is(err, postgres.ErrLockOrder) {
+		t.Errorf("Claim after an account lock = %v, want ErrLockOrder", err)
+	}
+	if n := e.keyRows(t); n != 0 {
+		t.Errorf("%d key rows, want none", n)
+	}
+}
+
+// keyRows counts the idempotency key rows.
+func (e *keysEnv) keyRows(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := e.su.QueryRowContext(t.Context(), "SELECT count(*) FROM idempotency_keys").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestIdempotencyClaimResetsLockTimeout: after a claim, the operation's own locks wait as long as
+// the session's default, on both the claiming and the replaying path.
+func TestIdempotencyClaimResetsLockTimeout(t *testing.T) {
+	t.Parallel()
+	e := keysDB(t)
+	req := idemRequest("client:support", "k-1", "a")
+	var want string
+	if err := e.app.QueryRowContext(t.Context(), "SHOW lock_timeout").Scan(&want); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"claim", "replay"} {
+		var got string
+		e.do(t, func(ctx context.Context) error {
+			stored, err := e.keys.Claim(ctx, req, day)
+			if err != nil {
+				return err
+			}
+			if err := postgres.Conn(ctx, e.app).QueryRowContext(ctx, "SHOW lock_timeout").Scan(&got); err != nil {
+				return err
+			}
+			if stored == nil {
+				return e.keys.Store(ctx, req, created)
+			}
+			return nil
+		})
+		if got != want {
+			t.Errorf("%s: lock_timeout after Claim = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// TestIdempotencyStoreNeedsClaim: Store records only on a key this transaction claimed and has
+// not stored; anything else is a fault, not a domain refusal.
+func TestIdempotencyStoreNeedsClaim(t *testing.T) {
+	t.Parallel()
+	e := keysDB(t)
+	req := idemRequest("client:support", "k-1", "a")
+	var de *domain.Error
+
+	err := e.uow.Do(t.Context(), func(ctx context.Context) error { return e.keys.Store(ctx, req, created) })
+	if err == nil || errors.As(err, &de) {
+		t.Errorf("Store without a claim = %v, want a fault that is not a domain error", err)
+	}
+	err = e.uow.Do(t.Context(), func(ctx context.Context) error {
+		if _, err := e.keys.Claim(ctx, req, day); err != nil {
+			return err
+		}
+		if err := e.keys.Store(ctx, req, created); err != nil {
+			return err
+		}
+		return e.keys.Store(ctx, req, app.IdempotentResponse{Status: 204})
+	})
+	if err == nil || errors.As(err, &de) {
+		t.Errorf("a second Store = %v, want a fault that is not a domain error", err)
+	}
+}
+
+// TestIdempotencyReclaimWaits: a transaction taking over an expired row holds the key like a
+// fresh claim: another claim waits for it, then sees its row, not the expired one.
+func TestIdempotencyReclaimWaits(t *testing.T) {
+	t.Parallel()
+	e := keysDB(t)
+	e.store(t, idemRequest("client:support", "k-1", "old"), app.IdempotentResponse{Status: 204})
+	e.exec(t, "UPDATE idempotency_keys SET created_at = now() - interval '25 hours'")
+
+	holder := idemRequest("client:support", "k-1", "new")
+	claimed, release, done := e.holdKey(t, holder, &created)
+	<-claimed
+	second := make(chan *app.StoredIdempotency, 1)
+	go func() {
+		var got *app.StoredIdempotency
+		_ = e.uow.Do(context.Background(), func(ctx context.Context) error {
+			var err error
+			got, err = e.keys.Claim(ctx, idemRequest("client:support", "k-1", "third"), day)
+			return err
+		})
+		second <- got
+	}()
+	select {
+	case got := <-second:
+		t.Fatalf("the second Claim returned %v while the key was held", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+	if got := <-second; got == nil || !bytes.Equal(got.Hash, holder.Hash) || !cmp.Equal(created, got.Response) {
+		t.Errorf("second Claim = %v, want the holder's row", got)
+	}
+}
+
+// TestIdempotencyClaimCancelled: a claim whose context ends while it waits returns at once,
+// leaves nothing behind, and the holder's row is replayed afterwards.
+func TestIdempotencyClaimCancelled(t *testing.T) {
+	t.Parallel()
+	e := keysDB(t)
+	req := idemRequest("client:support", "k-1", "a")
+	claimed, release, done := e.holdKey(t, req, &created)
+	<-claimed
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := e.uow.Do(ctx, func(ctx context.Context) error {
+		_, err := e.keys.Claim(ctx, req, day)
+		return err
+	})
+	if err == nil || time.Since(start) > 3*time.Second {
+		t.Errorf("cancelled Claim = %v after %v, want an error at once", err, time.Since(start))
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+	if got := e.claim(t, req); got == nil || !cmp.Equal(created, got.Response) {
+		t.Errorf("Claim after the holder committed = %v, want its row", got)
+	}
+}

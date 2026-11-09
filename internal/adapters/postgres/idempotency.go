@@ -47,36 +47,36 @@ func place(req app.IdempotencyRequest) app.Place {
 	return app.NewKeyPlace("idempotency_keys", "response", row[:])
 }
 
-// Claim implements app.IdempotencyKeys. It inserts the key, or takes over a row older than ttl,
-// in one statement; on a live row it waits, at most 5 s (lock_timeout), for the transaction
-// holding it, then locks and returns the committed row. A row purged between the two statements
-// is claimed again, once. Outside a transaction it returns ErrNoTransaction.
+// Claim implements app.IdempotencyKeys. The key must be the transaction's first lock (TDD-01
+// §4.2): after an account, flow, challenge or session lock it returns ErrLockOrder before
+// querying, and outside a transaction ErrNoTransaction. One statement inserts the key, or takes
+// over a row older than ttl. When another transaction holds the key uncommitted, that statement
+// waits for it to end, at most 5 s (lock_timeout, then UNAVAILABLE). On a committed live row it
+// leaves the row locked (ON CONFLICT DO UPDATE locks the row even when its WHERE refuses the
+// update), and Claim reads it. lock_timeout is back to its default when Claim returns nil error;
+// on an error the transaction is to be rolled back.
 func (k *IdempotencyKeys) Claim(ctx context.Context, req app.IdempotencyRequest, ttl time.Duration) (*app.StoredIdempotency, error) {
 	t := txFrom(ctx)
 	if t == nil {
 		return nil, fmt.Errorf("claim idempotency key: %w", ErrNoTransaction)
 	}
+	if len(t.locked) > 0 || len(t.flows) > 0 || len(t.challenges) > 0 || len(t.sessions) > 0 {
+		return nil, fmt.Errorf("claim idempotency key after another lock: %w", ErrLockOrder)
+	}
 	if _, err := t.tx.ExecContext(ctx, "SET LOCAL lock_timeout = '"+claimLockTimeout+"'"); err != nil {
 		return nil, fmt.Errorf("claim idempotency key: %w", err)
 	}
-	for range 2 {
-		stored, err := k.claim(ctx, t.tx, req, ttl)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if _, err := t.tx.ExecContext(ctx, "SET LOCAL lock_timeout TO DEFAULT"); err != nil {
-			return nil, fmt.Errorf("claim idempotency key: %w", err)
-		}
-		return stored, nil
+	stored, err := k.claim(ctx, t.tx, req, ttl)
+	if err != nil {
+		return nil, err
 	}
-	return nil, errors.New("claim idempotency key: the row went away twice")
+	if _, err := t.tx.ExecContext(ctx, "SET LOCAL lock_timeout TO DEFAULT"); err != nil {
+		return nil, fmt.Errorf("claim idempotency key: %w", err)
+	}
+	return stored, nil
 }
 
-// claim is one attempt of Claim: nil when it took the key; sql.ErrNoRows when the live row it
-// found was gone when it went to lock it.
+// claim runs Claim's statements: nil when it took the key, else the committed row.
 func (k *IdempotencyKeys) claim(ctx context.Context, tx bun.Tx, req app.IdempotencyRequest, ttl time.Duration) (*app.StoredIdempotency, error) {
 	var took bool
 	err := tx.QueryRowContext(ctx, `
@@ -100,9 +100,6 @@ func (k *IdempotencyKeys) claim(ctx context.Context, tx bun.Tx, req app.Idempote
 	err = tx.QueryRowContext(ctx, `
 		SELECT request_hash, status, response FROM idempotency_keys WHERE caller = ? AND key = ? FOR UPDATE`,
 		req.Caller, req.Key).Scan(&stored.Hash, &status, &sealed)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, err
-	}
 	if err != nil {
 		return nil, claimError(err)
 	}
@@ -132,7 +129,8 @@ func claimError(err error) error {
 }
 
 // Store implements app.IdempotencyKeys: it seals resp and records it on the key Claim took.
-// Outside a transaction it returns ErrNoTransaction.
+// Outside a transaction it returns ErrNoTransaction. A key this transaction did not claim, or has
+// stored already, is a fault (a bug), never a domain refusal.
 func (k *IdempotencyKeys) Store(ctx context.Context, req app.IdempotencyRequest, resp app.IdempotentResponse) error {
 	t := txFrom(ctx)
 	if t == nil {
@@ -152,5 +150,12 @@ func (k *IdempotencyKeys) Store(ctx context.Context, req app.IdempotencyRequest,
 	if err != nil {
 		return fmt.Errorf("store idempotency response: %w", err)
 	}
-	return oneRow(res, "store idempotency response", "idempotency key")
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store idempotency response: %w", err)
+	}
+	if n != 1 {
+		return errors.New("store idempotency response: the key is not claimed, or already stored")
+	}
+	return nil
 }

@@ -68,11 +68,13 @@ type StoredIdempotency struct {
 // IdempotencyKeys stores idempotency keys (TDD-05 §4, TDD-01 §4). Both methods run in the
 // caller's transaction.
 type IdempotencyKeys interface {
-	// Claim takes the key for req: it returns nil when the key was free, or held by a row older
-	// than ttl, and is now this transaction's; otherwise it waits for a transaction holding the
-	// key and returns the committed row, locked. A wait past its bound is UNAVAILABLE.
+	// Claim takes the key for req, as the transaction's first lock: it returns nil when the key
+	// was free, or held by a row older than ttl, and is now this transaction's; otherwise it
+	// waits for a transaction holding the key and returns the committed row, locked. A wait past
+	// its bound is UNAVAILABLE.
 	Claim(ctx context.Context, req IdempotencyRequest, ttl time.Duration) (*StoredIdempotency, error)
-	// Store records resp for the key Claim took.
+	// Store records resp for the key Claim took in this transaction, once; anything else is an
+	// error.
 	Store(ctx context.Context, req IdempotencyRequest, resp IdempotentResponse) error
 }
 
