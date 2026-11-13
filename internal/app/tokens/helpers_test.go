@@ -20,6 +20,8 @@ const (
 	issuer       = "https://auth.example.com"
 	selfAudience = "https://auth.example.com/self"
 	appAudience  = "https://api.example.com"
+	// serviceAud is the audience of service tokens (SDD D-13).
+	serviceAud = "auth1-services"
 )
 
 // now is the fake clock's start; its microseconds check that the claims are whole seconds.
@@ -39,6 +41,8 @@ func config() tokens.Config {
 		SelfAudience:    selfAudience,
 		AccessTTL:       15 * time.Minute,
 		ClientAudiences: []string{appAudience, "https://other.example.com"},
+		ServiceAudience: serviceAud,
+		ServiceTTL:      5 * time.Minute,
 	}
 }
 
