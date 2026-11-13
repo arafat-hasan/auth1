@@ -171,7 +171,7 @@ func (i *Issuer) IssueService(clientID string, scopes []string) (Service, error)
 	if err != nil {
 		return Service{}, fmt.Errorf("sign the service token: %w", err)
 	}
-	return Service{Token: tok, ID: jti, ExpiresAt: time.Unix(exp, 0).UTC(), Scopes: slices.Clone(scopes)}, nil
+	return Service{Token: tok, ID: jti, ExpiresAt: time.Unix(exp, 0).UTC(), ExpiresIn: i.cfg.ServiceTTL, Scopes: slices.Clone(scopes)}, nil
 }
 
 var _ app.AccessIssuer = (*Issuer)(nil)

@@ -113,10 +113,11 @@ var ErrNotIssuable = errors.New("tokens: no access token for this session")
 
 // Service is an issued service token (TDD-05 §2). It prints, logs and marshals without its token.
 type Service struct {
-	Token     string    `json:"-"` // the compact JWS; a bearer credential, never logged
-	ID        uuid.UUID // jti
-	ExpiresAt time.Time // exp
-	Scopes    []string  // the granted scopes, in the order given
+	Token     string        `json:"-"` // the compact JWS; a bearer credential, never logged
+	ID        uuid.UUID     // jti
+	ExpiresAt time.Time     // exp
+	ExpiresIn time.Duration // exp − iat, the token response's expires_in
+	Scopes    []string      // the granted scopes, in the order given
 }
 
 // String describes s without its token.

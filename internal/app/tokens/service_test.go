@@ -44,7 +44,7 @@ func TestIssueServiceClaims(t *testing.T) {
 	if d := cmp.Diff(want, claims); d != "" {
 		t.Errorf("claims (-want +got):\n%s", d)
 	}
-	wantSvc := tokens.Service{Token: got.Token, ID: fakes.ID(1), ExpiresAt: iat.Add(5 * time.Minute), Scopes: serviceScopes}
+	wantSvc := tokens.Service{Token: got.Token, ID: fakes.ID(1), ExpiresAt: iat.Add(5 * time.Minute), ExpiresIn: 5 * time.Minute, Scopes: serviceScopes}
 	if d := cmp.Diff(wantSvc, got); d != "" {
 		t.Errorf("Service (-want +got):\n%s", d)
 	}
