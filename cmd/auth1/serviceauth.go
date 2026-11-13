@@ -92,7 +92,8 @@ func warnSidecars(logger *slog.Logger, cidrs []string) {
 
 // warnServiceAuth logs a warning for each credential o's mode accepts that no request can present
 // yet, so that the 401s it causes are explained at start-up: service tokens without a verifier
-// (WP-70), and a peer certificate, since nothing in auth1 terminates TLS.
+// (serve sets one whenever the mode accepts them), and a peer certificate, since nothing in auth1
+// terminates TLS.
 func warnServiceAuth(logger *slog.Logger, o caller.Options) {
 	if (o.Mode == caller.ModeClientCredentials || o.Mode == caller.ModeBoth) && o.Tokens == nil {
 		logger.Warn("service tokens are not accepted yet: every call that relies on one answers 401")

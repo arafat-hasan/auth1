@@ -132,7 +132,7 @@ func TestLoadServiceAuthClientWithoutScopes(t *testing.T) {
 }
 
 // TestServiceAuthWarnings: serve says at start-up when a configured credential cannot be accepted
-// yet: service tokens without a verifier (WP-70), and peer_cert, since nothing terminates TLS.
+// yet: service tokens without a verifier, and peer_cert, since nothing terminates TLS.
 func TestServiceAuthWarnings(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
