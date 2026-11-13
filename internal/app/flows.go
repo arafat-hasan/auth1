@@ -88,6 +88,28 @@ type Flows interface {
 	// with its attempts used up, within the last within; nil when none did (L-9). within must be
 	// positive.
 	ExhaustedSince(ctx context.Context, targetType, value string, within time.Duration) (*time.Time, error)
+
+	// Resumable returns the open registration and invitation flows, before expires_at, whose
+	// account holds a current identifier of type idType with value, verified or not: at most
+	// limit, newest first, each with that identifier's id (TDD-02 §4). It locks nothing.
+	Resumable(ctx context.Context, idType, value string, limit int) ([]ResumeTarget, error)
+	// ResumeCandidates returns the open resume challenges by code (not email_link), before
+	// expires_at, to the address value of type idType, whose flows are open registration or
+	// invitation flows before expires_at: at most limit, the newest challenge first (TDD-02 §4).
+	// It locks nothing and decrypts nothing.
+	ResumeCandidates(ctx context.Context, idType, value string, limit int) ([]ResumeCandidate, error)
+}
+
+// ResumeTarget is a flow a resume request sends to, and the identifier holding the value.
+type ResumeTarget struct {
+	Flow         flow.Flow
+	IdentifierID uuid.UUID
+}
+
+// ResumeCandidate is an open resume challenge to a value, with its flow.
+type ResumeCandidate struct {
+	Flow      flow.Flow
+	Challenge flow.ChallengeRecord
 }
 
 // SendWindows are the two windows of the per-address send limits (L-7): Short (60 s by default)
