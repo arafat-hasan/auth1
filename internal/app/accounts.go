@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -77,6 +78,10 @@ type Accounts interface {
 	// password change. It reports false, changing nothing, when the stored hash is no longer
 	// oldHash. The account must be locked.
 	RehashPassword(ctx context.Context, accountID uuid.UUID, oldHash, hash, pepperKID string) (bool, error)
+	// FailFactor counts a second-factor failure (L-11, TDD-07 §3) in a fixed window of window,
+	// which starts again at the first failure after it ends, and returns the count in the window.
+	// It is not a change to the account: no event. The account must be locked.
+	FailFactor(ctx context.Context, accountID uuid.UUID, window time.Duration) (int, error)
 	// Activate moves a pending account that has a password to active (registration and
 	// invitation completion). Any other account is an error: activation never breaks I-17.
 	Activate(ctx context.Context, accountID uuid.UUID) error

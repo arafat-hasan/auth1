@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -126,4 +127,28 @@ func (r *Accounts) Activate(ctx context.Context, accountID uuid.UUID) error {
 		return errNotActivated
 	}
 	return nil
+}
+
+// FailFactor implements app.Accounts with TDD-07 §3's statement, the window configured.
+func (r *Accounts) FailFactor(ctx context.Context, accountID uuid.UUID, window time.Duration) (int, error) {
+	t := txFrom(ctx)
+	if t == nil {
+		return 0, fmt.Errorf("count factor failure: %w", ErrNoTransaction)
+	}
+	if t.account(accountID) == nil {
+		return 0, fmt.Errorf("count factor failure: %w", ErrLockOrder)
+	}
+	var n int
+	err := t.tx.QueryRowContext(ctx, `
+		UPDATE accounts
+		SET factor_failures = CASE WHEN factor_failures_since IS NULL OR factor_failures_since <= now() - make_interval(secs => ?)
+		                           THEN 1 ELSE factor_failures + 1 END,
+		    factor_failures_since = CASE WHEN factor_failures_since IS NULL OR factor_failures_since <= now() - make_interval(secs => ?)
+		                           THEN now() ELSE factor_failures_since END
+		WHERE id = ?
+		RETURNING factor_failures`, window.Seconds(), window.Seconds(), accountID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count factor failure: %w", err)
+	}
+	return n, nil
 }
