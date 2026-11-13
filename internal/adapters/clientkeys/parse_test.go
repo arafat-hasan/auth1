@@ -20,7 +20,7 @@ import (
 // Keys made once: generating RSA keys is slow.
 var (
 	rsa2048, _ = rsa.GenerateKey(rand.Reader, 2048)
-	rsa1024, _ = rsa.GenerateKey(rand.Reader, 1024)
+	rsa1024, _ = rsa.GenerateKey(rand.Reader, 1024) //nolint:gosec // a key Parse must skip
 	p256, _    = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	p384, _    = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 )

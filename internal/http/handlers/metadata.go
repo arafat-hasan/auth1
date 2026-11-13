@@ -74,7 +74,7 @@ func TokenEndpoint(issuer, basePath string) (string, error) {
 }
 
 // tokenPath is the token endpoint's route.
-const tokenPath = "/v1/oauth/token"
+const tokenPath = "/v1/oauth/token" //nolint:gosec // a route, not a credential
 
 // GetServerMetadata serves /.well-known/oauth-authorization-server.
 func (a *API) GetServerMetadata(context.Context, gen.GetServerMetadataRequestObject) (gen.GetServerMetadataResponseObject, error) {
