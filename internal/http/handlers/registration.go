@@ -15,6 +15,8 @@ type Registration interface {
 	VerifyCode(ctx context.Context, cmd app.VerifyRegistrationCode) (app.RegistrationProgress, error)
 	Resend(ctx context.Context, cmd app.ResendRegistration) error
 	ConfirmLink(ctx context.Context, cmd app.ConfirmLink) (app.LinkConfirmed, error)
+	RequestResume(ctx context.Context, cmd app.RequestResume) error
+	VerifyResume(ctx context.Context, cmd app.VerifyResume) (app.FlowResumed, error)
 }
 
 // StartRegistration serves POST /v1/registrations.
@@ -75,7 +77,44 @@ func (a *API) ConfirmVerificationLink(ctx context.Context, req gen.ConfirmVerifi
 		return nil, err
 	}
 	pending := c.PendingTypes
-	return gen.ConfirmVerificationLink200JSONResponse{
+	out := gen.ConfirmVerificationLink200JSONResponse{
 		Purpose: gen.LinkConfirmedPurpose(c.Purpose), FlowId: c.FlowID, Complete: c.Complete, PendingTypes: &pending,
+	}
+	if c.Handle != nil {
+		h := string(c.Handle)
+		out.Handle = &h
+	}
+	return out, nil
+}
+
+// RequestRegistrationResume serves POST /v1/registrations/resume: 202 whatever is found.
+func (a *API) RequestRegistrationResume(ctx context.Context, req gen.RequestRegistrationResumeRequestObject) (gen.RequestRegistrationResumeResponseObject, error) {
+	if a.registration == nil {
+		return nil, gen.ErrNotImplemented
+	}
+	b := req.Body
+	if err := a.registration.RequestResume(ctx, app.RequestResume{
+		ClientID: b.ClientId, IdentifierType: b.Identifier.Type, Value: b.Identifier.Value, IP: clientip.From(ctx),
+	}); err != nil {
+		return nil, err
+	}
+	return gen.RequestRegistrationResume202Response{}, nil
+}
+
+// VerifyRegistrationResume serves POST /v1/registrations/resume/verify.
+func (a *API) VerifyRegistrationResume(ctx context.Context, req gen.VerifyRegistrationResumeRequestObject) (gen.VerifyRegistrationResumeResponseObject, error) {
+	if a.registration == nil {
+		return nil, gen.ErrNotImplemented
+	}
+	b := req.Body
+	r, err := a.registration.VerifyResume(ctx, app.VerifyResume{
+		IdentifierType: b.Identifier.Type, Value: b.Identifier.Value, Code: flow.Secret(b.Code), IP: clientip.From(ctx),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return gen.VerifyRegistrationResume200JSONResponse{
+		FlowId: r.FlowID, Kind: gen.FlowResumedKind(r.Kind), Accepted: r.Accepted, Handle: string(r.Handle),
+		PendingTypes: r.PendingTypes, ExpiresAt: r.ExpiresAt,
 	}, nil
 }

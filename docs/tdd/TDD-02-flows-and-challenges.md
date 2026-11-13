@@ -152,11 +152,11 @@ On success, `[tx]`:
 
 ## 4. Resume
 
-`POST /v1/registrations/resume` (`client_id`, `identifier` as `{type, value}`). Always `202`, whatever is found.
+`POST /v1/registrations/resume` (`client_id`, `identifier` as `{type, value}`). Always `202`, whatever is found. An unknown `client_id` is `VALIDATION_FAILED`, as at registration; the flows are found whatever client opened them.
 
 1. Normalise; on failure still answer 202.
 2. Find the open `registration` and `invitation` flows whose account holds a **current** identifier with this blind index, at most 3, newest first.
-3. `[tx]` For each flow, open a `resume` challenge on that identifier and send it (§2.4). The per-value send limits apply across all of them.
+3. `[tx]` For each flow, reuse its open `resume` challenge on that identifier, or open one (a new secret, closing an expired one), so a flow has at most one open resume code. The messages go to one value and share one check of the per-value send limits (TDD-07 §5): the request is one send for the short window, and each message is recorded, so each counts in the long window. They are sent newest flow first, as many as the long window has room for. A refusal sends none and still answers 202. A challenge the request opened and could not send is closed in the same transaction: a resume code alone resumes a flow, so a code nobody received must not stay open.
 
 **Following it:**
 - an emailed link goes to `POST /v1/verification-links/confirm`;
@@ -166,11 +166,11 @@ Verifying a code:
 1. Normalise the identifier. Find the open `resume` challenges with its blind index whose flows are open, at most 3, newest first: the candidates. None answers as step 4 does.
 2. `[tx]` Lock the candidates' accounts in id order, then each flow, then its challenges (G-5). Compute the input's MAC for each candidate (each MAC is bound to its challenge id, §2.2) and compare in constant time.
 3. The try counts on every candidate (§2.2 step 2), so several open flows give no more guesses than one. A candidate whose attempts are used up closes (`exhausted`).
-4. No match: answer `CODE_INVALID` without `attempts_left`, whether there are candidates, open or exhausted, or none, as §5.2 does for a sign-in code. `resume` always answers 202, so its verify must not tell whether a flow holds the value. L-12 has counted the attempt per IP; count the failure against each candidate's account (L-11).
+4. No match: answer `CODE_INVALID` without `attempts_left`, whether there are candidates, open or exhausted, or none, as §5.2 does for a sign-in code. `resume` always answers 202, so its verify must not tell whether a flow holds the value. L-12 has counted the attempt per IP; count the failure against each candidate's account (L-11). A candidate whose account has reached L-11 is not compared, so its code fails too: the answer stays `CODE_INVALID`, never `RATE_LIMITED`.
 5. A match picks its flow (the newest, should two codes match). Its challenge is consumed; the other candidates stay open.
 
 On success, in the same transaction:
-- the identifier becomes verified, if it was not (the unique index applies);
+- the identifier becomes verified, if it was not. The unique index may refuse it: answer `IDENTIFIER_TAKEN` (I-1), with the challenge consumed and no new handle, as in §3;
 - the flow's handle is replaced (I-20: the old one stops working);
 - answer `200` with `flow_id`, the new `handle` and `pending_types`. For an invitation not yet accepted, the answer says so, and the client continues with acceptance (§8).
 
