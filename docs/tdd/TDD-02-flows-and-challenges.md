@@ -156,7 +156,7 @@ On success, `[tx]`:
 
 1. Normalise; on failure still answer 202.
 2. Find the open `registration` and `invitation` flows whose account holds a **current** identifier with this blind index, at most 3, newest first.
-3. `[tx]` For each flow, reuse its open `resume` challenge on that identifier, or open one (a new secret, closing an expired one), so a flow has at most one open resume code. The messages go to one value and share one check of the per-value send limits (TDD-07 §5): the request is one send for the short window, and each message is recorded, so each counts in the long window. They are sent newest flow first, as many as the long window has room for. A refusal sends none and still answers 202.
+3. `[tx]` For each flow, reuse its open `resume` challenge on that identifier, or open one (a new secret, closing an expired one), so a flow has at most one open resume code. The messages go to one value and share one check of the per-value send limits (TDD-07 §5): the request is one send for the short window, and each message is recorded, so each counts in the long window. They are sent newest flow first, as many as the long window has room for. A refusal sends none and still answers 202. A challenge the request opened and could not send is closed in the same transaction: a resume code alone resumes a flow, so a code nobody received must not stay open.
 
 **Following it:**
 - an emailed link goes to `POST /v1/verification-links/confirm`;
