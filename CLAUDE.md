@@ -379,11 +379,33 @@ of `\x20-\x7E`, else `422 VALIDATION_FAILED`). Handlers read `caller.From(ctx)` 
 headers. Identity headers count only when the TCP peer (`RemoteAddr`, not `clientip`) is in
 `trusted_sidecar_cidrs` (an IPv4-mapped range counts as the IPv4 range); XFCC gives the first
 `URI` of its only element (`xfccURI`, fuzzed); `peer_cert` reads `r.TLS.VerifiedChains`, though
-nothing terminates TLS yet. Service tokens go through `caller.TokenVerifier`, nil until WP-70.
+nothing terminates TLS yet. Service tokens go through `caller.TokenVerifier` (client credentials, below).
 `caller.New` refuses missing dependencies and a header-sourced mesh mode with no header name.
 `loadServiceAuth` in `cmd/auth1/serviceauth.go` maps the config for `config check` and `serve`,
 refusing a sidecar entry that is not a CIDR and an empty or repeated caller identity; `serve` warns
 for a sidecar range beyond loopback, for service tokens with no verifier and for `peer_cert`.
+
+Client credentials (TDD-05 §2): `POST /v1/oauth/token` is `clientcreds.Service.Issue`
+(`internal/app/clientcreds`), mounted with `(*handlers.API).WithClientCredentials` (none: `404`)
+by `newClientCredentials` in `cmd/auth1/clientcredentials.go` when `service_auth.mode` accepts
+client credentials. It checks the form, then the assertion in TDD-05 §2's order (header before any
+key lookup, signature before aud, times and `jti`, scope before the replay insert), and answers
+RFC 6749 JSON, never problem details: every assertion failure is the same `401 invalid_client`
+(`clientcreds.Error.Reason` is for logs and tests only); keys that cannot be had, a store failure
+or no signing key go to the problem writer as `503`. A client's scopes are its `service_auth.callers`
+entry with `identity` = the client id (`loadServiceAuth` refuses a client without one).
+`app.ClientKeys` is `clientkeys.Store` (`loadClientKeys`, for `config check` and `serve`; `Run`
+re-reads `jwks_file` every 30 s; `jwks_uri` is fetched on demand outside any transaction, cached
+10 min, refetched at most once a minute per client; `serveDeps.jwksClient` replaces its HTTP client
+in tests). `postgres.ClientAssertions.Record` (`client_assertions`, until `exp` + 30 s) is the one
+statement that decides a replay. The token is `tokens.Issuer.IssueService` (`typ: at+jwt`, `aud` the
+service audience, `sub` = `client_id`, `scope`); `tokens.Validator.ValidateService` fills
+`caller.TokenVerifier` (`serviceTokens`) and accepts only that audience and exact claim set, while
+`Validate` refuses a service token, so neither kind passes for the other (`config.Validate` keeps
+the service audience apart from user tokens'). L-15 (per client) is WP-80's and the purge of
+`client_assertions` WP-81's. Tests mint assertions with `internal/testing/assertiontest`
+(`NewClient(t, id, "RS256"|"ES256")`, `JWKS`, `Public`, `Mint` with `Claims`, `Header`, `SignedBy`,
+`Unsigned`, `HMAC`); `startCCServer` in `cmd/auth1` runs `serve` with a client.
 
 Idempotency (TDD-05 §4, I-9): `gen.Operation.Idempotent` marks the operations taking
 `Idempotency-Key` (routegen refuses it on one that is not a service operation), and
