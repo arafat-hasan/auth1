@@ -43,6 +43,9 @@ type fakeRegistration struct {
 	started  app.RegistrationStarted
 	progress app.RegistrationProgress
 	link     app.LinkConfirmed
+	request  app.RequestResume
+	resume   app.VerifyResume
+	resumed  app.FlowResumed
 }
 
 func (f *fakeRegistration) Start(_ context.Context, c app.StartRegistration) (app.RegistrationStarted, error) {
