@@ -108,6 +108,29 @@ func TestLoadServiceAuthCallerProblems(t *testing.T) {
 	}
 }
 
+// TestLoadServiceAuthClientWithoutScopes: a service client needs a service_auth.callers entry for
+// its id, or it could never be granted a scope (TDD-05 §2). Only a mode with client credentials
+// uses the clients.
+func TestLoadServiceAuthClientWithoutScopes(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.ServiceAuth.Mode = config.ServiceAuthClientCredentials
+	cfg.ServiceAuth.ClientCredentials.Clients = []config.ServiceClient{{ID: "reports"}, {ID: "billing"}}
+	cfg.ServiceAuth.Callers = []config.Caller{{Identity: "reports", Scopes: []string{"tokens:introspect"}}}
+	_, problems := loadServiceAuth(&cfg)
+	var paths []string
+	for _, p := range problems {
+		paths = append(paths, p.Path)
+	}
+	if diff := cmp.Diff([]string{"service_auth.client_credentials.clients[1].id"}, paths); diff != "" {
+		t.Errorf("problem paths (-want +got):\n%s", diff)
+	}
+	cfg.ServiceAuth.Mode = config.ServiceAuthMesh
+	if _, problems := loadServiceAuth(&cfg); len(problems) != 0 {
+		t.Errorf("mesh mode: %v", problems)
+	}
+}
+
 // TestServiceAuthWarnings: serve says at start-up when a configured credential cannot be accepted
 // yet: service tokens without a verifier (WP-70), and peer_cert, since nothing terminates TLS.
 func TestServiceAuthWarnings(t *testing.T) {

@@ -51,6 +51,16 @@ func loadServiceAuth(cfg *config.Config) (caller.Options, []*config.Problem) {
 		}
 		o.Callers[c.Identity] = c.Scopes
 	}
+	if o.Mode == caller.ModeClientCredentials || o.Mode == caller.ModeBoth {
+		for i, sc := range sa.ClientCredentials.Clients {
+			if _, ok := o.Callers[sc.ID]; !ok && sc.ID != "" {
+				problems = append(problems, &config.Problem{
+					Path:    fmt.Sprintf("service_auth.client_credentials.clients[%d].id", i),
+					Message: "no service_auth.callers entry grants it scopes",
+				})
+			}
+		}
+	}
 	for i, s := range sa.Mesh.TrustedSidecarCIDRs {
 		if _, err := netip.ParsePrefix(s); err != nil {
 			problems = append(problems, &config.Problem{
