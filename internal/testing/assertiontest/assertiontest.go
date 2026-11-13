@@ -16,6 +16,8 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jws"
+
+	"github.com/arafat-hasan/auth1/internal/app"
 )
 
 // Client is a service client: its id and one signing key, RS256 (2048 bits) or ES256.
@@ -75,6 +77,11 @@ func (c *Client) ID() string { return c.id }
 
 // Kid is the key's kid.
 func (c *Client) Kid() string { return c.kid }
+
+// Public is the client's public key as app.ClientKeys returns it.
+func (c *Client) Public() app.PublicKey {
+	return app.PublicKey{Kid: c.kid, Alg: c.alg.String(), Key: c.key.Public()}
+}
 
 // JWKS is the client's public key set, the content of its jwks_file or jwks_uri.
 func (c *Client) JWKS() []byte { return c.jwks }
