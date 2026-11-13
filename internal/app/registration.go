@@ -353,12 +353,13 @@ type ConfirmLink struct {
 }
 
 // LinkConfirmed is a confirmed link: its purpose, its flow, whether the flow needs nothing more
-// verified, and the types it still needs.
+// verified, and the types it still needs. A resume link also gives the flow's new handle.
 type LinkConfirmed struct {
 	Purpose      flow.Purpose
 	FlowID       uuid.UUID
 	Complete     bool
 	PendingTypes []string
+	Handle       flow.Secret // resume only
 }
 
 // locked is a flow with its account, flow and challenges locked, in that order (G-5).
@@ -621,10 +622,11 @@ func (r *Registration) Resend(ctx context.Context, cmd ResendRegistration) error
 // errRefused rolls back a transaction whose answer is a refusal that must not commit.
 var errRefused = errors.New("refused")
 
-// ConfirmLink confirms an emailed link (TDD-02 §3). L-12 counts the attempt first. Of the link
-// purposes, it serves verify_identifier; a token of another purpose or flow kind, or one that
-// matches no open challenge, is CHALLENGE_CLOSED. A link has no attempt counter: a wrong token
-// matches nothing (TDD-02 §2.2). Complete says whether the flow has nothing left to verify.
+// ConfirmLink confirms an emailed link (TDD-02 §3, §4). L-12 counts the attempt first. Of the link
+// purposes, it serves verify_identifier and resume; a token of another purpose or flow kind, or one
+// that matches no open challenge, is CHALLENGE_CLOSED. A link has no attempt counter: a wrong
+// token matches nothing (TDD-02 §2.2). Complete says whether the flow has nothing left to verify.
+// A resume link resumes the flow as a resume code does (VerifyResume), giving its new handle.
 func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkConfirmed, error) {
 	const op = "confirm verification link"
 	entry := AuditEntry{ActorKind: ActorAnonymous, Action: auditVerificationConfirm, IP: cmd.IP}
@@ -633,7 +635,7 @@ func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkCo
 	}
 	h := sha256.Sum256(cmd.Token)
 	f, found, err := r.d.Flows.FindLink(ctx, h[:])
-	if err == nil && (found.Purpose != flow.PurposeVerifyIdentifier ||
+	if err == nil && ((found.Purpose != flow.PurposeVerifyIdentifier && found.Purpose != flow.PurposeResume) ||
 		(f.Kind != flow.KindRegistration && f.Kind != flow.KindInvitation)) {
 		err = challengeClosed()
 	}
@@ -643,7 +645,7 @@ func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkCo
 	entry.withFlow(f)
 	var (
 		answer error
-		out    = LinkConfirmed{Purpose: flow.PurposeVerifyIdentifier, FlowID: f.ID}
+		out    = LinkConfirmed{Purpose: found.Purpose, FlowID: f.ID}
 	)
 	err = r.d.UnitOfWork.Do(ctx, func(ctx context.Context) error {
 		l, miss, err := r.lock(ctx, f)
@@ -661,7 +663,13 @@ func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkCo
 			answer = challengeClosed()
 			return nil
 		}
-		out.PendingTypes, answer, err = r.verified(ctx, l, id, ch)
+		if ch.Purpose == flow.PurposeResume {
+			var res FlowResumed
+			res, answer, err = r.resumeFlow(ctx, l, id, ch)
+			out.PendingTypes, out.Handle = res.PendingTypes, res.Handle
+		} else {
+			out.PendingTypes, answer, err = r.verified(ctx, l, id, ch)
+		}
 		if err != nil || answer != nil {
 			return err
 		}

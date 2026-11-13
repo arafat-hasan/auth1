@@ -310,3 +310,41 @@ func TestVerifyResumeString(t *testing.T) {
 		}
 	}
 }
+
+// TestConfirmResumeLink (T-19 by link): an emailed resume link verifies the identifier and
+// replaces the handle; the old handle is refused and the link works once.
+func TestConfirmResumeLink(t *testing.T) {
+	t.Parallel()
+	e := newResumeEnvWith(t, flow.MethodEmailLink)
+	s := e.register(t, resumeEmail)
+	if err := e.reg.RequestResume(t.Context(), resumeCmd()); err != nil {
+		t.Fatal(err)
+	}
+	rs := e.resumes(t)
+	if len(rs) != 1 {
+		t.Fatalf("%d resume challenges; want 1", len(rs))
+	}
+	if ds := e.deliveries(t, resumeMessage); len(ds) != 1 || ds[0].Variables["link"] != "auth1:link:"+rs[0].ID.String() {
+		t.Fatalf("messages %+v; want the resume link", ds)
+	}
+	token := e.code(t, rs[0].ID)
+	got, err := e.reg.ConfirmLink(t.Context(), app.ConfirmLink{Token: token, IP: resumeIP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Purpose != flow.PurposeResume || got.FlowID != s.FlowID || !got.Complete || len(got.PendingTypes) != 0 ||
+		len(got.Handle) != 43 {
+		t.Errorf("confirmed %+v; want the resumed flow, complete, with a new handle", got)
+	}
+	old := sha256.Sum256(s.Handle)
+	if _, err := e.flows.Find(t.Context(), s.FlowID, old[:]); !hasDomainCode(err, domain.CodeChallengeClosed) {
+		t.Errorf("old handle: %v; want CHALLENGE_CLOSED", err)
+	}
+	h := sha256.Sum256(got.Handle)
+	if _, err := e.flows.Find(t.Context(), s.FlowID, h[:]); err != nil {
+		t.Errorf("new handle: %v", err)
+	}
+	if _, err := e.reg.ConfirmLink(t.Context(), app.ConfirmLink{Token: token, IP: resumeIP}); !hasDomainCode(err, domain.CodeChallengeClosed) {
+		t.Errorf("the link again: %v; want CHALLENGE_CLOSED", err)
+	}
+}
