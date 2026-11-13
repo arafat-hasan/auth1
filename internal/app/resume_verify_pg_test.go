@@ -348,3 +348,29 @@ func TestConfirmResumeLink(t *testing.T) {
 		t.Errorf("the link again: %v; want CHALLENGE_CLOSED", err)
 	}
 }
+
+// TestRequestResumeRefusedOpensNoCandidate: a resume whose send is refused (here in the L-9
+// cooldown after the candidates ran out of tries) leaves no open resume challenge: a code nobody
+// received must not be one an attacker can guess for a handle (I-20).
+func TestRequestResumeRefusedOpensNoCandidate(t *testing.T) {
+	t.Parallel()
+	e := newResumeEnv(t)
+	_, rs := e.resumed(t, 2)
+	right := e.code(t, rs[0].ID)
+	for range challengeRules.MaxAttempts {
+		_, err := e.reg.VerifyResume(t.Context(), verifyCmd(notCode(right)))
+		checkCodeInvalid(t, "wrong", err)
+	}
+	e.age(t, 2*time.Minute) // the short window has room; the cooldown has 13 minutes left
+	if err := e.reg.RequestResume(t.Context(), resumeCmd()); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range e.resumes(t) {
+		if r.Open {
+			t.Errorf("challenge %+v is open though its send was refused", r)
+		}
+	}
+	if n := len(e.deliveries(t, resumeMessage)); n != 2 {
+		t.Errorf("%d resume messages; want the first 2 only", n)
+	}
+}

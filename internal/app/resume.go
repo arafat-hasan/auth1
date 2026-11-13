@@ -61,9 +61,10 @@ func (c RequestResume) LogValue() slog.Value { return slog.StringValue(c.String(
 // transaction, the flows' accounts are locked by id, then the flows, then their challenges (G-5);
 // each flow reuses its open resume challenge on the identifier, or opens one, closing an expired
 // one, so a flow has at most one open resume code; then the messages share one check of the send
-// limits (Challenges.SendBatch), which takes the address lock last. A refused send leaves the
-// challenges open, unsent, as at registration (TDD-02 §3 step 5). Each flow is audited with its
-// id, its kind and whether its message went.
+// limits (Challenges.SendBatch), which takes the address lock last. A challenge this request
+// opened and could not send is closed again: a resume code alone resumes a flow, so one nobody
+// received must not stay open to be guessed. Each flow is audited with its id, its kind and
+// whether its message went.
 func (r *Registration) RequestResume(ctx context.Context, cmd RequestResume) error {
 	const op = "request resume"
 	if _, ok := r.o.Clients[cmd.ClientID]; !ok {
@@ -98,7 +99,10 @@ func (r *Registration) RequestResume(ctx context.Context, cmd RequestResume) err
 		if err != nil {
 			return err
 		}
-		var out []Outgoing
+		var (
+			out    []Outgoing
+			opened []bool // whether out[i]'s challenge was opened by this request
+		)
 		for _, tg := range targets {
 			l, ok := ls[tg.Flow.ID]
 			if !ok {
@@ -108,11 +112,12 @@ func (r *Registration) RequestResume(ctx context.Context, cmd RequestResume) err
 			if !ok || id.Type != cmd.IdentifierType || id.Value != value {
 				continue
 			}
-			ch, err := r.resumeChallenge(ctx, l, id, p.Verify)
+			ch, isNew, err := r.resumeChallenge(ctx, l, id, p.Verify)
 			if err != nil {
 				return err
 			}
 			out = append(out, Outgoing{Account: l.account, Challenge: ch, IdentifierID: id.ID})
+			opened = append(opened, isNew)
 		}
 		sent, err := r.d.Challenges.SendBatch(ctx, cmd.IdentifierType, value, t.Channel(), out)
 		if hasCode(err, domain.CodeResendTooSoon, domain.CodeRateLimited) {
@@ -120,6 +125,14 @@ func (r *Registration) RequestResume(ctx context.Context, cmd RequestResume) err
 		}
 		if err != nil {
 			return err
+		}
+		// A code nobody received must not stay open: it alone would resume the flow (I-20).
+		for i, o := range out[sent:] {
+			if opened[sent+i] {
+				if _, err := r.d.Flows.CloseChallenge(ctx, o.Challenge.ID, false); err != nil {
+					return err
+				}
+			}
 		}
 		for i, o := range out {
 			e := AuditEntry{ActorKind: ActorAnonymous, Action: auditResumeRequest, IP: cmd.IP,
@@ -139,21 +152,23 @@ func (r *Registration) RequestResume(ctx context.Context, cmd RequestResume) err
 }
 
 // resumeChallenge returns the flow's open resume challenge on id, or opens one by method m,
-// closing an open one past its expiry first. The flow and its challenges must be locked.
-func (r *Registration) resumeChallenge(ctx context.Context, l locked, id account.Identifier, m flow.Method) (flow.ChallengeRecord, error) {
+// closing an open one past its expiry first; opened says which. The flow and its challenges must
+// be locked.
+func (r *Registration) resumeChallenge(ctx context.Context, l locked, id account.Identifier, m flow.Method) (ch flow.ChallengeRecord, opened bool, err error) {
 	for i := len(l.challenges) - 1; i >= 0; i-- {
 		c := l.challenges[i]
 		if c.Purpose != flow.PurposeResume || c.IdentifierID == nil || *c.IdentifierID != id.ID || c.ClosedAt != nil {
 			continue
 		}
 		if c.End(r.d.Clock.Now()) == flow.EndOpen {
-			return c, nil
+			return c, false, nil
 		}
 		if _, err := r.d.Flows.CloseChallenge(ctx, c.ID, false); err != nil {
-			return flow.ChallengeRecord{}, err
+			return flow.ChallengeRecord{}, false, err
 		}
 	}
-	return r.d.Challenges.OpenResume(ctx, l.flow.ID, id, m)
+	ch, err = r.d.Challenges.OpenResume(ctx, l.flow.ID, id, m)
+	return ch, err == nil, err
 }
 
 // lockAll locks the flows fs, as a finder returned them, in the order of G-5: their accounts by
