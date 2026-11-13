@@ -318,6 +318,29 @@ func TestValidateRules(t *testing.T) {
 			c.ServiceAuth.ClientCredentials.Clients = []ServiceClient{{ID: "svc", JWKSURI: "jwks.json"}}
 		}, want: []string{"service_auth.client_credentials.clients[0].jwks_uri"}},
 
+		// Service clients and the service audience (SDD D-13), in every environment.
+		{name: "repeated service client id", change: func(c *Config) {
+			c.ServiceAuth.ClientCredentials.Clients = []ServiceClient{
+				{ID: "svc", JWKSURI: "https://a.example.test/jwks"}, {ID: "svc", JWKSURI: "https://b.example.test/jwks"},
+			}
+		}, want: []string{"service_auth.client_credentials.clients[1].id"}},
+		{name: "service audience is a client's", change: func(c *Config) {
+			c.ServiceAuth.Mode, c.ServiceAuth.ClientCredentials.Audience = ServiceAuthClientCredentials, "web"
+		}, want: []string{"service_auth.client_credentials.audience"}},
+		{name: "service audience is the self audience", change: func(c *Config) {
+			c.ServiceAuth.Mode, c.Tokens.SelfAudience, c.ServiceAuth.ClientCredentials.Audience = ServiceAuthBoth, "self", "self"
+		}, want: []string{"service_auth.client_credentials.audience"}},
+		{name: "service audience is the issuer", change: func(c *Config) {
+			c.ServiceAuth.Mode, c.ServiceAuth.ClientCredentials.Audience = ServiceAuthBoth, c.HTTP.Issuer
+		}, want: []string{"service_auth.client_credentials.audience"}},
+		{name: "service audience is the issuer, with a self audience", change: func(c *Config) {
+			c.ServiceAuth.Mode, c.Tokens.SelfAudience = ServiceAuthBoth, "self"
+			c.ServiceAuth.ClientCredentials.Audience = c.HTTP.Issuer
+		}},
+		{name: "service audience unchecked in mesh mode", change: func(c *Config) {
+			c.ServiceAuth.ClientCredentials.Audience = "web"
+		}},
+
 		// Ranges, in every environment.
 		{name: "negative duration under a floor", change: func(c *Config) { c.Tokens.AccessTTL = -time.Hour },
 			want: []string{"tokens.access_ttl"}},

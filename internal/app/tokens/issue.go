@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,20 @@ type payload struct {
 	AuthTime int64    `json:"auth_time"`
 }
 
+// servicePayload is the claim set of a service token, in the order of TDD-05 §2. ValidateService
+// decodes the same struct.
+type servicePayload struct {
+	Iss      string `json:"iss"`
+	Sub      string `json:"sub"`
+	Aud      string `json:"aud"`
+	Exp      int64  `json:"exp"`
+	Iat      int64  `json:"iat"`
+	Nbf      int64  `json:"nbf"`
+	Jti      string `json:"jti"`
+	ClientID string `json:"client_id"`
+	Scope    string `json:"scope"`
+}
+
 // Issuer issues access tokens (TDD-04 §1).
 type Issuer struct {
 	cfg    Config
@@ -39,14 +54,17 @@ type Issuer struct {
 	ids    app.IDGenerator
 }
 
-// NewIssuer returns an issuer that signs with signer. It refuses a Config without an issuer or
-// with an AccessTTL that is not positive.
+// NewIssuer returns an issuer that signs with signer. It refuses a Config without an issuer, with
+// an AccessTTL that is not positive, or with a ServiceAudience and a ServiceTTL that is not.
 func NewIssuer(cfg Config, signer app.TokenSigner, clock app.Clock, ids app.IDGenerator) (*Issuer, error) {
 	if cfg.Issuer == "" {
 		return nil, errors.New("tokens: issuer: no issuer")
 	}
 	if cfg.AccessTTL <= 0 {
 		return nil, fmt.Errorf("tokens: issuer: access TTL %s is not positive", cfg.AccessTTL)
+	}
+	if cfg.ServiceAudience != "" && cfg.ServiceTTL <= 0 {
+		return nil, fmt.Errorf("tokens: issuer: service TTL %s is not positive", cfg.ServiceTTL)
 	}
 	return &Issuer{cfg: cfg, signer: signer, clock: clock, ids: ids}, nil
 }
@@ -117,6 +135,43 @@ func allowedRoles(have, allowed []string) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// IssueService returns a service token for client clientID holding scopes (TDD-05 §2): typ
+// at+jwt, aud the service audience, sub and client_id the client, scope the scopes joined by
+// spaces. No client, no scope, a scope that is empty or holds a space, or no ServiceAudience is
+// ErrNotIssuable. While no key may sign it returns an error matching app.ErrNoSigningKey.
+func (i *Issuer) IssueService(clientID string, scopes []string) (Service, error) {
+	switch {
+	case i.cfg.ServiceAudience == "":
+		return Service{}, fmt.Errorf("%w: no service audience", ErrNotIssuable)
+	case clientID == "" || len(scopes) == 0:
+		return Service{}, fmt.Errorf("%w: no client or no scope", ErrNotIssuable)
+	case slices.ContainsFunc(scopes, func(s string) bool { return s == "" || strings.Contains(s, " ") }):
+		return Service{}, fmt.Errorf("%w: an empty scope or one with a space", ErrNotIssuable)
+	}
+	now := i.clock.Now().Unix()
+	exp := time.Unix(now, 0).Add(i.cfg.ServiceTTL).Unix()
+	jti := i.ids.New()
+	body, err := json.Marshal(servicePayload{
+		Iss:      i.cfg.Issuer,
+		Sub:      clientID,
+		Aud:      i.cfg.ServiceAudience,
+		Exp:      exp,
+		Iat:      now,
+		Nbf:      now,
+		Jti:      jti.String(),
+		ClientID: clientID,
+		Scope:    strings.Join(scopes, " "),
+	})
+	if err != nil {
+		return Service{}, fmt.Errorf("service token claims: %w", err)
+	}
+	tok, err := i.signer.Sign(body, TypeAccess)
+	if err != nil {
+		return Service{}, fmt.Errorf("sign the service token: %w", err)
+	}
+	return Service{Token: tok, ID: jti, ExpiresAt: time.Unix(exp, 0).UTC(), ExpiresIn: i.cfg.ServiceTTL, Scopes: slices.Clone(scopes)}, nil
 }
 
 var _ app.AccessIssuer = (*Issuer)(nil)

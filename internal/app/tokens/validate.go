@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,6 +72,7 @@ type Validator struct {
 	issuer    string
 	self      string   // the self audience
 	audiences []string // the clients' audiences and the self audience
+	service   string   // the service audience; empty: no service token is accepted
 	keys      app.PublicKeys
 	clock     app.Clock
 }
@@ -78,7 +80,8 @@ type Validator struct {
 // NewValidator returns a validator over the published keys. It accepts tokens of cfg.Issuer
 // whose audience is one of cfg.ClientAudiences or the self audience (TDD-04 §1, §6 step 2). It
 // refuses a Config without an issuer, or with a client audience that is empty, repeated or the
-// self audience: full and restricted tokens must be told apart by audience alone (SDD D-5).
+// self audience: full and restricted tokens must be told apart by audience alone (SDD D-5). A
+// ServiceAudience must be neither (SDD D-13).
 func NewValidator(cfg Config, keys app.PublicKeys, clock app.Clock) (*Validator, error) {
 	if cfg.Issuer == "" {
 		return nil, errors.New("tokens: validator: no issuer")
@@ -94,8 +97,11 @@ func NewValidator(cfg Config, keys app.PublicKeys, clock app.Clock) (*Validator,
 			return nil, fmt.Errorf("tokens: validator: client audience %q is repeated", aud)
 		}
 	}
+	if s := cfg.ServiceAudience; s != "" && (s == self || slices.Contains(cfg.ClientAudiences, s)) {
+		return nil, fmt.Errorf("tokens: validator: service audience %q is a user token's audience", s)
+	}
 	auds := append(slices.Clone(cfg.ClientAudiences), self)
-	return &Validator{issuer: cfg.Issuer, self: self, audiences: auds, keys: keys, clock: clock}, nil
+	return &Validator{issuer: cfg.Issuer, self: self, audiences: auds, service: cfg.ServiceAudience, keys: keys, clock: clock}, nil
 }
 
 // Validate returns the claims of token, or one of the refusals above. It checks, in order:
@@ -117,13 +123,9 @@ func NewValidator(cfg Config, keys app.PublicKeys, clock app.Clock) (*Validator,
 // forms), so nothing should key a cache, deny-list or rate limit on the token string or its hash:
 // use Claims.ID (jti).
 func (v *Validator) Validate(token string) (Claims, error) {
-	pk, alg, err := v.key(token)
+	body, err := v.verify(token)
 	if err != nil {
 		return Claims{}, err
-	}
-	body, err := jws.Verify([]byte(token), jws.WithCompact(), jws.WithKey(alg, pk.Key))
-	if err != nil {
-		return Claims{}, ErrSignature
 	}
 	c, err := parseClaims(body)
 	if err != nil {
@@ -135,14 +137,63 @@ func (v *Validator) Validate(token string) (Claims, error) {
 	if !slices.Contains(v.audiences, c.Audience) || c.Restricted != (c.Audience == v.self) {
 		return Claims{}, ErrAudience
 	}
-	now := v.clock.Now()
-	if !now.Before(c.ExpiresAt.Add(Leeway)) {
-		return Claims{}, ErrExpired
-	}
-	if now.Before(c.NotBefore.Add(-Leeway)) || now.Before(c.IssuedAt.Add(-Leeway)) {
-		return Claims{}, ErrNotYetValid
+	if err := v.times(c.ExpiresAt, c.NotBefore, c.IssuedAt); err != nil {
+		return Claims{}, err
 	}
 	return c, nil
+}
+
+// ValidateService returns the claims of service token token (TDD-05 §2), or one of the refusals
+// above. It checks the form, header, key, alg and signature as Validate does, then:
+//   - exactly the claims of TDD-05 §2, each of its type: sub equal to a non-empty client_id, jti a
+//     UUID, scope space-separated non-empty scopes, exp after iat and nbf not after exp;
+//   - iss exactly;
+//   - aud exactly the service audience (none is accepted without one), so no user token passes;
+//   - exp, nbf and iat with Leeway, as Validate.
+func (v *Validator) ValidateService(token string) (ServiceClaims, error) {
+	body, err := v.verify(token)
+	if err != nil {
+		return ServiceClaims{}, err
+	}
+	c, err := parseServiceClaims(body)
+	if err != nil {
+		return ServiceClaims{}, err
+	}
+	if c.Issuer != v.issuer {
+		return ServiceClaims{}, ErrIssuer
+	}
+	if v.service == "" || c.Audience != v.service {
+		return ServiceClaims{}, ErrAudience
+	}
+	if err := v.times(c.ExpiresAt, c.NotBefore, c.IssuedAt); err != nil {
+		return ServiceClaims{}, err
+	}
+	return c, nil
+}
+
+// verify checks token's form and header and returns its payload once its signature verifies.
+func (v *Validator) verify(token string) ([]byte, error) {
+	pk, alg, err := v.key(token)
+	if err != nil {
+		return nil, err
+	}
+	body, err := jws.Verify([]byte(token), jws.WithCompact(), jws.WithKey(alg, pk.Key))
+	if err != nil {
+		return nil, ErrSignature
+	}
+	return body, nil
+}
+
+// times refuses a token on or after exp + Leeway, or before nbf − Leeway or iat − Leeway.
+func (v *Validator) times(exp, nbf, iat time.Time) error {
+	now := v.clock.Now()
+	if !now.Before(exp.Add(Leeway)) {
+		return ErrExpired
+	}
+	if now.Before(nbf.Add(-Leeway)) || now.Before(iat.Add(-Leeway)) {
+		return ErrNotYetValid
+	}
+	return nil
 }
 
 // key checks the token's form and protected header and returns the published key it names, with
@@ -245,3 +296,42 @@ func parseClaims(body []byte) (Claims, error) {
 }
 
 func unix(s int64) time.Time { return time.Unix(s, 0).UTC() }
+
+// serviceClaimNames are the claims of TDD-05 §2: a service token has exactly these.
+var serviceClaimNames = []string{"iss", "sub", "aud", "exp", "iat", "nbf", "jti", "client_id", "scope"}
+
+// parseServiceClaims decodes the verified payload of a service token. It must hold exactly the
+// claims of TDD-05 §2, non-null, of their types and consistent, so a user token's claim set is
+// refused whatever its audience.
+func parseServiceClaims(body []byte) (ServiceClaims, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil || len(raw) != len(serviceClaimNames) {
+		return ServiceClaims{}, ErrClaims
+	}
+	for _, name := range serviceClaimNames {
+		if v, ok := raw[name]; !ok || bytes.Equal(v, []byte("null")) {
+			return ServiceClaims{}, ErrClaims
+		}
+	}
+	var p servicePayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return ServiceClaims{}, ErrClaims
+	}
+	jti, err := uuid.Parse(p.Jti)
+	scopes := strings.Split(p.Scope, " ")
+	switch {
+	case err != nil, p.ClientID == "", p.Sub != p.ClientID, slices.Contains(scopes, ""),
+		p.Exp <= p.Iat, p.Nbf > p.Exp:
+		return ServiceClaims{}, ErrClaims
+	}
+	return ServiceClaims{
+		Issuer:    p.Iss,
+		ClientID:  p.ClientID,
+		Audience:  p.Aud,
+		ExpiresAt: unix(p.Exp),
+		IssuedAt:  unix(p.Iat),
+		NotBefore: unix(p.Nbf),
+		ID:        jti,
+		Scopes:    scopes,
+	}, nil
+}

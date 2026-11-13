@@ -17,6 +17,8 @@ type API struct {
 	registration Registration
 	signIn       SignIn
 	basePath     string // http.base_path, for the refresh cookie's path
+
+	clientCredentials ClientCredentials // nil: client credentials are off
 }
 
 // NewAPI returns the API serving keys as the JWKS, the metadata m describes, the registration

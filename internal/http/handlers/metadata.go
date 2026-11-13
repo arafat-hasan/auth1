@@ -34,11 +34,10 @@ type MetadataOptions struct {
 // serverMetadata builds the metadata of TDD-04 §5.4. Its URLs are the issuer's origin, then the
 // base path, then the route.
 func serverMetadata(m MetadataOptions) (gen.ServerMetadata, error) {
-	u, err := url.Parse(m.Issuer)
-	if err != nil || !u.IsAbs() || u.Host == "" {
-		return gen.ServerMetadata{}, fmt.Errorf("metadata: issuer %q is not an absolute URL", m.Issuer)
+	base, err := apiBase(m.Issuer, m.BasePath)
+	if err != nil {
+		return gen.ServerMetadata{}, err
 	}
-	base := u.Scheme + "://" + u.Host + m.BasePath
 	ptr := func(v string) *string { return &v }
 	list := func(v ...string) *[]string { return &v }
 	md := gen.ServerMetadata{
@@ -47,13 +46,35 @@ func serverMetadata(m MetadataOptions) (gen.ServerMetadata, error) {
 		IntrospectionEndpoint: ptr(base + "/v1/introspect"),
 	}
 	if m.ClientCredentials {
-		md.TokenEndpoint = ptr(base + "/v1/oauth/token")
+		md.TokenEndpoint = ptr(base + tokenPath)
 		md.TokenEndpointAuthMethodsSupported = list("private_key_jwt")
 		md.TokenEndpointAuthSigningAlgValuesSupported = list("RS256", "ES256")
 		md.GrantTypesSupported = list("client_credentials")
 	}
 	return md, nil
 }
+
+// apiBase is the issuer's origin followed by the base path: where the API's routes are.
+func apiBase(issuer, basePath string) (string, error) {
+	u, err := url.Parse(issuer)
+	if err != nil || !u.IsAbs() || u.Host == "" {
+		return "", fmt.Errorf("metadata: issuer %q is not an absolute URL", issuer)
+	}
+	return u.Scheme + "://" + u.Host + basePath, nil
+}
+
+// TokenEndpoint is the token endpoint's URL, as the metadata publishes it: the audience a client
+// assertion names (TDD-05 §2).
+func TokenEndpoint(issuer, basePath string) (string, error) {
+	base, err := apiBase(issuer, basePath)
+	if err != nil {
+		return "", err
+	}
+	return base + tokenPath, nil
+}
+
+// tokenPath is the token endpoint's route.
+const tokenPath = "/v1/oauth/token" //nolint:gosec // a route, not a credential
 
 // GetServerMetadata serves /.well-known/oauth-authorization-server.
 func (a *API) GetServerMetadata(context.Context, gen.GetServerMetadataRequestObject) (gen.GetServerMetadataResponseObject, error) {

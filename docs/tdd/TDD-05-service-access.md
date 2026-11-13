@@ -31,28 +31,66 @@ directory and account-control operations.
 - `client_assertion=<JWT>`
 - optionally `scope`
 
-**Assertion checks.** Any failure answers `invalid_client`.
+**Assertion checks.** Any failure answers `invalid_client`, the same body whichever check failed.
+They run in this order:
 
-1. Header `alg` is `RS256` or `ES256`, and `kid` is present.
-2. `iss` = `sub` = a configured client id. Its keys come from `jwks_file` or from `jwks_uri`, fetched and cached for 10 minutes and refetched on an unknown `kid` at most once a minute.
-3. The signature verifies with that `kid`'s key and its own algorithm.
-4. `aud` contains the token endpoint URL or the issuer.
-5. `exp` is in the future and at most 5 minutes after `iat`. `iat` is not more than 30 s in the future.
-6. `jti` is present, at most 256 characters, and new: `INSERT INTO client_assertions (client_id, jti, expires_at) VALUES (…) ON CONFLICT DO NOTHING`. No row inserted means a replay.
+1. The assertion is a compact JWS of at most 8 KiB. Its protected header holds `alg`, `kid` and
+   optionally `typ`, nothing else (`jku`, `jwk`, `x5u`, `x5c`, `crit` are refused). `alg` is
+   `RS256` or `ES256` (never `none` or HMAC), `kid` is present, and `typ`, if present, is `JWT` or
+   `client-authentication+jwt`.
+2. `iss` = `sub` = a configured client id.
+3. The key `kid` of that client (see *Client keys*), outside any transaction (SDD §6.3).
+4. The signature verifies with that key, whose algorithm is the header's `alg`.
+5. `aud`, a string or an array, contains the token endpoint URL (the metadata's `token_endpoint`:
+   the issuer's origin, `http.base_path`, `/v1/oauth/token`) or the issuer.
+6. `exp` is in the future, with no leeway. `iat` is present, not more than 30 s in the future, and
+   `exp` is at most 5 minutes after it. `nbf`, if present, is not more than 30 s in the future.
+7. `jti` is 1–256 characters.
+8. The scope is granted (see *Response*); an empty grant answers `invalid_scope` and records no
+   `jti`.
+9. `jti` is new: `INSERT INTO client_assertions (client_id, jti, expires_at) VALUES (…)
+   ON CONFLICT DO NOTHING`, one statement on its own, with `expires_at` = `exp` + 30 s so the row
+   outlives clock skew between replicas. No row inserted means a replay.
 
-**Response.** RFC 6749 JSON: `access_token`, `token_type: Bearer`, `expires_in`, `scope`.
-- The token is signed by the keyring with:
-  - `aud` = `service_auth.client_credentials.audience` (default `auth1-services`);
+**Client keys.** Each client has exactly one of `jwks_file` and `jwks_uri`. A key is used when it
+has a `kid`, its `use` is absent or `sig`, it is RSA of at least 2048 bits (`RS256`) or P-256
+(`ES256`), and its `alg`, if given, matches. A set with no usable key, or with a repeated `kid`, is
+refused.
+- **`jwks_file`** is read at start-up (`config check` and `serve` refuse a bad one) and re-read
+  every 30 s; a bad file keeps the last good set.
+- **`jwks_uri`** is fetched when first needed and cached for 10 minutes; an unknown `kid` refetches
+  it at most once a minute per client, with one fetch in flight per client. A fetch has a 5 s
+  timeout, TLS 1.2 or later against the system roots, no redirects, and accepts only a `200` of at
+  most 64 KiB. It goes directly, not through the mesh. A failed fetch keeps the cached set. With no
+  set cached and the fetch failed, the answer is `503 UNAVAILABLE`.
+
+**Response.** RFC 6749 JSON: `access_token`, `token_type: Bearer`, `expires_in`, `scope`, with
+`Cache-Control: no-store`.
+- The token is signed by the keyring. Header: `alg`, `kid`, `typ: at+jwt` (RFC 9068). Claims:
+  - `iss` = `http.issuer`;
   - `sub` = `client_id` = the client id;
-  - `scope` = the requested scopes ∩ the configured ones, or all the configured ones if none were requested;
-  - `exp` = 5 minutes *(cfg, ≤ 15)*.
+  - `aud` = `service_auth.client_credentials.audience` (default `auth1-services`);
+  - `iat` = `nbf` = now; `exp` = now + `token_ttl`, 5 minutes *(cfg, ≤ 15)*;
+  - `jti` = a UUIDv7;
+  - `scope` = the requested scopes ∩ the configured ones, or all the configured ones if none were
+    requested, space-separated. A client's configured scopes are those of its
+    `service_auth.callers` entry whose `identity` is the client id; a client without one is a
+    configuration error.
 - An empty grant answers `invalid_scope`.
-- Errors on this endpoint follow RFC 6749 §5.2, not problem details, so OAuth client libraries work.
+- Errors on this endpoint follow RFC 6749 §5.2, not problem details, so OAuth client libraries
+  work: `invalid_client` is `401`, without `WWW-Authenticate` (the client authenticates in the
+  body, not the `Authorization` header) and without `error_description`; `invalid_request`,
+  `unsupported_grant_type` and `invalid_scope` are `400`. A body that cannot be decoded at all is
+  `422 VALIDATION_FAILED`; a store or keyring failure is `503 UNAVAILABLE`.
+- When `service_auth.mode` does not include client credentials, the endpoint answers `404`.
 
 **Audience separation.**
 - Service tokens are accepted only on service endpoints.
 - User tokens (client audiences, the self audience) are never accepted there.
 - Service tokens are never accepted on user endpoints.
+- The service audience differs from every client audience, the self audience and the issuer
+  (TDD-08 §3.1), and the claim sets differ (`sub` is a client id, not an account id), so each
+  validator refuses the other kind on either ground.
 
 ## 3. Scope enforcement
 
@@ -147,5 +185,4 @@ request hash computed as for `POST /v1/invitations` with the invitation's body.
 
 ## 8. To be detailed
 
-- The `jwks_uri` fetch's TLS and timeout settings, and whether it goes through the mesh.
 - Whether `list` needs a total count (proposal: no; counts on large tables are slow and rarely needed).

@@ -269,6 +269,12 @@ telemetry:
 - a client origin that is not exactly a scheme and host, or that is not `https` outside
   `development`; a service client's `jwks_uri` that is not an absolute URL, or not `https`
   outside `development`;
+- with `service_auth.mode` `client_credentials` or `both`, a
+  `service_auth.client_credentials.audience` equal to a client's `audience`, to
+  `tokens.self_audience` or, when that is empty, to `http.issuer` (SDD D-13: neither kind of token
+  may pass for the other); a repeated service client `id`; a service client with no
+  `service_auth.callers` entry for its id, which could never be granted a scope; a `jwks_file` that
+  is not a JWKS with a usable key (TDD-05 §2). These apply in every environment;
 - an SMS method configured with `sms_budget_per_hour: 0`;
 - a keyring with zero or several `active` keys;
 - an `http.listen` that is not `host:port` with a port from 1 to 65535; an `http.base_path` that is

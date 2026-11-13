@@ -63,6 +63,8 @@ type serveDeps struct {
 	resolver app.DeliveryResolver
 	// jobEvery replaces every job's interval when above 0.
 	jobEvery time.Duration
+	// jwksClient fetches service clients' jwks_uri; nil uses clientkeys.HTTPClient.
+	jwksClient *http.Client
 }
 
 func defaultServeDeps() serveDeps {
@@ -148,6 +150,10 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	otel.SetTextMapPropagator(tel.Propagator())
 
 	keys, problems := loadCryptoKeys(cfg, logger)
+	if len(problems) > 0 {
+		return printProblems(cmd.ErrOrStderr(), problems)
+	}
+	clientKeys, problems := loadClientKeys(cfg, deps.jwksClient, logger)
 	if len(problems) > 0 {
 		return printProblems(cmd.ErrOrStderr(), problems)
 	}
@@ -241,6 +247,14 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	if err != nil {
 		return err
 	}
+	if clientKeys != nil {
+		grant, verifier, err := newClientCredentials(cfg, db, clientKeys, kr, tel.TracerProvider(), logger)
+		if err != nil {
+			return err
+		}
+		api.WithClientCredentials(grant)
+		callers.Tokens = verifier
+	}
 	var draining atomic.Bool
 	checks := health.New(logger)
 	checks.Register("draining", func(context.Context) error {
@@ -301,6 +315,9 @@ func serve(cmd *cobra.Command, path string, environ []string, info buildInfo, de
 	g.Go(func() error { return listener.Run(gctx) })
 	g.Go(func() error { return deliveries.Run(gctx) })
 	g.Go(func() error { return scheduler.Run(gctx) })
+	if clientKeys != nil {
+		g.Go(func() error { return clientKeys.Run(gctx) })
+	}
 	err = server.Run(ctx, logger, []server.Listener{
 		{Name: "http", Listener: listeners[0], Handler: router},
 		{Name: "metrics", Listener: listeners[1], Handler: tel.MetricsHandler()},
