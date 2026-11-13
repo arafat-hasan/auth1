@@ -40,6 +40,8 @@ type RegistrationOptions struct {
 	FlowTTL time.Duration
 	// Password is the password policy.
 	Password password.Policy
+	// FactorLimit is L-11, rate_limits.factor_failures: a limit and a window above 0.
+	FactorLimit account.FactorLimit
 }
 
 // RegistrationDeps are the ports and components the registration steps use. Every field is
@@ -100,6 +102,9 @@ func NewRegistration(d RegistrationDeps, o RegistrationOptions) (*Registration, 
 	}
 	if o.FlowTTL <= 0 {
 		return nil, errors.New("registration: the flow lifetime must be above 0")
+	}
+	if o.FactorLimit.Limit < 1 || o.FactorLimit.Window <= 0 {
+		return nil, errors.New("registration: the factor failure limit and window must be above 0")
 	}
 	o.Clients, o.Locales = maps.Clone(o.Clients), slices.Clone(o.Locales)
 	return &Registration{d: d, o: o}, nil
