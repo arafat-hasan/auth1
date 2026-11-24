@@ -1,8 +1,11 @@
 package clientcreds_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -31,6 +34,7 @@ type keys struct {
 	clients     map[string]*assertiontest.Client
 	unavailable bool
 	lookups     int
+	relabel     string // when set, the alg every key is returned with
 }
 
 func (k *keys) Key(_ context.Context, client, kid string) (app.PublicKey, error) {
@@ -42,7 +46,11 @@ func (k *keys) Key(_ context.Context, client, kid string) (app.PublicKey, error)
 	if !ok || c.Kid() != kid {
 		return app.PublicKey{}, app.ErrUnknownClientKey
 	}
-	return c.Public(), nil
+	pk := c.Public()
+	if k.relabel != "" {
+		pk.Alg = k.relabel
+	}
+	return pk, nil
 }
 
 // assertions is client_assertions in memory.
@@ -226,44 +234,57 @@ func TestRefusals(t *testing.T) {
 	header := func(m map[string]any) func(*testing.T, *env) string {
 		return func(t *testing.T, e *env) string { return e.mint(t, assertiontest.Header(m)) }
 	}
+	const (
+		badForm   = "not a compact JWS of at most 8 KiB"
+		badHeader = "a header parameter other than alg, kid and typ"
+		badAlg    = "alg is not RS256 or ES256"
+		notClient = "iss and sub are not one configured client"
+		badTimes  = "exp or iat missing, or a time that is not a number"
+		badJTI    = "jti missing or over 256 characters"
+	)
 	tests := []struct {
-		name  string
-		token func(*testing.T, *env) string
+		name   string
+		token  func(*testing.T, *env) string
+		reason string
 	}{
-		{"alg none", func(t *testing.T, e *env) string { return e.mint(t, assertiontest.Unsigned()) }},
+		{"alg none", func(t *testing.T, e *env) string { return e.mint(t, assertiontest.Unsigned()) }, badAlg},
 		{"alg HS256", func(t *testing.T, e *env) string {
 			return e.mint(t, assertiontest.HMAC([]byte("an attacker's secret of some length")))
-		}},
+		}, badAlg},
 		{"signed by another client's key", func(t *testing.T, e *env) string {
 			return e.mint(t, assertiontest.SignedBy(e.billing))
-		}},
+		}, "alg is not the key's"},
+		{"key labelled with another alg", func(t *testing.T, e *env) string {
+			e.keys.relabel = "ES256"
+			return e.mint(t)
+		}, "alg is not the key's"},
 		{"signed by an unknown key of the same alg", func(t *testing.T, e *env) string {
 			return e.mint(t, assertiontest.SignedBy(assertiontest.NewClient(t, "reports", "RS256")))
-		}},
-		{"no kid", header(map[string]any{"kid": nil})},
-		{"jku header", header(map[string]any{"jku": "https://evil.example.test/jwks"})},
-		{"x5u header", header(map[string]any{"x5u": "https://evil.example.test/cert"})},
-		{"crit header", header(map[string]any{"crit": []string{"exp"}})},
-		{"typ at+jwt", header(map[string]any{"typ": "at+jwt"})},
-		{"iss is not sub", claims(map[string]any{"sub": "billing"})},
-		{"no iss", claims(map[string]any{"iss": nil})},
+		}, "bad signature"},
+		{"no kid", header(map[string]any{"kid": nil}), "no kid"},
+		{"jku header", header(map[string]any{"jku": "https://evil.example.test/jwks"}), badHeader},
+		{"x5u header", header(map[string]any{"x5u": "https://evil.example.test/cert"}), badHeader},
+		{"crit header", header(map[string]any{"crit": []string{"exp"}}), badHeader},
+		{"typ at+jwt", header(map[string]any{"typ": "at+jwt"}), "typ is not JWT or client-authentication+jwt"},
+		{"iss is not sub", claims(map[string]any{"sub": "billing"}), notClient},
+		{"no iss", claims(map[string]any{"iss": nil}), notClient},
 		{"unknown client", func(t *testing.T, _ *env) string {
 			return assertiontest.NewClient(t, "stranger", "RS256").Mint(t, endpoint, now)
-		}},
-		{"other client's id with own key", claims(map[string]any{"iss": "billing", "sub": "billing"})},
-		{"no aud", claims(map[string]any{"aud": nil})},
-		{"expired", claims(map[string]any{"exp": now.Unix()})},
-		{"no exp", claims(map[string]any{"exp": nil})},
-		{"exp a string", claims(map[string]any{"exp": "soon"})},
-		{"no iat", claims(map[string]any{"iat": nil})},
-		{"iat over 30 s ahead", claims(map[string]any{"iat": now.Add(31 * time.Second).Unix(), "exp": now.Add(2 * time.Minute).Unix()})},
-		{"nbf over 30 s ahead", claims(map[string]any{"nbf": now.Add(31 * time.Second).Unix()})},
-		{"no jti", claims(map[string]any{"jti": nil})},
-		{"empty jti", claims(map[string]any{"jti": ""})},
-		{"jti of 257 characters", claims(map[string]any{"jti": strings.Repeat("é", 257)})},
-		{"not a JWS", func(*testing.T, *env) string { return "not.a.jws" }},
-		{"over 8 KiB", claims(map[string]any{"pad": strings.Repeat("x", 8<<10)})},
-		{"padded base64", func(t *testing.T, e *env) string { return e.mint(t) + "=" }},
+		}, notClient},
+		{"other client's id with own key", claims(map[string]any{"iss": "billing", "sub": "billing"}), "no such kid for the client"},
+		{"no aud", claims(map[string]any{"aud": nil}), "aud is not the token endpoint or the issuer"},
+		{"expired", claims(map[string]any{"exp": now.Unix()}), "expired"},
+		{"no exp", claims(map[string]any{"exp": nil}), badTimes},
+		{"exp a string", claims(map[string]any{"exp": "soon"}), "claims are not a JSON object of the expected types"},
+		{"no iat", claims(map[string]any{"iat": nil}), badTimes},
+		{"iat over 30 s ahead", claims(map[string]any{"iat": now.Add(31 * time.Second).Unix(), "exp": now.Add(2 * time.Minute).Unix()}), "iat in the future"},
+		{"nbf over 30 s ahead", claims(map[string]any{"nbf": now.Add(31 * time.Second).Unix()}), "nbf in the future"},
+		{"no jti", claims(map[string]any{"jti": nil}), badJTI},
+		{"empty jti", claims(map[string]any{"jti": ""}), badJTI},
+		{"jti of 257 characters", claims(map[string]any{"jti": strings.Repeat("é", 257)}), badJTI},
+		{"not a JWS", func(*testing.T, *env) string { return "not.a.jws" }, badForm},
+		{"over 8 KiB", claims(map[string]any{"pad": strings.Repeat("x", 8<<10)}), badForm},
+		{"padded base64", func(t *testing.T, e *env) string { return e.mint(t) + "=" }, badForm},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -271,8 +292,8 @@ func TestRefusals(t *testing.T) {
 			e := newEnv(t)
 			_, err := e.svc.Issue(context.Background(), request(tt.token(t, e)))
 			var oe *clientcreds.Error
-			if !errors.As(err, &oe) || oe.Code != clientcreds.InvalidClient {
-				t.Fatalf("err = %v, want invalid_client", err)
+			if !errors.As(err, &oe) || oe.Code != clientcreds.InvalidClient || oe.Reason != tt.reason {
+				t.Fatalf("err = %v, want invalid_client: %s", err, tt.reason)
 			}
 			if len(e.assertions.rows) != 0 || e.issuer.client != "" {
 				t.Errorf("a refused assertion recorded %v and issued to %q", e.assertions.rows, e.issuer.client)
@@ -456,6 +477,50 @@ func TestSigningFailureKeepsJTI(t *testing.T) {
 	e.issuer.err = nil
 	if _, err := e.svc.Issue(context.Background(), request(tok)); err != nil {
 		t.Errorf("the retry: %v", err)
+	}
+}
+
+// TestRequestRedactsAssertion: a Request printed, logged or marshalled never shows its assertion,
+// a bearer credential until its jti is recorded.
+func TestRequestRedactsAssertion(t *testing.T) {
+	t.Parallel()
+	scope := "tokens:introspect"
+	r := clientcreds.Request{GrantType: clientcreds.GrantType, AssertionType: clientcreds.AssertionType,
+		Assertion: "header.secret-claims.signature", Scope: &scope}
+	var log bytes.Buffer
+	slog.New(slog.NewJSONHandler(&log, nil)).Info("request", "req", r)
+	js, _ := json.Marshal(r)
+	for name, out := range map[string]string{
+		"%v": fmt.Sprintf("%v", r), "%+v": fmt.Sprintf("%+v", r), "%#v": fmt.Sprintf("%#v", r),
+		"%s": fmt.Sprintf("%s", r), "pointer": fmt.Sprintf("%v", &r), "slog": log.String(), "json": string(js),
+	} {
+		if strings.Contains(out, "secret-claims") {
+			t.Errorf("%s shows the assertion: %s", name, out)
+		}
+		if !strings.Contains(out, "client_credentials") {
+			t.Errorf("%s does not show the grant type: %s", name, out)
+		}
+	}
+}
+
+// TestNewCopiesScopes: changing the caller's scope slices after New grants nothing.
+func TestNewCopiesScopes(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	scopes := []string{"tokens:introspect"}
+	svc, err := clientcreds.New(clientcreds.Options{
+		Keys: e.keys, Assertions: e.assertions, UnitOfWork: &uow{}, Issuer: e.issuer, Clock: e.clock,
+		Audiences: []string{endpoint}, Clients: map[string][]string{"reports": scopes}, Logger: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes[0] = "accounts:delete"
+	if _, err := svc.Issue(context.Background(), request(e.mint(t))); err != nil {
+		t.Fatal(err)
+	}
+	if d := cmp.Diff([]string{"tokens:introspect"}, e.issuer.scopes); d != "" {
+		t.Errorf("granted (-want +got):\n%s", d)
 	}
 }
 

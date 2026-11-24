@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
-	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -57,12 +58,37 @@ type Error struct {
 
 func (e *Error) Error() string { return "client credentials: " + string(e.Code) + ": " + e.Reason }
 
-// Request is the token request's form.
+// Request is the token request's form. It prints, logs and marshals without its assertion, a
+// bearer credential until its jti is recorded.
 type Request struct {
 	GrantType     string
 	AssertionType string
-	Assertion     string
+	Assertion     string  `json:"-"`
 	Scope         *string // space-separated; nil when absent
+}
+
+// String describes r without its assertion.
+func (r Request) String() string {
+	scope := "<none>"
+	if r.Scope != nil {
+		scope = strconv.Quote(*r.Scope)
+	}
+	return fmt.Sprintf("clientcreds.Request{GrantType: %q, AssertionType: %q, Scope: %s}", r.GrantType, r.AssertionType, scope)
+}
+
+// GoString is String, for %#v.
+func (r Request) GoString() string { return r.String() }
+
+// Format writes String for every verb, so no verb prints the assertion.
+func (r Request) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, r.String()) }
+
+// LogValue logs r without its assertion.
+func (r Request) LogValue() slog.Value {
+	attrs := []slog.Attr{slog.String("grant_type", r.GrantType), slog.String("client_assertion_type", r.AssertionType)}
+	if r.Scope != nil {
+		attrs = append(attrs, slog.String("scope", *r.Scope))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 // ServiceIssuer issues service tokens; tokens.Issuer implements it.
@@ -105,7 +131,11 @@ func New(o Options) (*Service, error) {
 		slices.Sort(missing)
 		return nil, fmt.Errorf("client credentials: missing %s", strings.Join(missing, ", "))
 	}
-	o.Clients = maps.Clone(o.Clients)
+	clients := make(map[string][]string, len(o.Clients))
+	for id, scopes := range o.Clients {
+		clients[id] = slices.Clone(scopes)
+	}
+	o.Clients = clients
 	o.Audiences = slices.Clone(o.Audiences)
 	return &Service{o: o}, nil
 }
