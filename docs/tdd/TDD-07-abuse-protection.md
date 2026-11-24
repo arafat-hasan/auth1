@@ -51,15 +51,15 @@ hashing. **Nothing hashes a password before L-1 and L-2 pass.**
 
 ```sql
 UPDATE accounts
-SET factor_failures = CASE WHEN factor_failures_since IS NULL OR factor_failures_since < now() - interval '1 hour'
+SET factor_failures = CASE WHEN factor_failures_since IS NULL OR factor_failures_since <= now() - interval '1 hour'
                            THEN 1 ELSE factor_failures + 1 END,
-    factor_failures_since = CASE WHEN factor_failures_since IS NULL OR factor_failures_since < now() - interval '1 hour'
+    factor_failures_since = CASE WHEN factor_failures_since IS NULL OR factor_failures_since <= now() - interval '1 hour'
                            THEN now() ELSE factor_failures_since END
 WHERE id = $1
 RETURNING factor_failures;
 ```
 
-Before any verification, a count at the limit within the window refuses the request. A correct code
+The window covers `[factor_failures_since, factor_failures_since + 1 hour)`. Before any verification, a count at the limit within the window refuses the request. A correct code
 does not reset it. This counter is not the account's `version`; it does not emit events.
 
 ## 4. Sign-in throttling and device cookies (L-3)
