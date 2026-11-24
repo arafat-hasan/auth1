@@ -7319,6 +7319,25 @@ func (response IssueServiceToken429ApplicationProblemPlusJSONResponse) VisitIssu
 	return err
 }
 
+type IssueServiceToken503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response IssueServiceToken503ApplicationProblemPlusJSONResponse) VisitIssueServiceTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type RequestPasswordResetRequestObject struct {
 	Body *RequestPasswordResetJSONRequestBody
 }

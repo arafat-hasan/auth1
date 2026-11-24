@@ -97,11 +97,16 @@ func (v *validator) required() {
 		v.add("identifiers", "an identifier policy is required")
 	}
 
+	serviceIDs := map[string]bool{}
 	for i, sc := range c.ServiceAuth.ClientCredentials.Clients {
 		p := index("service_auth.client_credentials.clients", i)
-		if sc.ID == "" {
+		switch {
+		case sc.ID == "":
 			v.add(p+".id", "required")
+		case serviceIDs[sc.ID]:
+			v.add(p+".id", "duplicate service client id %q", sc.ID)
 		}
+		serviceIDs[sc.ID] = true
 		if (sc.JWKSFile == "") == (sc.JWKSURI == "") {
 			v.add(p, "set exactly one of jwks_file and jwks_uri")
 		}
@@ -359,8 +364,33 @@ func (v *validator) enums() {
 	oneOf(v, "service_auth.mesh.source", c.ServiceAuth.Mesh.Source, false, MeshSourceHeader, MeshSourcePeerCert)
 	oneOf(v, "service_auth.mesh.format", c.ServiceAuth.Mesh.Format, false, MeshFormatXFCC, MeshFormatPlain)
 
-	if m := c.ServiceAuth.Mode; (m == ServiceAuthClientCredentials || m == ServiceAuthBoth) && c.ServiceAuth.ClientCredentials.Audience == "" {
-		v.add("service_auth.client_credentials.audience", "required when service_auth.mode is %s", m)
+	if m := c.ServiceAuth.Mode; m == ServiceAuthClientCredentials || m == ServiceAuthBoth {
+		v.serviceAudience(m)
+	}
+}
+
+// serviceAudience checks the audience of client-credentials tokens: present, and neither a
+// client's audience nor the self audience, so neither kind of token passes for the other (SDD
+// D-13, TDD-05 §2).
+func (v *validator) serviceAudience(m ServiceAuthMode) {
+	c := v.c
+	aud := c.ServiceAuth.ClientCredentials.Audience
+	const path = "service_auth.client_credentials.audience"
+	if aud == "" {
+		v.add(path, "required when service_auth.mode is %s", m)
+		return
+	}
+	self := c.Tokens.SelfAudience
+	if self == "" {
+		self = c.HTTP.Issuer
+	}
+	if aud == self {
+		v.add(path, "%q is the self audience of restricted tokens", aud)
+	}
+	for _, cl := range c.Clients {
+		if cl.Audience == aud {
+			v.add(path, "%q is the audience of client %q", aud, cl.ID)
+		}
 	}
 }
 

@@ -292,8 +292,8 @@ func TestModeSelectsCredential(t *testing.T) {
 	}
 }
 
-// TestServiceTokenOnlyWithoutHookDenied: until WP-70 fills the hook, an operation whose only
-// scheme is serviceToken accepts no caller, not even a workload identity.
+// TestServiceTokenOnlyWithoutHookDenied: without a verifier, an operation whose only scheme is
+// serviceToken accepts no caller, not even a workload identity.
 func TestServiceTokenOnlyWithoutHookDenied(t *testing.T) {
 	t.Parallel()
 	tokenOnly := func(*http.Request) (string, gen.Operation, bool) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,10 @@ type Config struct {
 	SelfAudience    string        // tokens.self_audience, the aud of restricted tokens; empty: Issuer
 	AccessTTL       time.Duration // tokens.access_ttl
 	ClientAudiences []string      // every client's audience, none the self audience; Validator only
+	// ServiceAudience is service_auth.client_credentials.audience, the aud of service tokens (SDD
+	// D-13); empty: no service token is issued or accepted.
+	ServiceAudience string
+	ServiceTTL      time.Duration // service_auth.client_credentials.token_ttl
 }
 
 // selfAudience is the self audience: SelfAudience, or Issuer when it is empty.
@@ -34,6 +39,15 @@ func (c Config) selfAudience() string {
 		return c.Issuer
 	}
 	return c.SelfAudience
+}
+
+// checkServiceAudience refuses a ServiceAudience that is the self audience or a client's
+// audience, so a service token never passes for a user token (SDD D-13).
+func (c Config) checkServiceAudience() error {
+	if s := c.ServiceAudience; s != "" && (s == c.selfAudience() || slices.Contains(c.ClientAudiences, s)) {
+		return fmt.Errorf("service audience %q is a user token's audience", s)
+	}
+	return nil
 }
 
 // Session is what a token says of its session (TDD-04 §2).
@@ -106,3 +120,42 @@ type Claims struct {
 // deleted, or a status it does not know), a session that is not the client's, or inputs missing
 // an id, the client's audience or the sign-in time: a fault in the caller, never in a request.
 var ErrNotIssuable = errors.New("tokens: no access token for this session")
+
+// Service is an issued service token (TDD-05 §2). It prints, logs and marshals without its token.
+type Service struct {
+	Token     string        `json:"-"` // the compact JWS; a bearer credential, never logged
+	ID        uuid.UUID     // jti
+	ExpiresAt time.Time     // exp
+	ExpiresIn time.Duration // exp − iat, the token response's expires_in
+	Scopes    []string      // the granted scopes, in the order given
+}
+
+// String describes s without its token.
+func (s Service) String() string {
+	return fmt.Sprintf("tokens.Service{ID: %s, ExpiresAt: %s, Scopes: %v}",
+		s.ID, s.ExpiresAt.Format(time.RFC3339), s.Scopes)
+}
+
+// GoString is String, for %#v.
+func (s Service) GoString() string { return s.String() }
+
+// Format writes String for every verb, so no verb prints the token.
+func (s Service) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, s.String()) }
+
+// LogValue logs s without its token.
+func (s Service) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("jti", s.ID.String()), slog.Time("expires_at", s.ExpiresAt),
+		slog.Any("scopes", s.Scopes))
+}
+
+// ServiceClaims are the claims of a valid service token (TDD-05 §2).
+type ServiceClaims struct {
+	Issuer    string
+	ClientID  string // sub and client_id
+	Audience  string
+	ExpiresAt time.Time
+	IssuedAt  time.Time
+	NotBefore time.Time
+	ID        uuid.UUID // jti
+	Scopes    []string
+}

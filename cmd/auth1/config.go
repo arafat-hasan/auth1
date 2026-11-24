@@ -63,6 +63,8 @@ func checkConfig(cmd *cobra.Command, path string, environ []string) error {
 		problems = append(problems, passwordProblems...)
 		_, serviceProblems := loadServiceAuth(cfg)
 		problems = append(problems, serviceProblems...)
+		_, clientKeyProblems := loadClientKeys(cfg, nil, slog.New(slog.DiscardHandler))
+		problems = append(problems, clientKeyProblems...)
 		_, keyProblems := loadCryptoKeys(cfg, slog.New(slog.DiscardHandler))
 		problems = append(problems, keyProblems...)
 		problems = append(problems, keyringProblems(cfg)...)

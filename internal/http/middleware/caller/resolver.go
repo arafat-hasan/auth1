@@ -33,8 +33,8 @@ const (
 
 // TokenVerifier validates a client-credentials token (TDD-05 §2), returning its client as a
 // Caller of KindClient with the token's scopes. Any error, another Kind or an empty ID means no
-// caller. Only Kind, ID and a copy of Scopes are kept; Actor comes from the request. WP-70
-// implements it.
+// caller. Only Kind, ID and a copy of Scopes are kept; Actor comes from the request. serve fills
+// it with tokens.Validator.ValidateService.
 type TokenVerifier interface {
 	VerifyServiceToken(ctx context.Context, token string) (Caller, error)
 }

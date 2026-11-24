@@ -11,8 +11,9 @@ import (
 
 // loadServiceAuth maps service_auth onto the caller middleware's options (TDD-05 §1, §3), less
 // the dependencies serve adds. config check and serve refuse what it reports as problems: a
-// trusted sidecar that is not a CIDR, an empty or repeated caller identity, and no header name
-// when the mesh identity comes from a header.
+// trusted sidecar that is not a CIDR, an empty or repeated caller identity, no header name when
+// the mesh identity comes from a header, and, when the mode accepts client credentials, a service
+// client with no caller entry for its id, which could never be granted a scope (TDD-05 §2).
 func loadServiceAuth(cfg *config.Config) (caller.Options, []*config.Problem) {
 	sa := cfg.ServiceAuth
 	o := caller.Options{
@@ -51,6 +52,16 @@ func loadServiceAuth(cfg *config.Config) (caller.Options, []*config.Problem) {
 		}
 		o.Callers[c.Identity] = c.Scopes
 	}
+	if o.Mode == caller.ModeClientCredentials || o.Mode == caller.ModeBoth {
+		for i, sc := range sa.ClientCredentials.Clients {
+			if _, ok := o.Callers[sc.ID]; !ok && sc.ID != "" {
+				problems = append(problems, &config.Problem{
+					Path:    fmt.Sprintf("service_auth.client_credentials.clients[%d].id", i),
+					Message: "no service_auth.callers entry grants it scopes",
+				})
+			}
+		}
+	}
 	for i, s := range sa.Mesh.TrustedSidecarCIDRs {
 		if _, err := netip.ParsePrefix(s); err != nil {
 			problems = append(problems, &config.Problem{
@@ -82,7 +93,8 @@ func warnSidecars(logger *slog.Logger, cidrs []string) {
 
 // warnServiceAuth logs a warning for each credential o's mode accepts that no request can present
 // yet, so that the 401s it causes are explained at start-up: service tokens without a verifier
-// (WP-70), and a peer certificate, since nothing in auth1 terminates TLS.
+// (serve sets one whenever the mode accepts them), and a peer certificate, since nothing in auth1
+// terminates TLS.
 func warnServiceAuth(logger *slog.Logger, o caller.Options) {
 	if (o.Mode == caller.ModeClientCredentials || o.Mode == caller.ModeBoth) && o.Tokens == nil {
 		logger.Warn("service tokens are not accepted yet: every call that relies on one answers 401")
