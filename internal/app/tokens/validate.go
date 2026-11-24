@@ -97,8 +97,8 @@ func NewValidator(cfg Config, keys app.PublicKeys, clock app.Clock) (*Validator,
 			return nil, fmt.Errorf("tokens: validator: client audience %q is repeated", aud)
 		}
 	}
-	if s := cfg.ServiceAudience; s != "" && (s == self || slices.Contains(cfg.ClientAudiences, s)) {
-		return nil, fmt.Errorf("tokens: validator: service audience %q is a user token's audience", s)
+	if err := cfg.checkServiceAudience(); err != nil {
+		return nil, fmt.Errorf("tokens: validator: %w", err)
 	}
 	auds := append(slices.Clone(cfg.ClientAudiences), self)
 	return &Validator{issuer: cfg.Issuer, self: self, audiences: auds, service: cfg.ServiceAudience, keys: keys, clock: clock}, nil

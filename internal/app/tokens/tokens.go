@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,6 +39,15 @@ func (c Config) selfAudience() string {
 		return c.Issuer
 	}
 	return c.SelfAudience
+}
+
+// checkServiceAudience refuses a ServiceAudience that is the self audience or a client's
+// audience, so a service token never passes for a user token (SDD D-13).
+func (c Config) checkServiceAudience() error {
+	if s := c.ServiceAudience; s != "" && (s == c.selfAudience() || slices.Contains(c.ClientAudiences, s)) {
+		return fmt.Errorf("service audience %q is a user token's audience", s)
+	}
+	return nil
 }
 
 // Session is what a token says of its session (TDD-04 §2).

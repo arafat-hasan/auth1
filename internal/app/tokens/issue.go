@@ -55,7 +55,8 @@ type Issuer struct {
 }
 
 // NewIssuer returns an issuer that signs with signer. It refuses a Config without an issuer, with
-// an AccessTTL that is not positive, or with a ServiceAudience and a ServiceTTL that is not.
+// an AccessTTL that is not positive, or with a ServiceAudience and a ServiceTTL that is not, or a
+// ServiceAudience that is a user token's (as NewValidator does).
 func NewIssuer(cfg Config, signer app.TokenSigner, clock app.Clock, ids app.IDGenerator) (*Issuer, error) {
 	if cfg.Issuer == "" {
 		return nil, errors.New("tokens: issuer: no issuer")
@@ -65,6 +66,9 @@ func NewIssuer(cfg Config, signer app.TokenSigner, clock app.Clock, ids app.IDGe
 	}
 	if cfg.ServiceAudience != "" && cfg.ServiceTTL <= 0 {
 		return nil, fmt.Errorf("tokens: issuer: service TTL %s is not positive", cfg.ServiceTTL)
+	}
+	if err := cfg.checkServiceAudience(); err != nil {
+		return nil, fmt.Errorf("tokens: issuer: %w", err)
 	}
 	return &Issuer{cfg: cfg, signer: signer, clock: clock, ids: ids}, nil
 }

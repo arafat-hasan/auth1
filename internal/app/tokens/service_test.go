@@ -286,6 +286,22 @@ func TestNewValidatorRefusesServiceAudience(t *testing.T) {
 	}
 }
 
+// TestNewIssuerRefusesServiceAudience: an issuer never mints a service token with a user token's
+// audience (SDD D-13).
+func TestNewIssuerRefusesServiceAudience(t *testing.T) {
+	t.Parallel()
+	for name, aud := range map[string]string{"a client's": appAudience, "the self audience": selfAudience} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config()
+			cfg.ServiceAudience = aud
+			if i, err := tokens.NewIssuer(cfg, fakes.NewKeys(), fakes.NewClock(now), fakes.NewIDs()); err == nil || i != nil {
+				t.Errorf("NewIssuer = %v, %v; want an error", i, err)
+			}
+		})
+	}
+}
+
 func TestNewIssuerRefusesServiceTTL(t *testing.T) {
 	t.Parallel()
 	cfg := config()
