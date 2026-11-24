@@ -54,8 +54,9 @@ They run in this order:
 
 **Client keys.** Each client has exactly one of `jwks_file` and `jwks_uri`. A key is used when it
 has a `kid`, its `use` is absent or `sig`, it is RSA of at least 2048 bits (`RS256`) or P-256
-(`ES256`), and its `alg`, if given, matches. A set with no usable key, or with a repeated `kid`, is
-refused.
+(`ES256`), and its `alg`, if given, matches; another key is skipped, and a warning names its `kid`.
+A set over 64 KiB, that is not a JWKS, with no usable key, or with a `kid` repeated among the keys
+that parse, is refused.
 - **`jwks_file`** is read at start-up (`config check` and `serve` refuse a bad one) and re-read
   every 30 s; a bad file keeps the last good set.
 - **`jwks_uri`** is fetched when first needed and cached for 10 minutes; an unknown `kid` refetches
@@ -88,8 +89,8 @@ refused.
 - Service tokens are accepted only on service endpoints.
 - User tokens (client audiences, the self audience) are never accepted there.
 - Service tokens are never accepted on user endpoints.
-- The service audience differs from every client audience, the self audience and the issuer
-  (TDD-08 §3.1), and the claim sets differ (`sub` is a client id, not an account id), so each
+- The service audience differs from every client audience and from the self audience
+  (`tokens.self_audience`, or `http.issuer` when that is empty; TDD-08 §3.1), and the claim sets differ (`sub` is a client id, not an account id), so each
   validator refuses the other kind on either ground.
 
 ## 3. Scope enforcement
