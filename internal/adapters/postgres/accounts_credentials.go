@@ -129,7 +129,8 @@ func (r *Accounts) Activate(ctx context.Context, accountID uuid.UUID) error {
 	return nil
 }
 
-// FailFactor implements app.Accounts with TDD-07 §3's statement, the window configured.
+// FailFactor implements app.Accounts with TDD-07 §3's statement, the window configured: it starts
+// again at factor_failures_since + window exactly, as account.FactorLimit.Reached reads it.
 func (r *Accounts) FailFactor(ctx context.Context, accountID uuid.UUID, window time.Duration) (int, error) {
 	t := txFrom(ctx)
 	if t == nil {

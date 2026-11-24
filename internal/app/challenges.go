@@ -147,7 +147,8 @@ func (c *Challenges) Send(ctx context.Context, a account.Account, ch flow.Challe
 }
 
 // Outgoing is one message of a batch to an address: the open challenge, the account it is for and
-// that account's identifier holding the address, the recipient.
+// that account's identifier holding the address, the recipient. The caller guarantees, under the
+// account lock, that the identifier holds the batch's address: the limits are counted on it.
 type Outgoing struct {
 	Account      account.Account
 	Challenge    flow.ChallengeRecord
@@ -158,12 +159,12 @@ type Outgoing struct {
 // value of type idType, by channel (TDD-02 §2.4, §4): it checks the per-address limits once for the
 // batch, then counts each send and writes its delivery request, in order, while the long window
 // has room. It returns how many, from the first, it sent. Under the address lock SendCounts takes,
-// it refuses the whole batch with RESEND_TOO_SOON while a challenge to the address, of any account
+// it refuses a non-empty batch whole with RESEND_TOO_SOON while a challenge to the address, of any account
 // or flow, closed exhausted less than the cooldown ago (L-9), with the rest of the cooldown as the
 // retry time; then with RESEND_TOO_SOON, the short window as the retry time, when the short window
 // is full, and RATE_LIMITED, the long one, when the long window is (L-7, I-21, TDD-07 §5). A
-// refusal counts and writes nothing. An empty batch checks the limits as any other, so it takes
-// the same time, and sends nothing. The challenges must be locked or opened in the transaction.
+// refusal counts and writes nothing. An empty batch takes the address lock and runs the same
+// queries, so it takes the same time, but is never refused and sends nothing. The challenges must be locked or opened in the transaction.
 func (c *Challenges) SendBatch(ctx context.Context, idType, value string, channel message.Channel, out []Outgoing) (int, error) {
 	counts, err := c.flows.SendCounts(ctx, idType, value, c.rules.Windows)
 	if err != nil {

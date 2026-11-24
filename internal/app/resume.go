@@ -56,8 +56,8 @@ func (c RequestResume) LogValue() slog.Value { return slog.StringValue(c.String(
 // RequestResume sends a resume message to the value for each open registration or invitation flow
 // holding it, at most 3, newest first (TDD-02 §4). It answers nil whatever it finds, so it does not
 // tell whether a flow holds the value: an unknown client is the only refusal (VALIDATION_FAILED),
-// and a store failure the only other error. L-14 and then L-8 count the request first, and refuse
-// it silently. A value that does not normalise, or of a type not configured, sends nothing. In one
+// and a store failure the only other error. After the client check, L-14 and then L-8 count the
+// request, and refuse it silently. A value that does not normalise, or of a type not configured, sends nothing. In one
 // transaction, the flows' accounts are locked by id, then the flows, then their challenges (G-5);
 // each flow reuses its open resume challenge on the identifier, or opens one, closing an expired
 // one, so a flow has at most one open resume code; then the messages share one check of the send
@@ -273,7 +273,8 @@ type FlowResumed struct {
 // accounts are locked by id, then the flows, then their challenges (G-5), and each candidate is
 // checked again under the locks. The try counts on every candidate (I-4), so several open flows
 // give no more guesses than one; a candidate whose tries run out closes, erasing its secret (I-5).
-// A candidate whose account has reached L-11 is not compared. The newest match is consumed: its
+// A candidate cannot match while its account is at L-11 or its identifier is no longer current:
+// its try still counts. The newest candidate that matches is consumed: its
 // identifier is verified if it was not (IDENTIFIER_TAKEN when another account verified the value
 // first, the challenge staying consumed), and the flow's handle is replaced, so the old one finds
 // nothing (I-20); the other candidates stay open. With no match, the failure counts against each
@@ -416,9 +417,9 @@ func (r *Registration) failCandidates(ctx context.Context, e AuditEntry, op stri
 // resumeFlow resumes the locked flow l by its resume challenge ch on the identifier id (TDD-02 §4):
 // it consumes ch, verifies id if it is not, dropping its type from the pending types and emitting
 // account.identifier_verified, and replaces the flow's handle. Otherwise answer is
-// CHALLENGE_CLOSED when ch has closed already or id is no longer current, or IDENTIFIER_TAKEN when
-// another account holds the value verified; both commit, ch staying consumed for the latter, and
-// the handle is not replaced. err is a failure of the stores.
+// CHALLENGE_CLOSED when ch has closed already (ch is left as it was) or id is no longer current
+// (ch stays consumed), or IDENTIFIER_TAKEN when another account holds the value verified (ch stays
+// consumed); each commits, and the handle is not replaced. err is a failure of the stores.
 func (r *Registration) resumeFlow(ctx context.Context, l locked, id account.Identifier, ch flow.ChallengeRecord) (FlowResumed, error, error) {
 	ok, err := r.d.Flows.CloseChallenge(ctx, ch.ID, true)
 	if err != nil {
