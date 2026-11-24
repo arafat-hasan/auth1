@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -391,5 +392,143 @@ func TestVerifyResumeRetiredIdentifier(t *testing.T) {
 	got := e.resumes(t)[0]
 	if got.Open || got.Consumed || got.Attempts != challengeRules.MaxAttempts || got.Secret != nil {
 		t.Errorf("challenge %+v; want closed exhausted, erased", got)
+	}
+}
+
+// TestVerifyResumeConcurrentRightCode: the same right code sent at once resumes the flow once.
+// The others find the challenge consumed under the lock and get CODE_INVALID (I-4).
+func TestVerifyResumeConcurrentRightCode(t *testing.T) {
+	t.Parallel()
+	e := newResumeEnv(t)
+	_, rs := e.resumed(t, 1)
+	code := e.code(t, rs[0].ID)
+	const n = 8
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		handles int
+		errs    []error
+	)
+	for range n {
+		wg.Go(func() {
+			got, err := e.reg.VerifyResume(t.Context(), verifyCmd(code))
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+			} else if len(got.Handle) > 0 {
+				handles++
+			}
+		})
+	}
+	wg.Wait()
+	if handles != 1 || len(errs) != n-1 {
+		t.Fatalf("%d handles, %d errors; want 1 and %d", handles, len(errs), n-1)
+	}
+	for _, err := range errs {
+		checkCodeInvalid(t, "a concurrent duplicate", err)
+	}
+	var events int
+	if err := e.su.QueryRowContext(t.Context(), "SELECT count(*) FROM outbox WHERE type = 'account.identifier_verified'").Scan(&events); err != nil || events != 1 {
+		t.Errorf("%d identifier_verified events, %v; want 1", events, err)
+	}
+}
+
+// TestVerifyResumeL11SkipCountsTry: a candidate on an account at L-11 cannot match, but its try is
+// counted; another account's candidate still resumes with its own code.
+func TestVerifyResumeL11SkipCountsTry(t *testing.T) {
+	t.Parallel()
+	e := newResumeEnv(t)
+	ss, rs := e.resumed(t, 2)
+	e.exec(t, `UPDATE accounts SET factor_failures = 10, factor_failures_since = now()
+		WHERE id = (SELECT account_id FROM flows WHERE id = ?)`, ss[1].FlowID)
+	_, err := e.reg.VerifyResume(t.Context(), verifyCmd(e.code(t, rs[1].ID)))
+	checkCodeInvalid(t, "right code on an account at L-11", err)
+	for _, r := range e.resumes(t) {
+		if r.Attempts != 1 || !r.Open {
+			t.Errorf("challenge %+v; want open with the try counted", r)
+		}
+	}
+	got, err := e.reg.VerifyResume(t.Context(), verifyCmd(e.code(t, rs[0].ID)))
+	if err != nil || got.FlowID != ss[0].FlowID {
+		t.Errorf("the other account's code: %+v, %v; want flow %v resumed", got, err, ss[0].FlowID)
+	}
+}
+
+// TestVerifyResumeFailureAudits: a wrong code is audited once per candidate, naming its account,
+// flow and kind, with the code and no value.
+func TestVerifyResumeFailureAudits(t *testing.T) {
+	t.Parallel()
+	e := newResumeEnv(t)
+	ss, _ := e.resumed(t, 2)
+	_, err := e.reg.VerifyResume(t.Context(), verifyCmd(flow.Secret("000000")))
+	checkCodeInvalid(t, "wrong code", err)
+	as := e.audits(t, "registration.resume")
+	if len(as) != 2 {
+		t.Fatalf("%d audit entries; want one per candidate", len(as))
+	}
+	seen := map[string]bool{}
+	for _, a := range as {
+		var acc uuid.UUID
+		fid, _ := a.Details["flow_id"].(string)
+		if err := e.su.QueryRowContext(t.Context(), "SELECT account_id FROM flows WHERE id = ?", fid).Scan(&acc); err != nil {
+			t.Fatalf("audit names flow %q: %v", fid, err)
+		}
+		if a.Outcome != "failure" || a.Details["code"] != "CODE_INVALID" || a.Details["kind"] != "registration" ||
+			a.AccountID == nil || *a.AccountID != acc {
+			t.Errorf("audit %+v; want a failure on the flow's own account", a)
+		}
+		seen[fid] = true
+	}
+	if !seen[ss[0].FlowID.String()] || !seen[ss[1].FlowID.String()] {
+		t.Errorf("audited flows %v; want both", seen)
+	}
+}
+
+// TestConfirmResumeLinkVerifiedOrTaken: a resume link for an identifier verified already replaces
+// the handle and emits nothing; for a value another account verified first it is IDENTIFIER_TAKEN,
+// the challenge consumed and the handle kept. Resumes by link are audited as resumes.
+func TestConfirmResumeLinkVerifiedOrTaken(t *testing.T) {
+	t.Parallel()
+	e := newResumeEnvWith(t, flow.MethodEmailLink)
+	a := e.register(t, resumeEmail)
+	b := e.register(t, resumeEmail)
+	if err := e.reg.RequestResume(t.Context(), resumeCmd()); err != nil {
+		t.Fatal(err)
+	}
+	link := map[uuid.UUID]flow.Secret{}
+	for _, r := range e.resumes(t) {
+		link[r.FlowID] = e.code(t, r.ID)
+	}
+	e.exec(t, `UPDATE identifiers SET verified_at = now() WHERE account_id = (SELECT account_id FROM flows WHERE id = ?)`, a.FlowID)
+	e.exec(t, `UPDATE flows SET state = '{"pending_types": []}' WHERE id = ?`, a.FlowID)
+
+	got, err := e.reg.ConfirmLink(t.Context(), app.ConfirmLink{Token: link[a.FlowID], IP: resumeIP})
+	if err != nil || got.FlowID != a.FlowID || !got.Complete || len(got.Handle) != 43 {
+		t.Fatalf("verified already: %+v, %v; want resumed, complete", got, err)
+	}
+	_, err = e.reg.ConfirmLink(t.Context(), app.ConfirmLink{Token: link[b.FlowID], IP: resumeIP})
+	if !hasDomainCode(err, domain.CodeIdentifierTaken) {
+		t.Fatalf("taken: %v; want IDENTIFIER_TAKEN", err)
+	}
+	for _, r := range e.resumes(t) {
+		if r.FlowID == b.FlowID && (r.Open || !r.Consumed) {
+			t.Errorf("taken: challenge %+v; want consumed", r)
+		}
+	}
+	old := sha256.Sum256(b.Handle)
+	if _, err := e.flows.Find(t.Context(), b.FlowID, old[:]); err != nil {
+		t.Errorf("taken: the handle was replaced: %v", err)
+	}
+	var events int
+	if err := e.su.QueryRowContext(t.Context(), "SELECT count(*) FROM outbox WHERE type = 'account.identifier_verified'").Scan(&events); err != nil || events != 0 {
+		t.Errorf("%d identifier_verified events; want none", events)
+	}
+	var outcomes []string
+	for _, x := range e.audits(t, "registration.resume") {
+		outcomes = append(outcomes, x.Outcome+":"+fmt.Sprint(x.Details["code"]))
+	}
+	if !slices.Equal(outcomes, []string{"success:<nil>", "failure:IDENTIFIER_TAKEN"}) {
+		t.Errorf("registration.resume audits %v; want the link resume and the taken one", outcomes)
 	}
 }

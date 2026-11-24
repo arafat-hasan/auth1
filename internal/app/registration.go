@@ -643,6 +643,9 @@ func (r *Registration) ConfirmLink(ctx context.Context, cmd ConfirmLink) (LinkCo
 		return LinkConfirmed{}, r.fail(ctx, entry, op, err)
 	}
 	entry.withFlow(f)
+	if found.Purpose == flow.PurposeResume {
+		entry.Action = auditResume // a resume is audited as one, by link or by code
+	}
 	var (
 		answer error
 		out    = LinkConfirmed{Purpose: found.Purpose, FlowID: f.ID}
