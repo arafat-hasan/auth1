@@ -123,10 +123,11 @@ type claims struct {
 
 // Issue checks r and returns a service token, in the order of TDD-05 §2: the form; the
 // assertion's form and header; iss = sub = a configured client; its key, fetched outside any
-// transaction; the signature with that key's alg; aud; the times; jti; the scope; and last the
-// jti record, so a refused request never uses up an assertion. Every assertion failure is the same
-// invalid_client. Keys that cannot be had, a store failure or no signing key are a
-// *domain.Error UNAVAILABLE.
+// transaction; the signature with that key's alg; aud; the times; jti; the scope; the token,
+// signed; and last the jti record, so a refused or failed request never uses up an assertion.
+// Every assertion failure is the same invalid_client. Keys that cannot be had or no signing key
+// are a *domain.Error UNAVAILABLE; a store failure is returned wrapped, which the problem writer
+// also answers 503.
 func (s *Service) Issue(ctx context.Context, r Request) (tokens.Service, error) {
 	switch {
 	case r.GrantType == "":
@@ -147,6 +148,12 @@ func (s *Service) Issue(ctx context.Context, r Request) (tokens.Service, error) 
 	if len(scopes) == 0 {
 		return tokens.Service{}, &Error{Code: InvalidScope, Reason: "no requested scope is configured for the client"}
 	}
+	// Signing comes before the record, so a token that cannot be signed (no signing key yet)
+	// leaves the assertion usable for a retry; a replay's token is signed and dropped.
+	tok, err := s.o.Issuer.IssueService(client, scopes)
+	if err != nil {
+		return tokens.Service{}, fmt.Errorf("issue the service token: %w", err)
+	}
 	var fresh bool
 	err = s.o.UnitOfWork.Do(ctx, func(ctx context.Context) error {
 		var err error
@@ -158,10 +165,6 @@ func (s *Service) Issue(ctx context.Context, r Request) (tokens.Service, error) 
 	}
 	if !fresh {
 		return tokens.Service{}, s.refused(ctx, client, refusal("jti replayed"))
-	}
-	tok, err := s.o.Issuer.IssueService(client, scopes)
-	if err != nil {
-		return tokens.Service{}, fmt.Errorf("issue the service token: %w", err)
 	}
 	return tok, nil
 }

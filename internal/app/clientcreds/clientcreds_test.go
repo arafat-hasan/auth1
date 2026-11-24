@@ -440,6 +440,25 @@ func TestUnavailable(t *testing.T) {
 	}
 }
 
+// TestSigningFailureKeepsJTI: a token that cannot be signed answers UNAVAILABLE without using up
+// the assertion, so the client's retry with it succeeds.
+func TestSigningFailureKeepsJTI(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	tok := e.mint(t)
+	e.issuer.err = app.ErrNoSigningKey
+	if _, err := e.svc.Issue(context.Background(), request(tok)); !errors.Is(err, app.ErrNoSigningKey) {
+		t.Fatalf("err = %v, want ErrNoSigningKey", err)
+	}
+	if len(e.assertions.rows) != 0 {
+		t.Errorf("a failed signing recorded %v", e.assertions.rows)
+	}
+	e.issuer.err = nil
+	if _, err := e.svc.Issue(context.Background(), request(tok)); err != nil {
+		t.Errorf("the retry: %v", err)
+	}
+}
+
 func TestNewRefusesMissing(t *testing.T) {
 	t.Parallel()
 	if s, err := clientcreds.New(clientcreds.Options{}); err == nil || s != nil {
