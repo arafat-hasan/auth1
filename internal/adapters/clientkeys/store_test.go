@@ -354,5 +354,93 @@ func TestHTTPClient(t *testing.T) {
 		t.Errorf("transport %#v, want TLS 1.2 or later", c.Transport)
 	case tr.Proxy != nil:
 		t.Error("the fetch goes through a proxy")
+	case c.CheckRedirect == nil || !errors.Is(c.CheckRedirect(nil, nil), http.ErrUseLastResponse):
+		t.Error("the fetch follows redirects")
+	}
+}
+
+// TestNewRefusesBadClients: each client needs an id of its own and exactly one of File and URI.
+func TestNewRefusesBadClients(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(t.TempDir(), "k.json")
+	if err := os.WriteFile(file, assertiontest.NewClient(t, "a", "ES256").JWKS(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const uri = "https://keys.example.test/jwks"
+	for name, clients := range map[string][]clientkeys.Client{
+		"no id":        {{URI: uri}},
+		"repeated id":  {{ID: "a", URI: uri}, {ID: "a", File: file}},
+		"neither":      {{ID: "a"}},
+		"file and URI": {{ID: "a", File: file, URI: uri}},
+	} {
+		_, err := clientkeys.New(clientkeys.Options{Clients: clients, Clock: fakes.NewClock(t0), Logger: slog.New(slog.DiscardHandler)})
+		if err == nil {
+			t.Errorf("%s: New accepted %v", name, clients)
+		}
+	}
+}
+
+// TestFetchErrorLogOmitsURL: a failed fetch is logged without the jwks_uri, whose query may hold a
+// secret (G-6).
+func TestFetchErrorLogOmitsURL(t *testing.T) {
+	t.Parallel()
+	s := newJWKSServer(t, nil)
+	uri := s.URL + "/jwks.json?token=s3cret"
+	s.Close() // every fetch now fails in the transport, with a *url.Error
+	log := &syncBuffer{}
+	st, err := clientkeys.New(clientkeys.Options{
+		Clients: []clientkeys.Client{{ID: "reports", URI: uri}},
+		HTTP:    s.Client(), Clock: fakes.NewClock(t0), Logger: slog.New(slog.NewTextHandler(log, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Key(context.Background(), "reports", "k"); !errors.Is(err, app.ErrClientKeysUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+	if out := log.String(); !strings.Contains(out, "client keys fetch failed") || strings.Contains(out, "s3cret") || strings.Contains(out, s.URL) {
+		t.Errorf("log %q", out)
+	}
+}
+
+// TestWaitHonoursContext: a caller waiting behind another's fetch gives up when its own context
+// ends, and the fetch still serves the first caller.
+func TestWaitHonoursContext(t *testing.T) {
+	t.Parallel()
+	c := assertiontest.NewClient(t, "reports", "ES256")
+	s := newJWKSServer(t, c.JWKS())
+	s.delay = 500 * time.Millisecond
+	st, _ := uriStore(t, s)
+	first := make(chan error, 1)
+	go func() { _, err := st.Key(context.Background(), "reports", c.Kid()); first <- err }()
+	waitFor(t, func() bool { return s.hits.Load() == 1 })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := st.Key(ctx, "reports", c.Kid()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("waiting caller: err = %v, want its deadline", err)
+	}
+	if d := time.Since(start); d > 300*time.Millisecond {
+		t.Errorf("waiting caller returned after %s, not at its deadline", d)
+	}
+	if err := <-first; err != nil {
+		t.Errorf("first caller: %v", err)
+	}
+}
+
+// TestSkippedKeysWarned: a key Parse skips is named in a warning, so a client signing with it can
+// be diagnosed.
+func TestSkippedKeysWarned(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "reports.json")
+	if err := os.WriteFile(path, set(t, jwkOf(t, p256.Public(), map[string]any{"kid": "good"}), shortRSA(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log := &syncBuffer{}
+	if _, err := fileStore(t, path, log); err != nil {
+		t.Fatal(err)
+	}
+	if out := log.String(); !strings.Contains(out, "client key skipped") || !strings.Contains(out, "short") {
+		t.Errorf("log %q", out)
 	}
 }

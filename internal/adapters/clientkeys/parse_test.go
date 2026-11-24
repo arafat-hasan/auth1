@@ -80,6 +80,7 @@ func TestParse(t *testing.T) {
 		name    string
 		data    func(t testing.TB) []byte
 		want    map[string]string // kid → alg
+		skipped int
 		wantErr bool
 	}{
 		{name: "RSA 2048", data: func(t testing.TB) []byte { return set(t, good(t)) }, want: map[string]string{"good": "RS256"}},
@@ -100,7 +101,7 @@ func TestParse(t *testing.T) {
 				jwkOf(t, []byte("0123456789abcdef0123456789abcdef"), map[string]any{"kid": "oct"}),
 				json.RawMessage(`{"kty":"OKP","crv":"X25519","kid":"x","x":"AAAA"}`),
 			)
-		}, want: map[string]string{"good": "RS256"}},
+		}, want: map[string]string{"good": "RS256"}, skipped: 8},
 		{name: "repeated kid", data: func(t testing.TB) []byte {
 			return set(t, good(t), jwkOf(t, p256.Public(), map[string]any{"kid": "good"}))
 		}, wantErr: true},
@@ -118,7 +119,7 @@ func TestParse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := clientkeys.Parse(tt.data(t))
+			got, skipped, err := clientkeys.Parse(tt.data(t))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("Parse = %v, want an error", got)
@@ -127,6 +128,9 @@ func TestParse(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if len(skipped) != tt.skipped {
+				t.Errorf("skipped %q, want %d", skipped, tt.skipped)
 			}
 			if len(got) != len(tt.want) {
 				t.Fatalf("Parse = %d keys, want %d", len(got), len(tt.want))
@@ -153,7 +157,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte(`{"keys":[{"kty":"EC","crv":"P-256","kid":"c","x":"","y":""}]}`))
 	f.Add([]byte(`{"keys":null}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		keys, err := clientkeys.Parse(data)
+		keys, _, err := clientkeys.Parse(data)
 		if err != nil {
 			return
 		}

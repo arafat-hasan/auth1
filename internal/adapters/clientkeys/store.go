@@ -9,8 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -71,8 +71,8 @@ type source struct {
 	Client
 	set atomic.Pointer[keySet]
 
-	mu        sync.Mutex // held while fetching URI, so one fetch is in flight
-	attempted time.Time  // the last fetch, successful or not; under mu
+	turn      chan struct{} // a one-slot semaphore held while fetching URI, so one fetch is in flight
+	attempted time.Time     // the last fetch, successful or not; under turn
 
 	seen    [sha256.Size]byte // the file content last read, valid or not; Run's only
 	readErr string            // the last file read error, logged once; Run's only
@@ -87,8 +87,10 @@ type Store struct {
 	interval time.Duration
 }
 
-// New returns a store of o.Clients' keys. It reads every jwks_file, and refuses one that cannot
-// be read or holds no usable key, naming the client; jwks_uri is fetched when first needed.
+// New returns a store of o.Clients' keys. It refuses a client without an id, with a repeated id,
+// or without exactly one of File and URI. It reads every jwks_file, refuses one that cannot be read
+// or that Parse refuses, naming the client, and warns of each key Parse skips; jwks_uri is fetched
+// when first needed.
 func New(o Options) (*Store, error) {
 	if o.Clock == nil || o.Logger == nil {
 		return nil, errors.New("clientkeys: a clock and a logger are required")
@@ -106,17 +108,26 @@ func New(o Options) (*Store, error) {
 	if s.interval <= 0 {
 		s.interval = DefaultInterval
 	}
-	for _, c := range o.Clients {
-		src := &source{Client: c}
+	for i, c := range o.Clients {
+		switch _, dup := s.sources[c.ID]; {
+		case c.ID == "":
+			return nil, fmt.Errorf("clientkeys: client %d has no id", i)
+		case dup:
+			return nil, fmt.Errorf("clientkeys: client %s is repeated", c.ID)
+		case (c.File == "") == (c.URI == ""):
+			return nil, fmt.Errorf("clientkeys: client %s needs exactly one of a file and a URI", c.ID)
+		}
+		src := &source{Client: c, turn: make(chan struct{}, 1)}
 		if c.File != "" {
 			data, err := readFile(c.File)
 			if err != nil {
 				return nil, fmt.Errorf("client %s: jwks_file: %w", c.ID, err)
 			}
-			keys, err := Parse(data)
+			keys, skipped, err := Parse(data)
 			if err != nil {
 				return nil, fmt.Errorf("client %s: jwks_file %s: %w", c.ID, c.File, err)
 			}
+			s.warnSkipped(context.Background(), c.ID, skipped)
 			src.seen = sha256.Sum256(data)
 			src.set.Store(&keySet{keys: keys})
 		}
@@ -127,7 +138,8 @@ func New(o Options) (*Store, error) {
 
 // Key implements app.ClientKeys. For a jwks_uri client it fetches the set when none is cached or
 // it is CacheFor old, and refetches it for an unknown kid; either fetch happens at most once per
-// RefetchFloor, one at a time. A failed fetch keeps the cached set.
+// RefetchFloor, one at a time. A failed fetch keeps the cached set. A caller waiting behind
+// another's fetch gives up with its context's error when its context ends.
 func (s *Store) Key(ctx context.Context, clientID, kid string) (app.PublicKey, error) {
 	src, ok := s.sources[clientID]
 	if !ok {
@@ -142,8 +154,12 @@ func (s *Store) Key(ctx context.Context, clientID, kid string) (app.PublicKey, e
 		}
 	}
 
-	src.mu.Lock()
-	defer src.mu.Unlock()
+	select {
+	case src.turn <- struct{}{}:
+	case <-ctx.Done():
+		return app.PublicKey{}, fmt.Errorf("wait for client keys: %w", ctx.Err())
+	}
+	defer func() { <-src.turn }()
 	set := src.set.Load() // a concurrent fetch may have refreshed it
 	if set != nil && s.fresh(set) {
 		if pk, ok := set.keys[kid]; ok {
@@ -154,11 +170,12 @@ func (s *Store) Key(ctx context.Context, clientID, kid string) (app.PublicKey, e
 	if src.attempted.IsZero() || now.Sub(src.attempted) >= RefetchFloor {
 		src.attempted = now
 		// The fetch outlives a caller that hangs up, so the callers waiting on it get its result.
-		keys, err := s.fetch(context.WithoutCancel(ctx), src.URI)
+		keys, skipped, err := s.fetch(context.WithoutCancel(ctx), src.URI)
 		if err != nil {
 			s.logger.LogAttrs(ctx, slog.LevelWarn, "client keys fetch failed",
 				slog.String("client", clientID), slog.String("error", err.Error()))
 		} else {
+			s.warnSkipped(ctx, clientID, skipped)
 			set = &keySet{keys: keys, fetched: now}
 			src.set.Store(set)
 		}
@@ -172,32 +189,47 @@ func (s *Store) Key(ctx context.Context, clientID, kid string) (app.PublicKey, e
 func (s *Store) fresh(set *keySet) bool { return s.clock.Now().Sub(set.fetched) < CacheFor }
 
 func lookup(set *keySet, kid string) (app.PublicKey, error) {
+	if set == nil {
+		return app.PublicKey{}, app.ErrUnknownClientKey
+	}
 	if pk, ok := set.keys[kid]; ok {
 		return pk, nil
 	}
 	return app.PublicKey{}, app.ErrUnknownClientKey
 }
 
-// fetch gets and parses the JWKS at uri: a 200 of at most MaxSize. Its errors hold no body.
-func (s *Store) fetch(ctx context.Context, uri string) (map[string]app.PublicKey, error) {
+// fetch gets and parses the JWKS at uri: a 200 of at most MaxSize. Its errors hold neither the
+// body nor the URI, whose query may hold a secret (G-6).
+func (s *Store) fetch(ctx context.Context, uri string) (map[string]app.PublicKey, []string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
-		return nil, fmt.Errorf("request: %w", err)
+		return nil, nil, errors.New("request: jwks_uri is not a URL")
 	}
 	req.Header.Set("Accept", "application/jwk-set+json, application/json")
 	resp, err := s.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch: %w", err)
+		if ue, ok := errors.AsType[*url.Error](err); ok {
+			err = ue.Err
+		}
+		return nil, nil, fmt.Errorf("fetch: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch: status %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("fetch: status %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("read: %w", err)
+		return nil, nil, fmt.Errorf("read: %w", err)
 	}
 	return Parse(data)
+}
+
+// warnSkipped logs a warning for each key of client's set that Parse skipped.
+func (s *Store) warnSkipped(ctx context.Context, client string, skipped []string) {
+	for _, why := range skipped {
+		s.logger.LogAttrs(ctx, slog.LevelWarn, "client key skipped",
+			slog.String("client", client), slog.String("key", why))
+	}
 }
 
 // readFile reads a jwks_file, refusing one over MaxSize without reading it all.
@@ -250,11 +282,12 @@ func (s *Store) reload(ctx context.Context, src *source) {
 		return
 	}
 	src.seen = sum
-	keys, err := Parse(data)
+	keys, skipped, err := Parse(data)
 	if err != nil {
 		fail(err.Error())
 		return
 	}
+	s.warnSkipped(ctx, src.ID, skipped)
 	src.set.Store(&keySet{keys: keys})
 	s.logger.LogAttrs(ctx, slog.LevelInfo, "client keys reloaded",
 		slog.String("client", src.ID), slog.String("file", src.File), slog.Int("keys", len(keys)))
