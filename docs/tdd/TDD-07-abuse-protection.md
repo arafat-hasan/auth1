@@ -111,8 +111,8 @@ values checks them in one order, by type.
 A resume request (TDD-02 §4) sends to one value for up to three flows. It checks the limits once
 for all of them, under the one lock: the short window must have room, and the messages are sent,
 newest flow first, while the long window has room. Each is recorded in `challenge_sends`, so each
-counts in the long window; the next request within the short window sends none. Checking each
-message alone would let the short window's one send reach only the first flow.
+counts in the long window; with the default of one send per short window, the next request within
+it sends none. Checking each message alone would let that one send reach only the first flow.
 
 The 15-minute cooldown after an exhausted challenge (L-9) is checked the same way, on `closed_at`
 of the challenges to that value closed unconsumed with `attempts >= max_attempts`: no close reason
