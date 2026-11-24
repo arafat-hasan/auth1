@@ -11,8 +11,9 @@ import (
 
 // loadServiceAuth maps service_auth onto the caller middleware's options (TDD-05 §1, §3), less
 // the dependencies serve adds. config check and serve refuse what it reports as problems: a
-// trusted sidecar that is not a CIDR, an empty or repeated caller identity, and no header name
-// when the mesh identity comes from a header.
+// trusted sidecar that is not a CIDR, an empty or repeated caller identity, no header name when
+// the mesh identity comes from a header, and, when the mode accepts client credentials, a service
+// client with no caller entry for its id, which could never be granted a scope (TDD-05 §2).
 func loadServiceAuth(cfg *config.Config) (caller.Options, []*config.Problem) {
 	sa := cfg.ServiceAuth
 	o := caller.Options{

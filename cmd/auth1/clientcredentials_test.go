@@ -203,12 +203,39 @@ func TestClientCredentialsThroughAPI(t *testing.T) {
 		})
 	}
 
+	// The issuer is the other audience an assertion may name (TDD-05 §2).
+	s.token(t, assertionForm(s.client.Mint(t, exampleIssuer, time.Now()))).want(t, http.StatusOK, "")
+
 	var rows int
 	if err := s.db.QueryRowContext(t.Context(), "SELECT count(*) FROM client_assertions WHERE client_id = 'reports'").Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 1 {
-		t.Errorf("%d client_assertions rows, want 1", rows)
+	if rows != 2 {
+		t.Errorf("%d client_assertions rows, want 2", rows)
+	}
+
+	// A form outside the contract's schema still gets an RFC 6749 error, so OAuth libraries work;
+	// only a body that cannot be decoded is a problem.
+	for name, tc := range map[string]struct {
+		body   string
+		status int
+		want   string
+	}{
+		"another grant type": {strings.Replace(assertionForm(assertion).Encode(), "grant_type=client_credentials", "grant_type=password", 1),
+			http.StatusBadRequest, `{"error":"unsupported_grant_type"}`},
+		"no assertion": {"grant_type=client_credentials&client_assertion_type=" + url.QueryEscape("urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
+			http.StatusBadRequest, `{"error":"invalid_request"}`},
+		"undecodable": {"grant_type=%zz", http.StatusUnprocessableEntity, `"VALIDATION_FAILED"`},
+	} {
+		resp, err := http.Post(s.api+"/v1/oauth/token", "application/x-www-form-urlencoded", strings.NewReader(tc.body)) //nolint:noctx // a test
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != tc.status || !strings.Contains(string(b), tc.want) {
+			t.Errorf("%s: %d %s, want %d %s", name, resp.StatusCode, b, tc.status, tc.want)
+		}
 	}
 }
 
