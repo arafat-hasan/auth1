@@ -13,6 +13,7 @@ import (
 	"github.com/arafat-hasan/auth1/internal/adapters/system"
 	"github.com/arafat-hasan/auth1/internal/app"
 	"github.com/arafat-hasan/auth1/internal/config"
+	"github.com/arafat-hasan/auth1/internal/domain/account"
 	"github.com/arafat-hasan/auth1/internal/domain/identifier"
 	"github.com/arafat-hasan/auth1/internal/domain/message"
 	"github.com/arafat-hasan/auth1/internal/domain/password"
@@ -40,7 +41,7 @@ type registrationParts struct {
 	logger   *slog.Logger
 }
 
-// newRegistration builds the registration flow (TDD-02 §3) on PostgreSQL.
+// newRegistration builds the registration flow and resume (TDD-02 §3, §4) on PostgreSQL.
 func newRegistration(p registrationParts) (*app.Registration, error) {
 	cfg := p.cfg
 	fc := crypto.NewFieldCrypto(p.keys.fields)
@@ -74,5 +75,6 @@ func newRegistration(p registrationParts) (*app.Registration, error) {
 		IDs: ids, Clock: clock, Rand: rand.Reader, MAC: mac, Logger: p.logger,
 	}, app.RegistrationOptions{
 		Clients: clients, Locales: cfg.Locales.Allowed, FlowTTL: cfg.Flows.PendingRegistrationTTL, Password: p.policy,
+		FactorLimit: account.FactorLimit{Limit: cfg.RateLimits.FactorFailures.Limit, Window: cfg.RateLimits.FactorFailures.Window},
 	})
 }

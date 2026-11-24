@@ -337,6 +337,24 @@ actor). `handlers.NewAPI` takes the registration (nil keeps its operations at 50
 (`startServeConfig`, phones under +44 allowed) with `dbResolver`, a test stand-in for the WP-43
 resolver that reads identifier values and open secrets from the database.
 
+Resume (TDD-02 §4): `Flows.Resumable` (open registration and invitation flows whose account holds
+a current identifier with the value) and `Flows.ResumeCandidates` (open `resume` challenges by
+code to the value whose flows are open) lock nothing, take a limit, return newest first and see a
+flow past `expires_at` as closed. `Registration.lockAll` locks several flows in G-5 order: their
+accounts by id, then the flows by id, then each flow's challenges; a flow or account gone is left
+out. `RequestResume` (always nil but an unknown client or a store failure; after the client check,
+L-14, then L-8) reuses
+each flow's open resume challenge or opens one, sends them with `Challenges.SendBatch` (one check
+of L-9 and L-7 for the batch, then sends newest first while the long window has room; an empty
+batch still takes the address lock but is never refused), and closes the challenges it opened but
+could not send. `VerifyResume` (L-12) computes the code's MAC for 3 slots and counts the try on
+every live candidate; a candidate on an account at L-11 (`account.FactorLimit`,
+`Accounts.FailFactor`, from `rate_limits.factor_failures`) or whose identifier is no longer
+current cannot match. It consumes the newest match and replaces the handle (`resumeFlow`, shared
+with `ConfirmLink` for resume links, which also audit as `registration.resume`); no match is
+`FailFactor` on each candidate's account and the same `CODE_INVALID` without `attempts_left`. Tests run on PostgreSQL
+(`internal/app/resume_*_pg_test.go`, `cmd/auth1/resume_test.go`).
+
 Sign-in (TDD-02 §5.1, §5.3, TDD-07 §4): `app.SignIn` (`NewSignIn` refuses a missing dependency
 or a lifetime not above 0; `cmd/auth1/signin.go` builds it) has `Password` (`POST /v1/sessions`)
 and `Complete`. `Password` checks the client, the type and L-2, then, outside any transaction,

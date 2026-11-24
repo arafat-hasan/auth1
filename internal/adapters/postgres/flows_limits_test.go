@@ -26,10 +26,10 @@ func (e *flowsEnv) sharedEmail(t *testing.T, n int, email string) ([]flow.NewFlo
 		fs []flow.NewFlow
 		cs []flow.NewChallengeRecord
 	)
-	for i := range n {
+	for range n {
 		a := e.newAccount("", email)
 		e.create(t, a)
-		f := e.newFlow(a.ID, flow.KindRegistration, handle(fmt.Sprintf("%s %d", email, i)))
+		f := e.newFlow(a.ID, flow.KindRegistration, handle(fmt.Sprintf("%s %s", email, a.ID)))
 		e.open(t, f)
 		c := e.otpChallenge(f.ID, a.Identifiers[0].ID, email, "123456")
 		e.openChallenges(t, f, c)

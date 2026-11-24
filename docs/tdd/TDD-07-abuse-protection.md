@@ -51,15 +51,15 @@ hashing. **Nothing hashes a password before L-1 and L-2 pass.**
 
 ```sql
 UPDATE accounts
-SET factor_failures = CASE WHEN factor_failures_since IS NULL OR factor_failures_since < now() - interval '1 hour'
+SET factor_failures = CASE WHEN factor_failures_since IS NULL OR factor_failures_since <= now() - interval '1 hour'
                            THEN 1 ELSE factor_failures + 1 END,
-    factor_failures_since = CASE WHEN factor_failures_since IS NULL OR factor_failures_since < now() - interval '1 hour'
+    factor_failures_since = CASE WHEN factor_failures_since IS NULL OR factor_failures_since <= now() - interval '1 hour'
                            THEN now() ELSE factor_failures_since END
 WHERE id = $1
 RETURNING factor_failures;
 ```
 
-Before any verification, a count at the limit within the window refuses the request. A correct code
+The window covers `[factor_failures_since, factor_failures_since + 1 hour)`. Before any verification, a count at the limit within the window refuses the request. A correct code
 does not reset it. This counter is not the account's `version`; it does not emit events.
 
 ## 4. Sign-in throttling and device cookies (L-3)
@@ -107,6 +107,12 @@ hour hold the value at its limit for every account. The windows are configuratio
 exact: two concurrent sends to one value from different accounts cannot both pass. It is taken
 after the account, flow and challenge locks and held until commit; a use case sending to several
 values checks them in one order, by type.
+
+A resume request (TDD-02 §4) sends to one value for up to three flows. It checks the limits once
+for all of them, under the one lock: the short window must have room, and the messages are sent,
+newest flow first, while the long window has room. Each is recorded in `challenge_sends`, so each
+counts in the long window; with the default of one send per short window, the next request within
+it sends none. Checking each message alone would let that one send reach only the first flow.
 
 The 15-minute cooldown after an exhausted challenge (L-9) is checked the same way, on `closed_at`
 of the challenges to that value closed unconsumed with `attempts >= max_attempts`: no close reason

@@ -367,9 +367,10 @@ func newRegEnvEmail(t *testing.T, email identifier.Policy) *regEnv {
 		Clients: map[string]app.RegistrationClient{
 			"web": {ID: "web", SelfRegistration: true}, "console": {ID: "console"},
 		},
-		Locales:  []string{"en", "en-GB"},
-		FlowTTL:  24 * time.Hour,
-		Password: password.Policy{MinLength: 12, MaxLength: 128, DenyList: deny},
+		Locales:     []string{"en", "en-GB"},
+		FlowTTL:     24 * time.Hour,
+		Password:    password.Policy{MinLength: 12, MaxLength: 128, DenyList: deny},
+		FactorLimit: account.FactorLimit{Limit: 10, Window: time.Hour},
 	}
 	if e.reg, err = app.NewRegistration(e.deps, e.opts); err != nil {
 		t.Fatal(err)
@@ -943,6 +944,13 @@ func TestNewRegistrationRefusesMissingDeps(t *testing.T) {
 	o.FlowTTL = 0
 	if _, err := app.NewRegistration(e.deps, o); err == nil {
 		t.Error("NewRegistration accepted a zero flow lifetime")
+	}
+	for _, l := range []account.FactorLimit{{Window: time.Hour}, {Limit: 10}} {
+		o := e.opts
+		o.FactorLimit = l
+		if _, err := app.NewRegistration(e.deps, o); err == nil {
+			t.Errorf("NewRegistration accepted the factor limit %+v", l)
+		}
 	}
 }
 
