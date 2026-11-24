@@ -382,7 +382,8 @@ headers. Identity headers count only when the TCP peer (`RemoteAddr`, not `clien
 nothing terminates TLS yet. Service tokens go through `caller.TokenVerifier` (client credentials, below).
 `caller.New` refuses missing dependencies and a header-sourced mesh mode with no header name.
 `loadServiceAuth` in `cmd/auth1/serviceauth.go` maps the config for `config check` and `serve`,
-refusing a sidecar entry that is not a CIDR and an empty or repeated caller identity; `serve` warns
+refusing a sidecar entry that is not a CIDR, an empty or repeated caller identity and (with client
+credentials) a service client without a caller entry; `serve` warns
 for a sidecar range beyond loopback, for service tokens with no verifier and for `peer_cert`.
 
 Client credentials (TDD-05 §2): `POST /v1/oauth/token` is `clientcreds.Service.Issue`
@@ -396,10 +397,12 @@ or no signing key go to the problem writer as `503`. A client's scopes are its `
 entry with `identity` = the client id (`loadServiceAuth` refuses a client without one).
 `app.ClientKeys` is `clientkeys.Store` (`loadClientKeys`, for `config check` and `serve`; `Run`
 re-reads `jwks_file` every 30 s; `jwks_uri` is fetched on demand outside any transaction, cached
-10 min, refetched at most once a minute per client; `serveDeps.jwksClient` replaces its HTTP client
-in tests). `postgres.ClientAssertions.Record` (`client_assertions`, until `exp` + 30 s) is the one
+10 min, refetched at most once a minute per client, a waiting caller giving up with its context, and
+logged without the URI; `Parse` reports the keys it skips, which the store warns of;
+`serveDeps.jwksClient` replaces its HTTP client in tests). `postgres.ClientAssertions.Record` (`client_assertions`, until `exp` + 30 s) is the one
 statement that decides a replay. The token is `tokens.Issuer.IssueService` (`typ: at+jwt`, `aud` the
-service audience, `sub` = `client_id`, `scope`); `tokens.Validator.ValidateService` fills
+service audience, `sub` = `client_id`, `scope`), signed before the `jti` is recorded so a signing
+failure leaves the assertion usable; `tokens.Validator.ValidateService` fills
 `caller.TokenVerifier` (`serviceTokens`) and accepts only that audience and exact claim set, while
 `Validate` refuses a service token, so neither kind passes for the other (`config.Validate` keeps
 the service audience apart from user tokens'). L-15 (per client) is WP-80's and the purge of
