@@ -374,3 +374,22 @@ func TestRequestResumeRefusedOpensNoCandidate(t *testing.T) {
 		t.Errorf("%d resume messages; want the first 2 only", n)
 	}
 }
+
+// TestVerifyResumeRetiredIdentifier: a right code whose identifier is no longer current under the
+// lock cannot match (TDD-02 §4 step 5). It is a wrong try like any other: on the last try the
+// challenge closes exhausted, erasing its secret (I-4, I-5), so it neither stays a candidate nor
+// escapes the L-9 cooldown.
+func TestVerifyResumeRetiredIdentifier(t *testing.T) {
+	t.Parallel()
+	e := newResumeEnv(t)
+	_, rs := e.resumed(t, 1)
+	code := e.code(t, rs[0].ID)
+	e.exec(t, "UPDATE challenges SET attempts = max_attempts - 1 WHERE id = ?", rs[0].ID)
+	e.exec(t, "UPDATE identifiers SET retired_at = now() WHERE type = 'email'")
+	_, err := e.reg.VerifyResume(t.Context(), verifyCmd(code))
+	checkCodeInvalid(t, "right code, identifier retired", err)
+	got := e.resumes(t)[0]
+	if got.Open || got.Consumed || got.Attempts != challengeRules.MaxAttempts || got.Secret != nil {
+		t.Errorf("challenge %+v; want closed exhausted, erased", got)
+	}
+}

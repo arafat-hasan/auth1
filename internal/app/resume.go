@@ -318,6 +318,7 @@ func (r *Registration) VerifyResume(ctx context.Context, cmd VerifyResume) (Flow
 		}
 		now := r.d.Clock.Now()
 		pick := -1
+		var picked account.Identifier
 		for i, c := range cands {
 			l, ok := ls[c.Flow.ID]
 			if !ok {
@@ -334,9 +335,13 @@ func (r *Registration) VerifyResume(ctx context.Context, cmd VerifyResume) (Flow
 			if !ok {
 				continue
 			}
-			if pick < 0 && matches[i] && !r.o.FactorLimit.Reached(l.account, now) {
-				pick = i
-				continue
+			// A candidate at L-11, or whose identifier is no longer current, cannot match: it is a
+			// wrong try like any other (TDD-02 §4).
+			if pick < 0 && matches[i] && !r.o.FactorLimit.Reached(l.account, now) && ch.IdentifierID != nil {
+				if id, current := l.identifier(*ch.IdentifierID); current {
+					pick, picked = i, id
+					continue
+				}
 			}
 			if attempts >= ch.MaxAttempts {
 				if _, err := r.d.Flows.CloseChallenge(ctx, ch.ID, false); err != nil {
@@ -348,17 +353,9 @@ func (r *Registration) VerifyResume(ctx context.Context, cmd VerifyResume) (Flow
 			return r.failFactors(ctx, ls, &answer)
 		}
 		l := ls[cands[pick].Flow.ID]
-		ch, _ := l.challenge(cands[pick].Challenge.ID)
-		var id account.Identifier
-		ok := ch.IdentifierID != nil
-		if ok {
-			id, ok = l.identifier(*ch.IdentifierID)
-		}
-		if !ok {
-			return r.failFactors(ctx, ls, &answer)
-		}
+		ch, _ := l.challenge(cands[pick].Challenge.ID) // found open above, under the lock
 		matched = l.flow
-		out, answer, err = r.resumeFlow(ctx, l, id, ch)
+		out, answer, err = r.resumeFlow(ctx, l, picked, ch)
 		if hasCode(answer, domain.CodeChallengeClosed) {
 			answer = codeInvalid()
 		}
