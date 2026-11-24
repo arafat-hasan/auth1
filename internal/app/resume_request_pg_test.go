@@ -144,9 +144,19 @@ func TestRequestResumeLongWindow(t *testing.T) {
 	}
 	var sent []resumeRow
 	for _, r := range e.resumes(t) {
-		if r.Sends > 0 {
+		switch {
+		case r.Sends > 0:
 			sent = append(sent, r)
+		case r.Open || r.Secret != nil:
+			t.Errorf("unsent challenge %+v; want closed, its secret erased", r)
 		}
+	}
+	var flags []any
+	for _, a := range e.audits(t, "registration.resume_request") {
+		flags = append(flags, a.Details["sent"])
+	}
+	if !slices.Equal(flags, []any{true, false, false}) {
+		t.Errorf("audited sent %v; want the newest true, the others false", flags)
 	}
 	if len(sent) != 1 || len(e.deliveries(t, resumeMessage)) != 1 {
 		t.Fatalf("sent %+v; want one", sent)
